@@ -306,3 +306,51 @@ plt.tight_layout()
 plt.show()
 
 print("Travail terminé ! Analyse les graphiques pour voir l'effet du freinage.")
+
+# =============================================================================
+# 7. CALCUL DE LA DISSIPATION / TENDANCE (DÉPRIVÉE VERTICALE)
+# =============================================================================
+print("Calcul des tendances (pertes et gains de quantité de mouvement)...")
+
+# Calcul de - d(u'w')/dz pour le flux total et le flux convectif
+# Note : On dérive par rapport à la coordonnée verticale 'nom_axe_z'
+tendance_u_total = -flux_u_total_final.differentiate(nom_axe_z)
+tendance_u_conv = -flux_u_conv_final.differentiate(nom_axe_z)
+tendance_u_env = -flux_u_env_final.differentiate(nom_axe_z)
+
+# =============================================================================
+# 8. TRACÉ DES TENDANCES
+# =============================================================================
+plt.figure(figsize=(7, 6))
+
+plt.plot(
+    tendance_u_total,
+    axe_z,
+    label="Tendance Totale (Force totale)",
+    color="black",
+    linewidth=2,
+)
+plt.plot(
+    tendance_u_conv,
+    axe_z,
+    label="Action des Nuages (Convection)",
+    color="crimson",
+    linestyle="--",
+)
+plt.plot(
+    tendance_u_env,
+    axe_z,
+    label="Action hors Nuages (Environnement)",
+    color="royalblue",
+    linestyle=":",
+)
+
+plt.axvline(0, color="grey", linestyle="-", alpha=0.5)
+plt.title("Accélération / Dissipation du vent par la turbulence")
+plt.xlabel("Tendance du vent zonal $\\partial u / \\partial t$ ($m/s^2$)")
+plt.ylabel(f"Niveau vertical ({nom_axe_z})")
+plt.grid(True, alpha=0.3)
+plt.legend()
+
+plt.tight_layout()
+plt.show()
