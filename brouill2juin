@@ -516,3 +516,108 @@ ax2.legend(loc='best', fontsize=9)
 plt.suptitle("Analyse du transport vertical de la friction de surface par les régimes turbulents", fontsize=14, fontweight='bold')
 plt.tight_layout()
 plt.show()
+
+
+
+# =============================================================================
+# 1. CHARGEMENT ET ESTIMATION DE LA DENSITÉ
+# =============================================================================
+data_ua  = xr.open_dataset("3D/MESONH_RCE_small300_3D_ua.nc")
+data_wa  = xr.open_dataset("3D/MESONH_RCE_small300_3D_wa.nc")
+data_clw = xr.open_dataset("3D/MESONH_RCE_small300_3D_clw.nc")
+data_cli = xr.open_dataset("3D/MESONH_RCE_small300_3D_cli.nc")
+
+# Si vous avez un fichier de température/pression, utilisez-le pour calculer rho = P / (Rd * Tv)
+# Sinon, nous générons un profil de densité standard exponentiel pour l'atmosphère tropicale RCE
+u = data_ua['UA'].mean(dim='time') # Moyenne temporelle pour stabiliser le climat
+w = data_wa['WA'].mean(dim='time')
+eau_nuage = data_clw['CLW'].mean(dim='time') + data_cli['CLI'].mean(dim='time')
+
+nom_axe_z = u.dims[0]
+nom_axe_y = u.dims[1]
+nom_axe_x = u.dims[2]
+axe_z = u[nom_axe_z]
+
+# Approximation de la densité rho(z) si non disponible dans les fichiers Meso-NH
+# On suppose une échelle de hauteur de 8 km (atmosphère isotherme standard)
+rho_surface = 1.15 # kg/m3
+H_scale = 8000.0   # mètres
+# Si votre axe_z est en kilomètres, ajustez : axe_z * 1000
+z_en_metres = axe_z if axe_z.max() > 100 else axe_z * 1000.0
+rho = rho_surface * np.exp(-z_en_metres / H_scale)
+
+# =============================================================================
+# 2. EXTRACTION DU COEUR DES ASCENDANCES (UPDRAFT CORES)
+# =============================================================================
+u_moy = u.mean(dim=[nom_axe_y, nom_axe_x])
+w_moy = w.mean(dim=[nom_axe_y, nom_axe_x])
+
+u_prime = u - u_moy
+w_prime = w - w_moy
+
+# Critère "Core" : Vitesse verticale nette > 1 m/s ET présence de nuage
+# C'est la signature des cellules convectives actives et continues
+masque_core = (w > 1.0) & (eau_nuage > 1e-5)
+
+# Fraction de la maille occupée par les "cores" (généralement 1 à 5% du domaine)
+alpha = masque_core.mean(dim=[nom_axe_y, nom_axe_x])
+
+# Propriétés à l'intérieur du cœur de la convection (updraft)
+u_up = u.where(masque_core).mean(dim=[nom_axe_y, nom_axe_x])
+w_up = w.where(masque_core).mean(dim=[nom_axe_y, nom_axe_x])
+
+# Propriétés de l'environnement (partout sauf dans le cœur)
+u_env = u.where(~masque_core).mean(dim=[nom_axe_y, nom_axe_x])
+
+# =============================================================================
+# 3. CALCUL DES FLUX DE MASSE (Modélisation d'Arakawa-Schubert résolue)
+# =============================================================================
+# Flux de masse convectif : M = rho * alpha * w_up  (kg/m2/s)
+flux_de_masse_M = rho * alpha * w_up
+
+# Flux de quantité de mouvement physique TOTAL : tau = rho * <u'w'>
+tau_total = rho * (u_prime * w_prime).mean(dim=[nom_axe_y, nom_axe_x])
+
+# Flux approché par la théorie du Flux de Masse : tau_MF = M * (u_up - u_env)
+tau_mass_flux = flux_de_masse_M * (u_up - u_env)
+
+# =============================================================================
+# 4. TENDANCES EN FORCE PHYSIQUE (en N/m3 ou m/s2)
+# =============================================================================
+# Accélération/Décélération nette du vent par unité de masse : - 1/rho * d(tau)/dz
+tendance_physique_totale = - (1.0 / rho) * tau_total.differentiate(nom_axe_z)
+tendance_physique_MF     = - (1.0 / rho) * tau_mass_flux.differentiate(nom_axe_z)
+
+# =============================================================================
+# 5. TRACÉS DE VALIDATION THÉORIQUE
+# =============================================================================
+fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 6), sharey=True)
+
+# Graphe 1 : Le Flux de Masse (Le moteur vertical)
+ax1.plot(flux_de_masse_M, axe_z, color='purple', linewidth=2.5)
+ax1.set_title("A. Flux de Masse Convectif ($M$)\n[Intensité de la pompe convective]", fontsize=10)
+ax1.set_xlabel("$M$ ($kg / m^2 / s$)")
+ax1.set_ylabel(f"Altitude ({nom_axe_z})")
+ax1.grid(True, alpha=0.3)
+
+# Graphe 2 : Confrontation Théorie vs Réalité Résolue
+ax2.plot(tau_total, axe_z, color='black', linewidth=2.5, label='Flux total mesuré ($\\rho \\overline{u\'w\'}$)')
+ax2.plot(tau_mass_flux, axe_z, color='crimson', linestyle='--', linewidth=2, label='Approximation Mass-Flux ($M(u_u - u_e)$)')
+ax2.axvline(0, color='grey', alpha=0.5)
+ax2.set_title("B. Flux dynamique de friction (Contrainte $\\tau$)", fontsize=10)
+ax2.set_xlabel("Contrainte de friction ($\\Delta P / \\Delta z$, $N/m^2$)")
+ax2.grid(True, alpha=0.3)
+ax2.legend()
+
+# Graphe 3 : Impact sur le vent de la troposphère
+ax3.plot(tendance_physique_totale, axe_z, color='black', linewidth=2.5, label='Freinage Réel')
+ax3.plot(tendance_physique_MF, axe_z, color='crimson', linestyle='--', linewidth=2, label='Freinage induit par les Cores')
+ax3.axvline(0, color='grey', alpha=0.5)
+ax3.set_title("C. Tendance finale du vent moyen\n[Communication de la friction]", fontsize=10)
+ax3.set_xlabel("$\\partial U / \\partial t$ ($m/s^2$)")
+ax3.grid(True, alpha=0.3)
+ax3.legend()
+
+plt.suptitle("Démonstration physique du transport de friction par Flux de Masse Convectif", fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
