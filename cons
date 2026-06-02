@@ -1,0 +1,13 @@
+l'un sur la dissipation 
+de quantité de mouvement dans l'atmosphère: il s'agit d'essayer de 
+  comprendre comment la friction en surface est communiquée à l'ensemble
+de la troposphère par les différents types de turbulence convective
+(la viscosité de l'air étant faible, le transport visqueux est négligeable).
+  C'est un travail qui doit alimenter des modèles théoriques et simples de la dynamique.
+Il s'agit d'analyse de données, alors que le sujet pour lequel tu me contactes est plus 
+  développement de modèle simple. Le premier sujet utilisera des données de simulations 
+idéalisées avec un modèles haute résolution et/ou des données de réanalyses
+(compilation de données observées avec un modèle moyenne résolution). Le second
+traitera des simulations idéalisées heute résolution. Mais l'analyse de données fait aussi appel à 
+  du développement de code, de l'interprétation physique, de l'apprentissage de la physique 
+  atmosphérique et du climat.
