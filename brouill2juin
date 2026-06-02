@@ -62,3 +62,72 @@ plt.grid(True, linestyle=':', alpha=0.4)
 
 plt.tight_layout()
 plt.show()
+
+import numpy as np
+import matplotlib.pyplot as plt
+import xarray as xr
+
+# =============================================================================
+# 1. CHARGEMENT DU PROFIL MOYENNÉ 1D (clw)
+# =============================================================================
+data_clw_1D = xr.open_dataset("1D/MESONH_RCE_small300_1D_clw_avg.nc")
+
+# clw_1d a pour dimensions : (time, altitude)
+clw_1d = data_clw_1D['clw'] 
+altitude = clw_1d.altitude.values
+
+# Conversion du temps xarray (timedelta64) en secondes pour dériver
+# On extrait les pas de temps en secondes par rapport à l'origine
+time_seconds = clw_1d.time.astype('float64') / 1e9  
+
+# =============================================================================
+# 2. CALCUL DE LA TENDANCE TEMPORELLE LOCALEs : d(clw)/dt
+# =============================================================================
+# Utilisation de np.gradient pour un calcul propre par différences finies centrées
+# clw_1d.values a la forme (time, altitude), on dérive selon l'axe du temps (axis=0)
+dclw_dt = np.gradient(clw_1d.values, time_seconds, axis=0)
+
+# Conversion en xarray.DataArray pour conserver la structure et faciliter le tracé
+tendance_clw = xr.DataArray(dclw_dt, coords=[clw_1d.time, clw_1d.altitude], dims=['time', 'altitude'])
+
+# =============================================================================
+# 3. VISUALISATION DU BILAN TEMPOREL (DIAGRAMME DE HOVMÖLLER)
+# =============================================================================
+# Conversion du temps en jours pour l'affichage
+temps_jours = time_seconds / (3600 * 24)
+
+plt.figure(figsize=(12, 5))
+
+# Graphique : Tendance temporelle d(clw)/dt
+# Permet de repérer les zones d'activation microphysique/turbulente (production vs destruction)
+cf = plt.contourf(temps_jours, altitude, tendance_clw.T * 1e6, levels=30, cmap='bwr', extend='both')
+cb = plt.colorbar(cf)
+cb.set_label(r'$\frac{\partial \overline{clw}}{\partial t}$ ($\times 10^{-6}$ g/kg/s)', fontsize=11)
+
+plt.xlabel('Temps (jours)', fontsize=12)
+plt.ylabel('Altitude (m)', fontsize=12)
+plt.title('Bilan Temporel 1D : Tendance de l\'Eau Liquide Nuageuse $\partial \overline{clw} / \partial t$', fontsize=13, fontweight='bold')
+plt.grid(True, linestyle=':', alpha=0.5)
+
+plt.tight_layout()
+plt.show()
+
+# =============================================================================
+# 4. PROFIL COMPLÈTEMENT STABILISÉ À L'ÉQUILIBRE
+# =============================================================================
+# À la fin de la simulation (RCE atteint), la tendance doit osciller autour de 0.
+# Vérifions le profil moyen de la tendance sur les 50 derniers pas de temps.
+tendance_equilibre = tendance_clw.isel(time=slice(-50, None)).mean(dim='time')
+
+plt.figure(figsize=(6, 7))
+plt.plot(tendance_equilibre * 1e6, altitude, color='purple', lw=2, label=r'Tendance résiduelle $\frac{\partial \overline{clw}}{\partial t}$')
+plt.axvline(0, color='black', linestyle='--', alpha=0.7)
+
+plt.xlabel(r'Tendance ($\times 10^{-6}$ g/kg/s)', fontsize=11)
+plt.ylabel('Altitude (m)', fontsize=11)
+plt.title('Profil de Tendance à l\'Équilibre RCE', fontsize=12, fontweight='bold')
+plt.grid(True, linestyle='--', alpha=0.5)
+plt.legend()
+
+plt.tight_layout()
+plt.show()
