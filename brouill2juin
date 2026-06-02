@@ -2,81 +2,63 @@ import numpy as np
 import matplotlib.pyplot as plt
 import xarray as xr
 
-# ==========================================
-# 1. CHARGEMENT DES DONNÉES (Exemple Eau Liquide Nuageuse)
-# ==========================================
-# On ouvre les datasets xarray comme initié dans votre notebook
-data_clw = xr.open_dataset("3D/MESONH_RCE_small300_3D_clw.nc")
-data_wa = xr.open_dataset("3D/MESONH_RCE_small300_3D_wa.nc") # Vitesse verticale w
+# =============================================================================
+# 1. CHARGEMENT DES DONNÉES EN 1D (Moyenne Équilibre Radiatif-Convectif)
+# =============================================================================
+# Le fichier contient directement les profils verticaux moyennés au cours du temps
+data_clw_1D = xr.open_dataset("1D/MESONH_RCE_small300_1D_clw_avg.nc")
 
-# Extraction des variables
-clw = data_clw['clw'] # Dimension: (time, altitude, y, x)
-wa = data_wa['wa']    # Dimension: (time, altitude, y, x)
+# Extraction de la variable de l'eau liquide nuageuse 
+# Dimensions attendues du tableau : (time, altitude)
+clw_1d = data_clw_1D['clw']
 
-# ==========================================
-# 2. TRANSITION EN 1D (Moyenne Horizontale RCE)
-# ==========================================
-# En RCE, le profil 1D d'une variable correspond à sa moyenne sur le domaine horizontal (x, y)
-clw_1d = clw.mean(dim=['x', 'y']) # Dimension résultante: (time, altitude)
-wa_1d = wa.mean(dim=['x', 'y'])   # Vitesse verticale moyenne (proche de 0 en RCE)
-
-# ==========================================
-# 3. CALCUL DES FLUCTUATIONS ET FLUX TURBULENTS (Lien avec l'équation)
-# ==========================================
-# Pour faire le lien avec le terme de transport -d(w'clw')/dz :
-# Fluctuation = Valeur locale (3D) - Moyenne horizontale (1D)
-clw_prime = clw - clw_1d
-wa_prime = wa - wa_1d
-
-# Calcul du flux turbulent vertical de l'eau liquide : w'clw'
-flux_turb_3d = wa_prime * clw_prime
-# Moyenne horizontale du flux turbulent
-flux_turb_1d = flux_turb_3d.mean(dim=['x', 'y']) # Dimension: (time, altitude)
-
-# ==========================================
-# 4. VISUALISATION DES PROFILS 1D ET DES FLUX
-# ==========================================
-plt.figure(figsize=(14, 6))
-
-# Graphique 1 : Évolution temporelle du profil vertical d'eau liquide nuageuse
-plt.subplot(1, 2, 1)
-# On prend la moyenne temporelle sur la fin de la simulation (état d'équilibre RCE)
-# Exemple : moyenne sur les 20 derniers pas de temps
+# =============================================================================
+# 2. LIEN AVEC L'ÉQUATION THERMODYNAMIQUE DU RCE 1D
+# =============================================================================
+# Dans l'étude 1D du RCE, la structure macroscopique est stabilisée.
+# Pour analyser l'état stationnaire ou l'équilibre final, on calcule :
+# Le profil vertical moyen stabilisé (Moyenne temporelle sur la fin de la simulation)
+# Ici, on prend par exemple les 20 derniers pas de temps (état d'équilibre)
 clw_equilibrium = clw_1d.isel(time=slice(-20, None)).mean(dim='time')
 
-plt.plot(clw_equilibrium * 1000, clw_1d.altitude, label="Eau liquide nuageuse $\overline{clw}$", color='blue', lw=2)
-plt.xlabel('Contenu en eau nuageuse (g/kg)')
-plt.ylabel('Altitude (m)')
-plt.title('Profil vertical moyen à l\'équilibre RCE')
-plt.grid(True, linestyle='--', alpha=0.7)
-plt.legend()
+# =============================================================================
+# 3. REPRÉSENTATION DU PROFIL VERTICAL MOYEN (ÉQUILIBRE)
+# =============================================================================
+plt.figure(figsize=(6, 7))
 
-# Graphique 2 : Profil du flux turbulent vertical w'clw' ( transport convectif )
-plt.subplot(1, 2, 2)
-flux_equilibrium = flux_turb_1d.isel(time=slice(-20, None)).mean(dim='time')
+# Multiplication par 1000 pour convertir les kg/kg de l'eau nuageuse en g/kg
+plt.plot(clw_equilibrium * 1000, clw_1d.altitude, color='blue', lw=2.5, label=r'Eau liquide nuageuse $\overline{clw}$')
 
-plt.plot(flux_equilibrium, flux_turb_1d.altitude, label="Flux turbulent $\overline{w'clw'}$", color='red', lw=2)
-plt.xlabel('Flux de quantité d\'eau liquide (m.g / s.kg)')
-plt.ylabel('Altitude (m)')
-plt.title('Profil vertical du flux turbulent associé')
-plt.grid(True, linestyle='--', alpha=0.7)
-plt.legend()
+plt.xlabel('Contenu en eau nuageuse (g/kg)', fontsize=12)
+plt.ylabel('Altitude (m)', fontsize=12)
+plt.title('Profil vertical moyen à l\'équilibre RCE 1D', fontsize=13, fontweight='bold')
+plt.grid(True, linestyle='--', alpha=0.6)
+plt.legend(fontsize=11, loc='upper right')
 
 plt.tight_layout()
 plt.show()
 
-# ==========================================
-# 5. HOVMÖLLER DIAGRAM (Évolution Altitude vs Temps)
-# ==========================================
-plt.figure(figsize=(10, 6))
-# Conversion du temps de timedelta64 en jours pour une lecture plus claire
+# =============================================================================
+# 4. DIAGRAMME DE HOVMÖLLER (ÉVOLUTION TEMPORELLE DU PROFIL 1D)
+# =============================================================================
+# Permet de visualiser la formation des couches nuageuses et la stabilisation vers le RCE
+plt.figure(figsize=(11, 6))
+
+# Conversion de l'axe du temps (timedelta64[ns]) en jours pour une lecture claire
+# (Utile si vos données s'étendent sur plusieurs dizaines de jours)
 temps_jours = clw_1d.time.astype('float64') / (1e9 * 3600 * 24)
 
-# Tracer le contour de l'évolution temporelle du profil vertical 1D
-contour = plt.contourf(temps_jours, clw_1d.altitude, clw_1d.T * 1000, cmap='YlGnBu', levels=20)
-cbar = plt.colorbar(contour)
-cbar.set_label('$\overline{clw}$ (g/kg)')
-plt.xlabel('Temps (jours)')
-plt.ylabel('Altitude (m)')
-plt.title('Diagramme de Hovmöller de l\'eau liquide nuageuse en 1D')
+# Génération des contours remplis (Axe X : Temps, Axe Y : Altitude)
+cf = plt.contourf(temps_jours, clw_1d.altitude, clw_1d.T * 1000, levels=30, cmap='Blues')
+
+# Ajout de la barre d'échelle des couleurs
+cb = plt.colorbar(cf)
+cb.set_label('Contenu moyen $\overline{clw}$ (g/kg)', fontsize=11)
+
+plt.xlabel('Temps (jours)', fontsize=12)
+plt.ylabel('Altitude (m)', fontsize=12)
+plt.title('Diagramme de Hovmöller : Évolution du profil 1D (Eau Nuageuse)', fontsize=14, fontweight='bold')
+plt.grid(True, linestyle=':', alpha=0.4)
+
+plt.tight_layout()
 plt.show()
