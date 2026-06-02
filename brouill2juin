@@ -409,3 +409,110 @@ plt.tight_layout()
 plt.show()
 
 print("Analyses terminées avec succès !")
+
+# =============================================================================
+# 1. CHARGEMENT ET PRÉPARATION DES DONNÉES 3D
+# =============================================================================
+# Remplacer les chemins par vos fichiers si nécessaire
+data_ua  = xr.open_dataset("3D/MESONH_RCE_small300_3D_ua.nc")   # Vent zonal u
+data_wa  = xr.open_dataset("3D/MESONH_RCE_small300_3D_wa.nc")   # Vent vertical w
+data_clw = xr.open_dataset("3D/MESONH_RCE_small300_3D_clw.nc")  # Eau liquide nuageuse
+data_cli = xr.open_dataset("3D/MESONH_RCE_small300_3D_cli.nc")  # Glace nuageuse
+
+# Extraction des variables (on prend le premier pas de temps t=0 pour l'exemple)
+u = data_ua['UA'].isel(time=0)
+w = data_wa['WA'].isel(time=0)
+clw = data_clw['CLW'].isel(time=0)
+cli = data_cli['CLI'].isel(time=0)
+
+# Récupération du nom des axes (ex: 'level', 'y', 'x')
+nom_axe_z = u.dims[0]  # Souvent le premier axe après 'time'
+nom_axe_y = u.dims[1]
+nom_axe_x = u.dims[2]
+axe_z = u[nom_axe_z]
+
+# Concocter l'eau totale nuageuse pour détecter la convection condensée
+eau_nuage = clw + cli
+
+# =============================================================================
+# 2. CALCUL DES FLUCTUATIONS TURBULENTES (ANOMALIES)
+# =============================================================================
+# Moyenne horizontale (sur X et Y) pour obtenir l'état moyen vertical
+u_moy = u.mean(dim=[nom_axe_y, nom_axe_x])
+w_moy = w.mean(dim=[nom_axe_y, nom_axe_x])
+
+# Calcul des anomalies turbulentes (Reynolds decomposition : phi' = phi - <phi>)
+u_prime = u - u_moy
+w_prime = w - w_moy
+
+# Flux de quantité de mouvement résolu total
+flux_total_local = u_prime * w_prime
+flux_total_profil = flux_total_local.mean(dim=[nom_axe_y, nom_axe_x])
+
+# =============================================================================
+# 3. MASQUAGE PHYSIQUE : SÉPARATION DES TYPES DE TURBULENCE
+# =============================================================================
+# Seuil pour définir un courant vertical significatif (ex: 0.1 m/s) ou simplement > 0
+seuil_w = 0.05 
+seuil_nuage = 1e-5 # kg/kg
+
+# A. Convection Nuageuse Active (Thermiques saturés / Updrafts nuageux)
+masque_conv_active = (w_prime > seuil_w) & (eau_nuage > seuil_nuage)
+
+# B. Thermiques Secs de Couche Limite (Panaches sous-nuageux / Updrafts secs)
+masque_thermique_sec = (w_prime > seuil_w) & (eau_nuage <= seuil_nuage)
+
+# C. Subsidence Environnementale (Mouvements descendants lents ou compensatoires)
+masque_subsidence = (w_prime < -seuil_w)
+
+# Calcul des flux conditionnels (Moyenne horizontale uniquement là où le masque est vrai)
+flux_conv_active = flux_total_local.where(masque_conv_active).fillna(0).mean(dim=[nom_axe_y, nom_axe_x])
+flux_thermique_sec = flux_total_local.where(masque_thermique_sec).fillna(0).mean(dim=[nom_axe_y, nom_axe_x])
+flux_subsidence = flux_total_local.where(masque_subsidence).fillna(0).mean(dim=[nom_axe_y, nom_axe_x])
+
+# Le reste : petite turbulence isotrope / bruits de fond
+flux_petite_echelle = flux_total_profil - (flux_conv_active + flux_thermique_sec + flux_subsidence)
+
+# =============================================================================
+# 4. CALCUL DES TENDANCES (DIVERGENCE DU FLUX) : - d(u'w')/dz
+# =============================================================================
+# La dérivée par rapport à z donne l'accélération ou le freinage net du vent moyen
+tendance_totale      = - flux_total_profil.differentiate(nom_axe_z)
+tendance_conv        = - flux_conv_active.differentiate(nom_axe_z)
+tendance_sec         = - flux_thermique_sec.differentiate(nom_axe_z)
+tendance_subsidence  = - flux_subsidence.differentiate(nom_axe_z)
+tendance_subgrid     = - flux_petite_echelle.differentiate(nom_axe_z)
+
+# =============================================================================
+# 5. VISUALISATION AVANCÉE EN DEUX PANNEAUX
+# =============================================================================
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7), sharey=True)
+
+# Graphique 1 : Les Profils de Flux Covariant <u'w'>
+ax1.plot(flux_total_profil, axe_z, label='Flux Total $\overline{u\'w\'}$', color='black', linewidth=2.5)
+ax1.plot(flux_thermique_sec, axe_z, label='Thermiques Secs ($w\'>0, q_c=0$)', color='orange', linestyle='--')
+ax1.plot(flux_conv_active, axe_z, label='Convection Nuageuse ($w\'>0, q_c>0$)', color='red', linestyle='--')
+ax1.plot(flux_subsidence, axe_z, label='Subsidence ($w\'<0$)', color='blue', linestyle=':')
+ax1.plot(flux_petite_echelle, axe_z, label='Petite turbulence / Reste', color='grey', alpha=0.7)
+ax1.axvline(0, color='black', alpha=0.3, linestyle='-')
+ax1.set_title("A. Flux vertical de quantité de mouvement ($\overline{u\'w\'}$)", fontsize=11)
+ax1.set_xlabel("Flux ($m^2/s^2$)")
+ax1.set_ylabel(f"Altitude ({nom_axe_z})")
+ax1.grid(True, alpha=0.3)
+ax1.legend(loc='best', fontsize=9)
+
+# Graphique 2 : Les Tendances (Forces de friction communiquées)
+ax2.plot(tendance_totale, axe_z, label='Tendance Totale', color='black', linewidth=2.5)
+ax2.plot(tendance_sec, axe_z, label='Action des Thermiques Secs', color='orange')
+ax2.plot(tendance_conv, axe_z, label='Action de la Convection Nuageuse', color='red')
+ax2.plot(tendance_subsidence, axe_z, label='Action de la Subsidence', color='blue')
+ax2.plot(tendance_subgrid, axe_z, label='Action de la Petite Turbulence', color='grey', alpha=0.7)
+ax2.axvline(0, color='black', alpha=0.3, linestyle='-')
+ax2.set_title("B. Tendances du vent moyen (Force de friction : $-\partial \overline{u\'w\'}/\partial z$)", fontsize=11)
+ax2.set_xlabel("Accélération / Décélération ($m/s^2$)")
+ax2.grid(True, alpha=0.3)
+ax2.legend(loc='best', fontsize=9)
+
+plt.suptitle("Analyse du transport vertical de la friction de surface par les régimes turbulents", fontsize=14, fontweight='bold')
+plt.tight_layout()
+plt.show()
