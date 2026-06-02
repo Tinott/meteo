@@ -131,3 +131,35 @@ plt.legend()
 
 plt.tight_layout()
 plt.show()
+
+# Sélection de la couche la plus proche de 2000 mètres (méthode 'nearest')
+clw_2000m = clw_1d.sel(altitude=2000, method='nearest')
+
+# Récupération de l'altitude exacte sélectionnée pour l'affichage du titre
+altitude_exacte = float(clw_2000m.altitude)
+
+# =============================================================================
+# 2. CONVERSION DE L'AXE DU TEMPS EN JOURS
+# =============================================================================
+# Extraction du temps en nanosecondes, converti en jours pour une lecture fluide
+temps_jours = clw_1d.time.astype('float64') / (1e9 * 3600 * 24)
+
+# =============================================================================
+# 3. TRACÉ DE L'ÉVOLUTION TEMPORELLE (JOUR APRÈS JOUR)
+# =============================================================================
+plt.figure(figsize=(12, 5))
+
+# Multiplication par 1000 pour convertir les kg/kg en g/kg
+plt.plot(temps_jours, clw_2000m.values * 1000, color='blue', lw=1.5, label=f'Altitude : {altitude_exacte:.1f} m')
+
+plt.xlabel('Temps (jours)', fontsize=12)
+plt.ylabel('Contenu en eau nuageuse $\overline{clw}$ (g/kg)', fontsize=12)
+plt.title(f'Évolution temporelle de l\'eau liquide nuageuse moyenne à ~2000m', fontsize=13, fontweight='bold')
+plt.grid(True, linestyle='--', alpha=0.5)
+plt.legend(fontsize=11)
+
+# Ajustement automatique des limites de l'axe X pour couvrir toute la simulation
+plt.xlim(temps_jours.min(), temps_jours.max())
+
+plt.tight_layout()
+plt.show()
