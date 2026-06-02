@@ -308,25 +308,76 @@ plt.show()
 print("Travail terminé ! Analyse les graphiques pour voir l'effet du freinage.")
 
 # =============================================================================
-# 7. CALCUL DE LA DISSIPATION / TENDANCE (DÉPRIVÉE VERTICALE)
+# 7. CALCUL DE LA DISSIPATION / TENDANCE (DÉPRIVÉE VERTICALE DU FLUX)
 # =============================================================================
-print("Calcul des tendances (pertes et gains de quantité de mouvement)...")
+print("7. Calcul des tendances (pertes / gains par dérivation verticale)...")
 
-# Calcul de - d(u'w')/dz pour le flux total et le flux convectif
-# Note : On dérive par rapport à la coordonnée verticale 'nom_axe_z'
+# La force exercée sur le vent moyen est égale à : - d(u'w')/dz
+# On utilise la fonction .differentiate() de xarray par rapport à l'axe vertical
 tendance_u_total = -flux_u_total_final.differentiate(nom_axe_z)
 tendance_u_conv = -flux_u_conv_final.differentiate(nom_axe_z)
 tendance_u_env = -flux_u_env_final.differentiate(nom_axe_z)
 
 # =============================================================================
-# 8. TRACÉ DES TENDANCES
+# 6 & 8. VISUALISATION (GÉNÉRATION DES DEUX GRAPHIQUES)
 # =============================================================================
-plt.figure(figsize=(7, 6))
+print("6 & 8. Génération des figures...")
+
+# --- FIGURE 1 : LES FLUX (Le transport de quantité de mouvement) ---
+fig1, (ax1_f1, ax2_f1) = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+
+# Composante U (Zonale)
+ax1_f1.plot(
+    flux_u_total_final,
+    axe_z,
+    label="Flux Total $\\overline{u'w'}$",
+    color="black",
+    linewidth=2,
+)
+ax1_f1.plot(
+    flux_u_conv_final,
+    axe_z,
+    label="Flux Convectif (Nuages)",
+    color="crimson",
+    linestyle="--",
+)
+ax1_f1.plot(
+    flux_u_env_final,
+    axe_z,
+    label="Flux Environnement (Hors Nuages)",
+    color="royalblue",
+    linestyle=":",
+)
+ax1_f1.axvline(0, color="grey", linestyle="-", alpha=0.5)
+ax1_f1.set_title("Transport vertical de quantité de mouvement (U)")
+ax1_f1.set_xlabel("Flux de Reynolds $\\overline{u'w'}$ ($m^2/s^2$)")
+ax1_f1.set_ylabel(f"Niveau vertical ({nom_axe_z})")
+ax1_f1.grid(True, alpha=0.3)
+ax1_f1.legend()
+
+# Composante V (Méridienne)
+ax2_f1.plot(
+    flux_v_total_final,
+    axe_z,
+    label="Flux Total $\\overline{v'w'}$",
+    color="purple",
+    linewidth=2,
+)
+ax2_f1.axvline(0, color="grey", linestyle="-", alpha=0.5)
+ax2_f1.set_title("Transport vertical de quantité de mouvement (V)")
+ax2_f1.set_xlabel("Flux de Reynolds $\\overline{v'w'}$ ($m^2/s^2$)")
+ax2_f1.grid(True, alpha=0.3)
+ax2_f1.legend()
+
+plt.tight_layout()
+
+# --- FIGURE 2 : LES TENDANCES (La Dissipation / Accélération) ---
+plt.figure(figsize=(8, 6))
 
 plt.plot(
     tendance_u_total,
     axe_z,
-    label="Tendance Totale (Force totale)",
+    label="Tendance Totale (Force nette)",
     color="black",
     linewidth=2,
 )
@@ -340,17 +391,21 @@ plt.plot(
 plt.plot(
     tendance_u_env,
     axe_z,
-    label="Action hors Nuages (Environnement)",
+    label="Action Hors Nuages (Environnement)",
     color="royalblue",
     linestyle=":",
 )
 
 plt.axvline(0, color="grey", linestyle="-", alpha=0.5)
-plt.title("Accélération / Dissipation du vent par la turbulence")
-plt.xlabel("Tendance du vent zonal $\\partial u / \\partial t$ ($m/s^2$)")
+plt.title(
+    "Profil vertical de Dissipation / Accélération du vent\n(Divergence des flux du vent U)"
+)
+plt.xlabel("Tendance du vent $\\partial u / \\partial t$ ($m/s^2$)")
 plt.ylabel(f"Niveau vertical ({nom_axe_z})")
 plt.grid(True, alpha=0.3)
 plt.legend()
 
 plt.tight_layout()
 plt.show()
+
+print("Analyses terminées avec succès !")
