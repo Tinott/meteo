@@ -163,3 +163,146 @@ plt.xlim(temps_jours.min(), temps_jours.max())
 
 plt.tight_layout()
 plt.show()
+
+import matplotlib.pyplot as plt
+import numpy as np
+import xarray as xr
+
+# =============================================================================
+# 1. CHARGEMENT DES DONNÉES (À adapter selon tes chemins exacts)
+# =============================================================================
+print("Chargement des fichiers NetCDF...")
+
+# Chargement des vents (U: zonal, V: méridien, W: vertical)
+ds_ua = xr.open_dataset("3D/MESONH_RCE_small300_3D_ua.nc")
+ds_va = xr.open_dataset("3D/MESONH_RCE_small300_3D_va.nc")
+ds_wa = xr.open_dataset("3D/MESONH_RCE_small300_3D_wa.nc")
+
+# Chargement de l'eau liquide nuageuse pour le masque de convection
+ds_clw = xr.open_dataset("3D/MESONH_RCE_small300_3D_clw.nc")
+
+# Extraction des DataArrays spécifiques (on extrait la variable du Dataset)
+# Note : Ajuste le nom entre crochets si la variable s'appelle autrement dans ton fichier
+u = ds_ua["ua"]
+v = ds_va["va"]
+w = ds_wa["wa"]
+clw = ds_clw["clw"]
+
+print("Données chargées avec succès.")
+print(f"Forme des fichiers : {u.shape} (Temps, Altitude, Y, X)")
+
+# =============================================================================
+# 2. DÉCOMPOSITION DE REYNOLDS (Calcul des moyennes et des anomalies)
+# =============================================================================
+print("Calcul des moyennes horizontales et des anomalies (primes)...")
+
+# Étape A: Calcul de la moyenne horizontale sur les axes 'x' et 'y'
+# L'état moyen dépend uniquement du temps (time) et de la hauteur (level/altitude)
+u_mean = u.mean(dim=["x", "y"])
+v_mean = v.mean(dim=["x", "y"])
+w_mean = w.mean(dim=["x", "y"])
+
+# Étape B: Calcul des fluctuations turbulentes (Anomalies = Valeur - Moyenne)
+u_prime = u - u_mean
+v_prime = v - v_mean
+w_prime = w - w_mean
+
+# =============================================================================
+# 3. CALCUL DES FLUX TURBULENTS DE QUANTITÉ DE MOUVEMENT
+# =============================================================================
+print("Calcul des flux de Reynolds...")
+
+# Flux instantanés en chaque point de la grille 3D
+flux_u_3d = u_prime * w_prime
+flux_v_3d = v_prime * w_prime
+
+# Flux total moyen (moyenne horizontale)
+# On obtient un profil vertical qui évolue au cours du temps
+flux_u_total_profile = flux_u_3d.mean(dim=["x", "y"])
+flux_v_total_profile = flux_v_3d.mean(dim=["x", "y"])
+
+# =============================================================================
+# 4. SÉPARATION : CONVECTION (NUAGES) VS ENVIRONNEMENT (HORS NUAGES)
+# =============================================================================
+print("Application des masques (Nuages vs Environnement)...")
+
+# On définit un seuil d'eau liquide pour détecter le "nuage" (ex: 1e-5 kg/kg ou simplement > 0)
+seuil_nuage = 1e-6
+masque_nuage = clw > seuil_nuage
+
+# Séparation du flux vertical de u' (flux_u_3d) selon le masque
+# .where(condition) garde la valeur si vrai, et met NaN (ignoré dans la moyenne) si faux
+flux_u_convectif = flux_u_3d.where(masque_nuage).mean(dim=["x", "y"])
+flux_u_environnement = flux_u_3d.where(~masque_nuage).mean(
+    dim=["x", "y"]
+)  # `~` signifie "NON"
+
+# =============================================================================
+# 5. MOYENNE TEMPORELLE ET EXTRACTION DE L'ALTITUDE
+# =============================================================================
+print("Moyenne temporelle finale...")
+
+# On fait la moyenne sur tout le contenu temporel pour avoir le comportement stationnaire
+flux_u_total_final = flux_u_total_profile.mean(dim="time")
+flux_u_conv_final = flux_u_convectif.mean(dim="time")
+flux_u_env_final = flux_u_environnement.mean(dim="time")
+flux_v_total_final = flux_v_total_profile.mean(dim="time")
+
+# Récupération de l'axe vertical (remplace 'level' par le nom exact de ta coordonnée verticale, ex: 'z')
+# Si ton fichier contient une variable 'altitude', utilise-la pour l'affichage réel en mètres
+axe_z = u.coords["level"]
+
+# =============================================================================
+# 6. VISUALISATION DES RÉSULTATS (TRACÉ DES PROFILS VERTICAUX)
+# =============================================================================
+print("Génération des graphiques...")
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+
+# Graphique 1 : Profils de flux pour la composante U (Zonale)
+ax1.plot(
+    flux_u_total_final,
+    axe_z,
+    label="Flux Total $\\overline{u'w'}$",
+    color="black",
+    linewidth=2,
+)
+ax1.plot(
+    flux_u_conv_final,
+    axe_z,
+    label="Flux dans les Nuages (Convectif)",
+    color="crimson",
+    linestyle="--",
+)
+ax1.plot(
+    flux_u_env_final,
+    axe_z,
+    label="Flux hors Nuages (Environnement)",
+    color="royalblue",
+    linestyle=":",
+)
+ax1.axvline(0, color="grey", linestyle="-", alpha=0.5)
+ax1.set_title("Dissipation de la quantité de mouvement (Axe U)")
+ax1.set_xlabel("Flux de Reynolds $\\overline{u'w'}$ ($m^2/s^2$)")
+ax1.set_ylabel("Niveau vertical (Altitude / Index)")
+ax1.grid(True, alpha=0.3)
+ax1.legend()
+
+# Graphique 2 : Profil de flux pour la composante V (Méridienne)
+ax2.plot(
+    flux_v_total_final,
+    axe_z,
+    label="Flux Total $\\overline{v'w'}$",
+    color="purple",
+    linewidth=2,
+)
+ax2.axvline(0, color="grey", linestyle="-", alpha=0.5)
+ax2.set_title("Dissipation de la quantité de mouvement (Axe V)")
+ax2.set_xlabel("Flux de Reynolds $\\overline{v'w'}$ ($m^2/s^2$)")
+ax2.grid(True, alpha=0.3)
+ax2.legend()
+
+plt.tight_layout()
+plt.show()
+
+print("Travail terminé ! Analyse les graphiques pour voir l'effet du freinage.")
