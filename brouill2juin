@@ -104,3 +104,72 @@ print("--- RAPPORT D'ÉQUILIBRE ---")
 print(f"Intégrale verticale de la friction : {np.trapz(tendance_friction, axe_z):.6f} m/s²")
 print("Si le vent moyen (Graphique A) est stable et non nul, la courbe pointillée rouge du Graphique B")
 print("représente exactement la force de rappel invisible que le modèle applique à chaque niveau.")
+
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+# 1. Définition de la période stationnaire
+# On isole la fin de la simulation stabilisée (ex: les 20 derniers pas de temps)
+indices_stationnaires = slice(-20, None)
+
+# 2. Extraction de l'altitude et calcul de rho0 (masse volumique de base)
+axe_z = data_ua['altitude'].values
+
+# Pour calculer rho0, on utilise la pression (pa) et la température (ta) de base
+# R_d = 287.05 J/kg/K (constante des gaz parfaits pour l'air sec)
+R_d = 287.05
+T_moyenne = data_ta['ta'].isel(time=indices_stationnaires).mean(dim=['time', 'x', 'y'])
+P_moyenne = data_pa['pa'].isel(time=indices_stationnaires).mean(dim=['time', 'x', 'y'])
+rho0 = P_moyenne / (R_d * T_moyenne)
+
+# 3. Calcul des profils de vent horizontal moyen
+u_moyen = data_ua['ua'].isel(time=indices_stationnaires).mean(dim=['time', 'x', 'y'])
+v_moyen = data_va['va'].isel(time=indices_stationnaires).mean(dim=['time', 'x', 'y'])
+
+# 4. Calcul de la divergence du tenseur de Reynolds (avec intégration manuelle de rho0)
+# Note : Si vos variables de tendances ('tendance_sec', etc.) sont déjà en m/s², 
+# elles intègrent déjà la division par rho0. 
+# Si vous repartez des flux cinématiques uw_turbulent, le calcul correct est :
+# contrainte_friction = - (1.0 / rho0) * np.gradient(rho0 * uw_flux_moyen, axe_z)
+
+# En utilisant vos variables globales existantes :
+tendance_friction = (tendance_sec + tendance_conv + tendance_subsidence + tendance_subgrid)
+
+# 5. PARAMÈTRES DU FORÇAGE REEL DU MODÈLE (À AJUSTER SELON VOTRE CONFIGURATION RCE)
+# Modifiez ces valeurs selon le fichier de configuration (.NAM) de votre simulation Meso-NH
+f_coriolis = 0.0          # ex: 1e-4 s^-1 si simulation hors de l'équateur
+u_prescrit = 0.0          # Vent cible ou vent géostrophique ug (souvent 0 en RCE standard)
+v_g = 0.0                 # Vent géostrophique vg
+tau_nudging = 86400.0     # Temps de rappel en secondes (ex: 1 jour = 86400s)
+
+# CALCUL DE TOUTE PIÈCE DU RAPPEL THÉORIQUE
+# Si Nudging standard :
+rappel_theorique_u = - (u_moyen - u_prescrit) / tau_nudging
+
+# Si Forçage Géostrophique pur (Coriolis) :
+# rappel_theorique_u = f_coriolis * (v_moyen - v_g)
+
+
+# 6. GRAPHIQUE DE VÉRIFICATION
+fig, ax = plt.subplots(figsize=(8, 8))
+
+# On trace la friction calculée
+ax.plot(tendance_friction, axe_z, label=r'Divergence de la friction $\left(-\frac{1}{\rho_0}\frac{\partial \tau}{\partial z}\right)$', color='red', linewidth=2)
+
+# On trace le rappel calculé de toute pièce
+ax.plot(rappel_theorique_u, axe_z, label='Force de Rappel Théorique calculée ($-\Delta U / \\tau$)', color='blue', linestyle='--', linewidth=2)
+
+# On ajoute la somme des deux pour vérifier graphiquement si ça donne zéro
+ax.plot(tendance_friction + rappel_theorique_u, axe_z, label='Résidu (Friction + Rappel)', color='black', alpha=0.6, linestyle=':')
+
+ax.axvline(0, color='black', alpha=0.3)
+ax.set_title("Vérification Graphique de l'Équilibre Stationnaire", fontsize=12, fontweight='bold')
+ax.set_xlabel("Tendances de l'accélération ($m/s^2$)")
+ax.set_ylabel("Altitude (m)")
+ax.grid(True, alpha=0.3)
+ax.legend(loc='best')
+
+plt.tight_layout()
+plt.show()
