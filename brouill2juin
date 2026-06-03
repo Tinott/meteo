@@ -410,3 +410,58 @@ ax2_t.legend()
 plt.suptitle("Évolution des profils verticaux de flux de Reynolds (Tranches de temps)", fontsize=14, y=1.03)
 plt.tight_layout()
 plt.show()
+
+
+
+
+
+# =============================================================================
+# 4. TRACÉ DES PROFILS DE FLUX SUR DIFFÉRENTES TRANCHES DE TEMPS
+# =============================================================================
+print("Génération des graphiques de profils de flux par tranches de temps...")
+
+# 1. Extraction de la coordonnée verticale (Altitude de taille 74)
+# On utilise directement data_ua qui contient la coordonnée "altitude"
+axe_z = data_ua["altitude"].values  
+
+# 2. Choix des indices temporels à afficher (répartis sur les 100 pas de temps)
+num_times = flux_u_total_profile.time.size # donne 100
+time_indices = np.linspace(0, num_times - 1, 5, dtype=int) # 5 tranches de temps
+
+# 3. Création de la figure (2 sous-graphiques côte à côte)
+fig_tranches, (ax1_t, ax2_t) = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+
+# Boucle sur les indices de temps sélectionnés pour superposer les courbes
+for t_idx in time_indices:
+    # Récupération de la valeur réelle du temps pour la légende
+    time_val = flux_u_total_profile.time.values[t_idx]
+    time_label = f"T = {str(time_val)[:16]}" 
+    
+    # EXTRACTION SÉCURISÉE : 
+    # flux_u_total_profile est déjà de taille (100, 74) suite aux moyennes horizontales.
+    # En faisant .isel(time=t_idx).values, on extrait un vecteur NumPy pur de taille 74.
+    prof_u = flux_u_total_profile.isel(time=t_idx).values
+    prof_v = flux_v_total_profile.isel(time=t_idx).values
+    
+    # Tracé des flux : prof_u (74) et axe_z (74) ont la même dimension, aucune erreur possible.
+    ax1_t.plot(prof_u, axe_z, label=time_label, linewidth=2)
+    ax2_t.plot(prof_v, axe_z, label=time_label, linewidth=2)
+
+# --- Configuration du graphique 1 (u'w' par tranches) ---
+ax1_t.axvline(0, color='grey', linestyle='-', alpha=0.5)
+ax1_t.set_title("Flux vertical de quantité de mouvement zonal $\\overline{u'w'}$")
+ax1_t.set_xlabel("Flux ($m^2/s^2$)")
+ax1_t.set_ylabel("Niveau vertical (Altitude en mètres)")
+ax1_t.grid(True, alpha=0.3)
+ax1_t.legend()
+
+# --- Configuration du graphique 2 (v'w' par tranches) ---
+ax2_t.axvline(0, color='grey', linestyle='-', alpha=0.5)
+ax2_t.set_title("Flux vertical de quantité de mouvement méridien $\\overline{v'w'}$")
+ax2_t.set_xlabel("Flux ($m^2/s^2$)")
+ax2_t.grid(True, alpha=0.3)
+ax2_t.legend()
+
+plt.suptitle("Évolution des profils verticaux de flux de Reynolds (Tranches de temps)", fontsize=14, y=1.03)
+plt.tight_layout()
+plt.show()
