@@ -237,3 +237,68 @@ ax2.legend()
 plt.tight_layout()
 plt.suptitle("Évolution des profils verticaux de flux de Reynolds", fontsize=14, y=1.03)
 plt.show()
+
+
+# =============================================================================
+# 4. TRACÉ DES PROFILS DE FLUX SUR DIFFÉRENTES TRANCHES DE TEMPS
+# =============================================================================
+print("Génération des graphiques de profils de flux...")
+
+# 1. Extraction de la coordonnée verticale (altitude/level)
+# On récupère le nom de la dimension d'altitude (généralement la 2ème dimension, index 1)
+alt_dim = u.dims[1]
+z = u[alt_dim].values 
+
+# 2. Choix des indices temporels à afficher 
+# Correction : On utilise .size au lieu de len() pour gérer le cas où il n'y a qu'un pas de temps
+num_times = u.time.size
+
+if num_times > 1:
+    # On sélectionne 5 tranches de temps régulièrement réparties
+    num_plots = min(5, num_times)
+    time_indices = np.linspace(0, num_times - 1, num_plots, dtype=int)
+else:
+    # S'il n'y a qu'un seul pas de temps disponible
+    time_indices = [0]
+
+# 3. Création de la figure (2 sous-graphiques côte à côte)
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+
+# Boucle sur les indices de temps sélectionnés pour tracer les courbes
+for t_idx in time_indices:
+    # Récupération de la valeur réelle du temps pour la légende
+    time_val = u.time.values[t_idx] if num_times > 1 else u.time.values.item()
+    # Si le temps est en datetime64, on peut le formater proprement, sinon on affiche brut
+    time_label = f"T = {str(time_val)[:16]}" 
+    
+    # Extraction des profils verticaux pour l'instant t_idx
+    # Correction dimensionnelle : On applique .mean(dim=['x', 'y']) pour projeter la grille 
+    # horizontale (100x100) en une moyenne spatiale et obtenir un vecteur aligné avec z (74)
+    prof_u = flux_u_total_profile.isel(time=t_idx).mean(dim=['x', 'y'])
+    prof_v = flux_v_total_profile.isel(time=t_idx).mean(dim=['x', 'y'])
+    
+    # Tracé du flux zonal u'w'
+    ax1.plot(prof_u, z, label=time_label, linewidth=2)
+    
+    # Tracé du flux méridien v'w'
+    ax2.plot(prof_v, z, label=time_label, linewidth=2)
+
+# --- Configuration du graphique 1 (u'w') ---
+ax1.axvline(0, color='black', linestyle='--', linewidth=0.8) # Ligne zéro de référence
+ax1.set_title("Flux vertical de quantité de mouvement zonal $\\overline{u'w'}$", fontsize=11)
+ax1.set_xlabel("Flux ($m^2/s^2$)", fontsize=10)
+ax1.set_ylabel(f"Altitude ({alt_dim})", fontsize=10)
+ax1.grid(True, linestyle=':', alpha=0.6)
+ax1.legend()
+
+# --- Configuration du graphique 2 (v'w') ---
+ax2.axvline(0, color='black', linestyle='--', linewidth=0.8) # Ligne zéro de référence
+ax2.set_title("Flux vertical de quantité de mouvement méridien $\\overline{v'w'}$", fontsize=11)
+ax2.set_xlabel("Flux ($m^2/s^2$)", fontsize=10)
+ax2.grid(True, linestyle=':', alpha=0.6)
+ax2.legend()
+
+# Ajustement automatique des marges et affichage
+plt.tight_layout()
+plt.suptitle("Évolution des profils verticaux de flux de Reynolds", fontsize=14, y=1.03)
+plt.show()
