@@ -302,3 +302,58 @@ ax2.legend()
 plt.tight_layout()
 plt.suptitle("Évolution des profils verticaux de flux de Reynolds", fontsize=14, y=1.03)
 plt.show()
+
+
+
+# =============================================================================
+# 4. TRACÉ DES PROFILS DE FLUX SUR DIFFÉRENTES TRANCHES DE TEMPS
+# =============================================================================
+print("Génération des graphiques de profils de flux...")
+
+# 1. Extraction de la coordonnée verticale (74 niveaux)
+alt_dim = u.dims[1]
+z = u[alt_dim].values 
+
+# 2. Choix des indices temporels à afficher (sur les 100 pas de temps)
+# On récupère la taille de la dimension temps directement depuis le flux
+num_times = flux_u_total_profile.time.size
+time_indices = np.linspace(0, num_times - 1, 5, dtype=int)
+
+# 3. Création de la figure (2 sous-graphiques côte à côte)
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+
+# Boucle sur les 5 tranches de temps sélectionnées
+for t_idx in time_indices:
+    # Récupération du label de temps
+    time_val = flux_u_total_profile.time.values[t_idx]
+    time_label = f"T = {str(time_val)[:16]}" 
+    
+    # Extraction du profil vertical pour l'instant t_idx
+    # .squeeze() élimine les dimensions "fantômes" de taille 1 s'il y en a
+    prof_u = flux_u_total_profile.isel(time=t_idx).squeeze().values
+    prof_v = flux_v_total_profile.isel(time=t_idx).squeeze().values
+    
+    # Sécurité : Si prof_u et z sont inversés, matplotlib va râler. 
+    # On s'assure que prof_u et z ont exactement la même forme.
+    ax1.plot(prof_u, z, label=time_label, linewidth=2)
+    ax2.plot(prof_v, z, label=time_label, linewidth=2)
+
+# --- Configuration du graphique 1 (u'w') ---
+ax1.axvline(0, color='black', linestyle='--', linewidth=0.8)
+ax1.set_title("Flux vertical de quantité de mouvement zonal $\\overline{u'w'}$", fontsize=11)
+ax1.set_xlabel("Flux ($m^2/s^2$)", fontsize=10)
+ax1.set_ylabel(f"Altitude ({alt_dim})", fontsize=10)
+ax1.grid(True, linestyle=':', alpha=0.6)
+ax1.legend()
+
+# --- Configuration du graphique 2 (v'w') ---
+ax2.axvline(0, color='black', linestyle='--', linewidth=0.8)
+ax2.set_title("Flux vertical de quantité de mouvement méridien $\\overline{v'w'}$", fontsize=11)
+ax2.set_xlabel("Flux ($m^2/s^2$)", fontsize=10)
+ax2.grid(True, linestyle=':', alpha=0.6)
+ax2.legend()
+
+# Ajustement automatique des marges et affichage
+plt.tight_layout()
+plt.suptitle("Évolution des profils verticaux de flux de Reynolds", fontsize=14, y=1.03)
+plt.show()
