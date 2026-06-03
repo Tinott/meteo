@@ -42,3 +42,65 @@ plt.grid(True, alpha=0.3)
 plt.legend(loc='best')
 plt.tight_layout()
 plt.show()
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+# 1. Sélection de la zone stationnaire (les 20 derniers pas de temps)
+indices_stationnaires = slice(-20, None)
+
+# 2. Calcul du vent moyen horizontal stationnaire
+u_moyen = data_ua['ua'].isel(time=indices_stationnaires).mean(dim=['time', 'x', 'y'])
+v_moyen = data_va['va'].isel(time=indices_stationnaires).mean(dim=['time', 'x', 'y'])
+axe_z = data_ua['altitude'].values
+
+# 3. Calcul de la tendance de friction (Divergence du tenseur de Reynolds)
+# Remplacez 'tendance_totale' par la variable exacte de votre fichier contenant le frottement turbulent
+# Si vous devez appliquer rho0 manuellement sur un flux cinématique 'uw' :
+# rho0 = data_th['rho0'].isel(time=indices_stationnaires).mean(dim=['time', 'x', 'y'])
+# tendance_friction = - (1 / rho0) * np.gradient(rho0 * uw_flux, axe_z)
+
+# Ici, on utilise la somme des tendances turbulentes calculées dans votre cellule précédente
+# (Sec + Convection + Subsidence + Subgrid d'après votre script)
+tendance_friction = (tendance_sec + tendance_conv + tendance_subsidence + tendance_subgrid)
+
+# 4. Estimation du terme de Rappel (Nudging) sous l'hypothèse d'équilibre stationnaire
+# À l'état stationnaire : dU/dt = 0 => Tendance_Friction + Tendance_Rappel = 0
+# Donc : Tendance_Rappel_Theorique = - Tendance_Friction
+tendance_rappel_theorique = - tendance_friction
+
+# 5. Création du graphique de comparaison
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7), sharey=True)
+
+# --- Graphique 1 : Profils de Vent Moyen ---
+ax1.plot(u_moyen, axe_z, label=r'Vent moyen $\overline{u}$', color='blue', linewidth=2)
+ax1.plot(v_moyen, axe_z, label=r'Vent moyen $\overline{v}$', color='green', linewidth=2)
+ax1.axvline(0, color='black', linestyle=':', alpha=0.5)
+ax1.set_title("A. Profils des Vents Moyens\nà l'État Stationnaire", fontsize=12, fontweight='bold')
+ax1.set_xlabel("Vitesse du vent (m/s)")
+ax1.set_ylabel("Altitude (m)")
+ax1.grid(True, alpha=0.3)
+ax1.legend(loc='best')
+
+# --- Graphique 2 : Équilibre des Forces (Navier-Stokes) ---
+ax2.plot(tendance_friction, axe_z, label=r'Divergence du Tenseur Frictional $\left(-\frac{1}{\rho_0}\frac{\partial \tau}{\partial z}\right)$', color='red', linewidth=2)
+ax2.plot(tendance_rappel_theorique, axe_z, label='Terme de Rappel Reconstruit (-Friction)', color='darkred', linestyle='--', linewidth=2)
+
+# Si vous disposez de la vraie force de rappel du modèle (ex: Forcing Géostrophique ou Nudging) :
+# ax2.plot(tendance_nudging_modele, axe_z, label='Rappel effectif du modèle', color='magenta')
+
+ax2.axvline(0, color='black', linestyle=':', alpha=0.5)
+ax2.set_title("B. Équilibre Stationnaire de Navier-Stokes\n(Friction vs Force de Rappel)", fontsize=12, fontweight='bold')
+ax2.set_xlabel("Accélération / Décélération ($m/s^2$)")
+ax2.grid(True, alpha=0.3)
+ax2.legend(loc='best', fontsize=9)
+
+plt.suptitle("Validation de l'équilibre dynamique dans la simulation RCE", fontsize=14, fontweight='bold', y=0.98)
+plt.tight_layout()
+plt.show()
+
+# 6. Diagnostic imprimé
+print("--- RAPPORT D'ÉQUILIBRE ---")
+print(f"Intégrale verticale de la friction : {np.trapz(tendance_friction, axe_z):.6f} m/s²")
+print("Si le vent moyen (Graphique A) est stable et non nul, la courbe pointillée rouge du Graphique B")
+print("représente exactement la force de rappel invisible que le modèle applique à chaque niveau.")
