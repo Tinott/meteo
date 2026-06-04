@@ -1,35 +1,33 @@
-# Ajuster PRW_SEUIL selon le creux de la distribution observée au §3
-PRW_SEUIL = float(np.median(prw_flat))
-print(f'Seuil : {PRW_SEUIL:.1f} kg/m²')
+def tendance(flux_profil):
+    """Force de Reynolds : -1/rho0 · d(rho0 <phi'w'>) / dz"""
+    return -np.gradient(flux_profil, alt) / rho0
 
-mh = (prw_mean.values > PRW_SEUIL)   # bool (y, x)
-ms = ~mh
+tend_u_glob = tendance(flux_uw)
+tend_v_glob = tendance(flux_vw)
 
-print(f'Humide : {mh.mean()*100:.1f}%   Sec : {ms.mean()*100:.1f}%')
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7), sharey=True)
 
-# --- Carte sec / humide ---
-fig, ax = plt.subplots(figsize=(8, 5))
-cmap_sh = mcolors.ListedColormap(['#f5deb3', '#1a6faf'])
-im = ax.pcolormesh(mh.astype(int), cmap=cmap_sh, vmin=0, vmax=1)
-cbar = fig.colorbar(im, ax=ax, ticks=[0.25, 0.75])
-cbar.ax.set_yticklabels(['Sec', 'Humide'])
-ax.set_title(f'Carte sec / humide (seuil = {PRW_SEUIL:.1f} kg/m²)', fontweight='bold')
-ax.set_xlabel('x')
-ax.set_ylabel('y')
-plt.tight_layout()
-plt.show()
+ax1.plot(flux_uw, alt, color='royalblue', lw=2, label=r"$\rho_0\overline{u'w'}$")
+ax1.plot(flux_vw, alt, color='seagreen',  lw=2, linestyle='--', label=r"$\rho_0\overline{v'w'}$")
+ax1.axvline(0, color='grey', alpha=0.5)
+ax1.set_xlabel('Flux rho0 <phi w>  (kg m-1 s-2)')
+ax1.set_ylabel('Altitude (m)')
+ax1.set_title('A. Flux vertical de QdM', fontweight='bold')
+ax1.legend()
+ax1.grid(True, alpha=0.3)
 
-# --- Distribution avec seuil ---
-fig, ax = plt.subplots(figsize=(8, 4))
-ax.hist(prw_flat, bins=80, color='steelblue', edgecolor='white', lw=0.3)
-ax.axvline(PRW_SEUIL, color='black', lw=2, linestyle='--',
-           label=f'Seuil = {PRW_SEUIL:.1f} kg/m²')
-ax.axvspan(0,                    PRW_SEUIL,        alpha=0.1, color='saddlebrown', label='Sec')
-ax.axvspan(PRW_SEUIL, prw_flat.max() + 1,          alpha=0.1, color='royalblue',   label='Humide')
-ax.set_xlabel('PRW (kg/m²)')
-ax.set_ylabel('Colonnes')
-ax.set_title('Distribution avec seuil', fontweight='bold')
-ax.legend()
-ax.grid(True, alpha=0.3)
+titre_b = (
+    "B. Tendance du vent par la turbulence\n"
+    r"$-\frac{1}{\rho_0}\frac{\partial}{\partial z}(\rho_0\overline{u'w'})$"
+)
+ax2.plot(tend_u_glob * 1e5, alt, color='royalblue', lw=2, label='Tendance u')
+ax2.plot(tend_v_glob * 1e5, alt, color='seagreen',  lw=2, linestyle='--', label='Tendance v')
+ax2.axvline(0, color='grey', alpha=0.5)
+ax2.set_xlabel('Tendance (x1e-5 m/s2)')
+ax2.set_title(titre_b, fontweight='bold')
+ax2.legend()
+ax2.grid(True, alpha=0.3)
+
+plt.suptitle('Bilan global de QdM — état stationnaire', fontsize=13, fontweight='bold')
 plt.tight_layout()
 plt.show()
