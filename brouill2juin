@@ -30,3 +30,18 @@ for iz in [0, 10, 30, 73]:
     ax.set_ylabel('y')
     plt.tight_layout()
     plt.show()
+
+
+
+
+
+En dessous de la tropopause — les flux s'annulent
+Dans la troposphère, la convection génère des ondes de gravité qui se propagent vers le haut. Ces ondes transportent du flux de QdM u′w′. Mais la troposphère est un milieu qui favorise les allers-retours : une onde monte, atteint un niveau où elle est réfléchie (par exemple là où sa fréquence dépasse la fréquence de Brunt-Väisälä locale), redescend, remonte, etc. Au bout d'un moment la moyenne temporelle de u′w′ s'annule parce que l'onde transporte autant vers le haut que vers le bas. C'est ça l'instabilité dont on t'a parlé — plus précisément c'est la résonance des ondes dans la cavité troposphérique.
+
+À la tropopause — un filtre
+La tropopause est une barrière dynamique forte : la stabilité statique augmente brutalement (on passe de la troposphère convective à la stratosphère très stable). Les ondes qui n'ont pas assez d'énergie pour franchir cette barrière sont réfléchies vers le bas et continuent leurs allers-retours dans la troposphère — leur contribution nette à u′w′ reste nulle.
+Seules les ondes avec suffisamment d'énergie percent la tropopause et se propagent vers le haut en stratosphère. Celles-là ne reviennent jamais — il n'y a plus de réflexion pour les renvoyer vers le bas. Leur flux u′w′ est donc unilatéral et non compensé.
+
+Ce qui amène le vent non nul en haut
+C'est là la question clé. Les ondes qui ont percé la tropopause transportent du flux u′w′ vers le haut, et quand elles déferlent (comme une vague sur une plage) à une certaine altitude en stratosphère, elles déposent leur QdM dans le vent moyen. Le déferlement se produit quand l'amplitude de l'onde devient trop grande par rapport à la densité locale — or la densité diminue avec l'altitude, donc une onde d'amplitude constante va inevitablement déferler à un moment.
+Ce dépôt de QdM par déferlement d'ondes s'appelle le forçage d'Eliassen-Palm et c'est précisément ce qui accélère ou décélère le vent moyen en stratosphère. Le vent que tu observes à iz=73 est le résultat de l'accumulation de ces dépôts au cours de la simulation.
