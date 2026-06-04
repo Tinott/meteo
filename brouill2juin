@@ -1,503 +1,80 @@
-### Analyse du Vent Moyen Horizontal à l'État Stationnaire
+# ======================================================================
+# PRW — visualisations empilées
+# ======================================================================
 
-# On sélectionne les pas de temps correspondant à l'état stationnaire (ex: les 20 derniers moments)
-# Vos données ont 100 moments (de 75 à 100 jours d'après le print), la fin est stabilisée.
-indices_stationnaires = slice(-20, None) 
-
-# 1. Calcul des profils de vent moyen horizontal (moyenne sur X, Y et sur le Temps stationnaire)
-u_moyen_vertical = data_ua['ua'].isel(time=indices_stationnaires).mean(dim=['time', 'x', 'y'])
-v_moyen_vertical = data_va['va'].isel(time=indices_stationnaires).mean(dim=['time', 'x', 'y'])
-
-# Calcul du module du vent horizontal moyen
-vitesse_horizontale_moyenne = np.sqrt(u_moyen_vertical**2 + v_moyen_vertical**2)
-
-# Altitude (axe Z)
-altitude = data_ua['altitude'].values
-
-# 2. Seuil de tolérance numérique pour tester si le vent est "non nul"
-seuil_zero = 1e-2 # m/s
-
-vitesse_max = vitesse_horizontale_moyenne.max().values
-print(f"Vitesse maximale du vent moyen horizontal détectée : {vitesse_max:.4f} m/s")
-
-if vitesse_max > seuil_zero:
-    print(" CONCLUSION : Il existe un vent moyen horizontal NON NUL à l'état stationnaire.")
-    print("   Cela implique l'existence d'un vent de rappel (prescrit/nudging) dans les simulations RCE")
-    print("   qui équilibre la divergence des flux de friction (tenseur de Reynolds/tau).")
-else:
-    print(" CONCLUSION : Le vent moyen horizontal est NUL (aux fluctuations numériques près).")
-    print("   Il n'y a pas de vent de rappel horizontal imposé à grande échelle.")
-
-# 3. Visualisation du profil vertical du vent moyen
-plt.figure(figsize=(6, 8))
-plt.plot(u_moyen_vertical, altitude, label=r'Composante $\overline{u}$', color='blue', linewidth=2)
-plt.plot(v_moyen_vertical, altitude, label=r'Composante $\overline{v}$', color='green', linewidth=2)
-plt.plot(vitesse_horizontale_moyenne, altitude, label='Module du vent horizontal', color='black', linestyle='--', linewidth=1.5)
-
-plt.axvline(0, color='red', alpha=0.5, linestyle=':')
-plt.title("Profil vertical du vent horizontal moyen\nà l'état stationnaire", fontsize=12, fontweight='bold')
-plt.xlabel("Vitesse du vent (m/s)")
-plt.ylabel("Altitude (m)")
-plt.grid(True, alpha=0.3)
-plt.legend(loc='best')
+# --- 1. Carte 2D PRW moyenne ---
+fig, ax = plt.subplots(figsize=(8, 5))
+im = ax.pcolormesh(prw_mean.values, cmap='Blues', vmin=0)
+fig.colorbar(im, ax=ax, label='PRW (kg/m²)')
+ax.set_title('Carte PRW moyenne — état stationnaire', fontweight='bold')
+ax.set_xlabel('x')
+ax.set_ylabel('y')
+# Pas de set_aspect('equal') : x et y n'ont pas la même résolution/dimension
 plt.tight_layout()
 plt.show()
 
-import numpy as np
-import matplotlib.pyplot as plt
-
-# 1. Sélection de la zone stationnaire (les 20 derniers pas de temps)
-indices_stationnaires = slice(-20, None)
-
-# 2. Calcul du vent moyen horizontal stationnaire
-u_moyen = data_ua['ua'].isel(time=indices_stationnaires).mean(dim=['time', 'x', 'y'])
-v_moyen = data_va['va'].isel(time=indices_stationnaires).mean(dim=['time', 'x', 'y'])
-axe_z = data_ua['altitude'].values
-
-# 3. Calcul de la tendance de friction (Divergence du tenseur de Reynolds)
-# Remplacez 'tendance_totale' par la variable exacte de votre fichier contenant le frottement turbulent
-# Si vous devez appliquer rho0 manuellement sur un flux cinématique 'uw' :
-# rho0 = data_th['rho0'].isel(time=indices_stationnaires).mean(dim=['time', 'x', 'y'])
-# tendance_friction = - (1 / rho0) * np.gradient(rho0 * uw_flux, axe_z)
-
-# Ici, on utilise la somme des tendances turbulentes calculées dans votre cellule précédente
-# (Sec + Convection + Subsidence + Subgrid d'après votre script)
-tendance_friction = (tendance_sec + tendance_conv + tendance_subsidence + tendance_subgrid)
-
-# 4. Estimation du terme de Rappel (Nudging) sous l'hypothèse d'équilibre stationnaire
-# À l'état stationnaire : dU/dt = 0 => Tendance_Friction + Tendance_Rappel = 0
-# Donc : Tendance_Rappel_Theorique = - Tendance_Friction
-tendance_rappel_theorique = - tendance_friction
-
-# 5. Création du graphique de comparaison
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7), sharey=True)
-
-# --- Graphique 1 : Profils de Vent Moyen ---
-ax1.plot(u_moyen, axe_z, label=r'Vent moyen $\overline{u}$', color='blue', linewidth=2)
-ax1.plot(v_moyen, axe_z, label=r'Vent moyen $\overline{v}$', color='green', linewidth=2)
-ax1.axvline(0, color='black', linestyle=':', alpha=0.5)
-ax1.set_title("A. Profils des Vents Moyens\nà l'État Stationnaire", fontsize=12, fontweight='bold')
-ax1.set_xlabel("Vitesse du vent (m/s)")
-ax1.set_ylabel("Altitude (m)")
-ax1.grid(True, alpha=0.3)
-ax1.legend(loc='best')
-
-# --- Graphique 2 : Équilibre des Forces (Navier-Stokes) ---
-ax2.plot(tendance_friction, axe_z, label=r'Divergence du Tenseur Frictional $\left(-\frac{1}{\rho_0}\frac{\partial \tau}{\partial z}\right)$', color='red', linewidth=2)
-ax2.plot(tendance_rappel_theorique, axe_z, label='Terme de Rappel Reconstruit (-Friction)', color='darkred', linestyle='--', linewidth=2)
-
-# Si vous disposez de la vraie force de rappel du modèle (ex: Forcing Géostrophique ou Nudging) :
-# ax2.plot(tendance_nudging_modele, axe_z, label='Rappel effectif du modèle', color='magenta')
-
-ax2.axvline(0, color='black', linestyle=':', alpha=0.5)
-ax2.set_title("B. Équilibre Stationnaire de Navier-Stokes\n(Friction vs Force de Rappel)", fontsize=12, fontweight='bold')
-ax2.set_xlabel("Accélération / Décélération ($m/s^2$)")
-ax2.grid(True, alpha=0.3)
-ax2.legend(loc='best', fontsize=9)
-
-plt.suptitle("Validation de l'équilibre dynamique dans la simulation RCE", fontsize=14, fontweight='bold', y=0.98)
-plt.tight_layout()
-plt.show()
-
-# 6. Diagnostic imprimé
-print("--- RAPPORT D'ÉQUILIBRE ---")
-print(f"Intégrale verticale de la friction : {np.trapz(tendance_friction, axe_z):.6f} m/s²")
-print("Si le vent moyen (Graphique A) est stable et non nul, la courbe pointillée rouge du Graphique B")
-print("représente exactement la force de rappel invisible que le modèle applique à chaque niveau.")
-
-
-
-import numpy as np
-import matplotlib.pyplot as plt
-
-# 1. Définition de la période stationnaire
-# On isole la fin de la simulation stabilisée (ex: les 20 derniers pas de temps)
-indices_stationnaires = slice(-20, None)
-
-# 2. Extraction de l'altitude et calcul de rho0 (masse volumique de base)
-axe_z = data_ua['altitude'].values
-
-# Pour calculer rho0, on utilise la pression (pa) et la température (ta) de base
-# R_d = 287.05 J/kg/K (constante des gaz parfaits pour l'air sec)
-R_d = 287.05
-T_moyenne = data_ta['ta'].isel(time=indices_stationnaires).mean(dim=['time', 'x', 'y'])
-P_moyenne = data_pa['pa'].isel(time=indices_stationnaires).mean(dim=['time', 'x', 'y'])
-rho0 = P_moyenne / (R_d * T_moyenne)
-
-# 3. Calcul des profils de vent horizontal moyen
-u_moyen = data_ua['ua'].isel(time=indices_stationnaires).mean(dim=['time', 'x', 'y'])
-v_moyen = data_va['va'].isel(time=indices_stationnaires).mean(dim=['time', 'x', 'y'])
-
-# 4. Calcul de la divergence du tenseur de Reynolds (avec intégration manuelle de rho0)
-# Note : Si vos variables de tendances ('tendance_sec', etc.) sont déjà en m/s², 
-# elles intègrent déjà la division par rho0. 
-# Si vous repartez des flux cinématiques uw_turbulent, le calcul correct est :
-# contrainte_friction = - (1.0 / rho0) * np.gradient(rho0 * uw_flux_moyen, axe_z)
-
-# En utilisant vos variables globales existantes :
-tendance_friction = (tendance_sec + tendance_conv + tendance_subsidence + tendance_subgrid)
-
-# 5. PARAMÈTRES DU FORÇAGE REEL DU MODÈLE (À AJUSTER SELON VOTRE CONFIGURATION RCE)
-# Modifiez ces valeurs selon le fichier de configuration (.NAM) de votre simulation Meso-NH
-f_coriolis = 0.0          # ex: 1e-4 s^-1 si simulation hors de l'équateur
-u_prescrit = 0.0          # Vent cible ou vent géostrophique ug (souvent 0 en RCE standard)
-v_g = 0.0                 # Vent géostrophique vg
-tau_nudging = 86400.0     # Temps de rappel en secondes (ex: 1 jour = 86400s)
-
-# CALCUL DE TOUTE PIÈCE DU RAPPEL THÉORIQUE
-# Si Nudging standard :
-rappel_theorique_u = - (u_moyen - u_prescrit) / tau_nudging
-
-# Si Forçage Géostrophique pur (Coriolis) :
-# rappel_theorique_u = f_coriolis * (v_moyen - v_g)
-
-
-# 6. GRAPHIQUE DE VÉRIFICATION
-fig, ax = plt.subplots(figsize=(8, 8))
-
-# On trace la friction calculée
-ax.plot(tendance_friction, axe_z, label=r'Divergence de la friction $\left(-\frac{1}{\rho_0}\frac{\partial \tau}{\partial z}\right)$', color='red', linewidth=2)
-
-# On trace le rappel calculé de toute pièce
-ax.plot(rappel_theorique_u, axe_z, label='Force de Rappel Théorique calculée ($-\Delta U / \\tau$)', color='blue', linestyle='--', linewidth=2)
-
-# On ajoute la somme des deux pour vérifier graphiquement si ça donne zéro
-ax.plot(tendance_friction + rappel_theorique_u, axe_z, label='Résidu (Friction + Rappel)', color='black', alpha=0.6, linestyle=':')
-
-ax.axvline(0, color='black', alpha=0.3)
-ax.set_title("Vérification Graphique de l'Équilibre Stationnaire", fontsize=12, fontweight='bold')
-ax.set_xlabel("Tendances de l'accélération ($m/s^2$)")
-ax.set_ylabel("Altitude (m)")
+# --- 2. Distribution de la PRW ---
+fig, ax = plt.subplots(figsize=(8, 4))
+med = np.median(prw_flat)
+ax.hist(prw_flat, bins=80, color='steelblue', edgecolor='white', lw=0.3)
+ax.axvline(med, color='red', lw=1.5, linestyle='--', label=f'Médiane = {med:.1f} kg/m²')
+ax.set_xlabel('PRW (kg/m²)')
+ax.set_ylabel('Colonnes')
+ax.set_title('Distribution PRW\n(bimodale → agrégation)', fontweight='bold')
+ax.legend()
 ax.grid(True, alpha=0.3)
-ax.legend(loc='best')
-
 plt.tight_layout()
 plt.show()
 
-import matplotlib.pyplot as plt
-import numpy as np
+# --- 3. Variance spatiale de la PRW au cours du temps ---
+# On calcule la variance sur les axes y et x indépendamment de leurs tailles
+prw_var = prw_all.var(dim=[dim_y, dim_x]).values  # (n_times,)
 
-# =============================================================================
-# 4. TRACÉ DES PROFILS DE FLUX SUR DIFFÉRENTES TRANCHES DE TEMPS
-# =============================================================================
-print("Génération des graphiques de profils de flux...")
-
-# 1. Extraction de la coordonnée verticale (altitude/level)
-alt_dim = u.dims[1]
-z = u[alt_dim].values 
-
-# 2. Choix des indices temporels à afficher 
-# Correction ici : on utilise .size au lieu de len()
-num_times = u.time.size
-
-if num_times > 1:
-    # On sélectionne jusqu'à 5 tranches si on a assez de temps
-    num_plots = min(5, num_times)
-    time_indices = np.linspace(0, num_times - 1, num_plots, dtype=int)
-else:
-    # S'il n'y a qu'un seul pas de temps, on prend l'index 0
-    time_indices = [0]
-
-# 3. Création de la figure (2 sous-graphiques côte à côte)
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
-
-# Boucle sur les indices de temps sélectionnés pour tracer les courbes
-for t_idx in time_indices:
-    # Récupération de la valeur réelle du temps pour la légende
-    # .item() permet d'extraire proprement la valeur si c'est un scalaire
-    time_val = u.time.values[t_idx] if num_times > 1 else u.time.values.item()
-    time_label = f"T = {str(time_val)[:16]}" 
-    
-    # Extraction des profils verticaux pour l'instant t_idx
-    prof_u = flux_u_total_profile.isel(time=t_idx)
-    prof_v = flux_v_total_profile.isel(time=t_idx)
-    
-    # Tracé du flux zonal u'w'
-    ax1.plot(prof_u, z, label=time_label, linewidth=2)
-    
-    # Tracé du flux méridien v'w'
-    ax2.plot(prof_v, z, label=time_label, linewidth=2)
-
-# --- Configuration du graphique 1 (u'w') ---
-ax1.axvline(0, color='black', linestyle='--', linewidth=0.8)
-ax1.set_title("Flux vertical de quantité de mouvement zonal $\overline{u'w'}$", fontsize=11)
-ax1.set_xlabel("Flux ($m^2/s^2$)", fontsize=10)
-ax1.set_ylabel(f"Altitude ({alt_dim})", fontsize=10)
-ax1.grid(True, linestyle=':', alpha=0.6)
-ax1.legend()
-
-# --- Configuration du graphique 2 (v'w') ---
-ax2.axvline(0, color='black', linestyle='--', linewidth=0.8)
-ax2.set_title("Flux vertical de quantité de mouvement méridien $\overline{v'w'}$", fontsize=11)
-ax2.set_xlabel("Flux ($m^2/s^2$)", fontsize=10)
-ax2.grid(True, linestyle=':', alpha=0.6)
-ax2.legend()
-
-# Ajustement automatique des marges et affichage
-plt.tight_layout()
-plt.suptitle("Évolution des profils verticaux de flux de Reynolds", fontsize=14, y=1.03)
-plt.show()
-
-
-# =============================================================================
-# 4. TRACÉ DES PROFILS DE FLUX SUR DIFFÉRENTES TRANCHES DE TEMPS
-# =============================================================================
-print("Génération des graphiques de profils de flux...")
-
-# 1. Extraction de la coordonnée verticale (altitude/level)
-# On récupère le nom de la dimension d'altitude (généralement la 2ème dimension, index 1)
-alt_dim = u.dims[1]
-z = u[alt_dim].values 
-
-# 2. Choix des indices temporels à afficher 
-# Correction : On utilise .size au lieu de len() pour gérer le cas où il n'y a qu'un pas de temps
-num_times = u.time.size
-
-if num_times > 1:
-    # On sélectionne 5 tranches de temps régulièrement réparties
-    num_plots = min(5, num_times)
-    time_indices = np.linspace(0, num_times - 1, num_plots, dtype=int)
-else:
-    # S'il n'y a qu'un seul pas de temps disponible
-    time_indices = [0]
-
-# 3. Création de la figure (2 sous-graphiques côte à côte)
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
-
-# Boucle sur les indices de temps sélectionnés pour tracer les courbes
-for t_idx in time_indices:
-    # Récupération de la valeur réelle du temps pour la légende
-    time_val = u.time.values[t_idx] if num_times > 1 else u.time.values.item()
-    # Si le temps est en datetime64, on peut le formater proprement, sinon on affiche brut
-    time_label = f"T = {str(time_val)[:16]}" 
-    
-    # Extraction des profils verticaux pour l'instant t_idx
-    # Correction dimensionnelle : On applique .mean(dim=['x', 'y']) pour projeter la grille 
-    # horizontale (100x100) en une moyenne spatiale et obtenir un vecteur aligné avec z (74)
-    prof_u = flux_u_total_profile.isel(time=t_idx).mean(dim=['x', 'y'])
-    prof_v = flux_v_total_profile.isel(time=t_idx).mean(dim=['x', 'y'])
-    
-    # Tracé du flux zonal u'w'
-    ax1.plot(prof_u, z, label=time_label, linewidth=2)
-    
-    # Tracé du flux méridien v'w'
-    ax2.plot(prof_v, z, label=time_label, linewidth=2)
-
-# --- Configuration du graphique 1 (u'w') ---
-ax1.axvline(0, color='black', linestyle='--', linewidth=0.8) # Ligne zéro de référence
-ax1.set_title("Flux vertical de quantité de mouvement zonal $\\overline{u'w'}$", fontsize=11)
-ax1.set_xlabel("Flux ($m^2/s^2$)", fontsize=10)
-ax1.set_ylabel(f"Altitude ({alt_dim})", fontsize=10)
-ax1.grid(True, linestyle=':', alpha=0.6)
-ax1.legend()
-
-# --- Configuration du graphique 2 (v'w') ---
-ax2.axvline(0, color='black', linestyle='--', linewidth=0.8) # Ligne zéro de référence
-ax2.set_title("Flux vertical de quantité de mouvement méridien $\\overline{v'w'}$", fontsize=11)
-ax2.set_xlabel("Flux ($m^2/s^2$)", fontsize=10)
-ax2.grid(True, linestyle=':', alpha=0.6)
-ax2.legend()
-
-# Ajustement automatique des marges et affichage
-plt.tight_layout()
-plt.suptitle("Évolution des profils verticaux de flux de Reynolds", fontsize=14, y=1.03)
-plt.show()
-
-
-
-# =============================================================================
-# 4. TRACÉ DES PROFILS DE FLUX SUR DIFFÉRENTES TRANCHES DE TEMPS
-# =============================================================================
-print("Génération des graphiques de profils de flux...")
-
-# 1. Extraction de la coordonnée verticale (74 niveaux)
-alt_dim = u.dims[1]
-z = u[alt_dim].values 
-
-# 2. Choix des indices temporels à afficher (sur les 100 pas de temps)
-# On récupère la taille de la dimension temps directement depuis le flux
-num_times = flux_u_total_profile.time.size
-time_indices = np.linspace(0, num_times - 1, 5, dtype=int)
-
-# 3. Création de la figure (2 sous-graphiques côte à côte)
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
-
-# Boucle sur les 5 tranches de temps sélectionnées
-for t_idx in time_indices:
-    # Récupération du label de temps
-    time_val = flux_u_total_profile.time.values[t_idx]
-    time_label = f"T = {str(time_val)[:16]}" 
-    
-    # Extraction du profil vertical pour l'instant t_idx
-    # .squeeze() élimine les dimensions "fantômes" de taille 1 s'il y en a
-    prof_u = flux_u_total_profile.isel(time=t_idx).squeeze().values
-    prof_v = flux_v_total_profile.isel(time=t_idx).squeeze().values
-    
-    # Sécurité : Si prof_u et z sont inversés, matplotlib va râler. 
-    # On s'assure que prof_u et z ont exactement la même forme.
-    ax1.plot(prof_u, z, label=time_label, linewidth=2)
-    ax2.plot(prof_v, z, label=time_label, linewidth=2)
-
-# --- Configuration du graphique 1 (u'w') ---
-ax1.axvline(0, color='black', linestyle='--', linewidth=0.8)
-ax1.set_title("Flux vertical de quantité de mouvement zonal $\\overline{u'w'}$", fontsize=11)
-ax1.set_xlabel("Flux ($m^2/s^2$)", fontsize=10)
-ax1.set_ylabel(f"Altitude ({alt_dim})", fontsize=10)
-ax1.grid(True, linestyle=':', alpha=0.6)
-ax1.legend()
-
-# --- Configuration du graphique 2 (v'w') ---
-ax2.axvline(0, color='black', linestyle='--', linewidth=0.8)
-ax2.set_title("Flux vertical de quantité de mouvement méridien $\\overline{v'w'}$", fontsize=11)
-ax2.set_xlabel("Flux ($m^2/s^2$)", fontsize=10)
-ax2.grid(True, linestyle=':', alpha=0.6)
-ax2.legend()
-
-# Ajustement automatique des marges et affichage
-plt.tight_layout()
-plt.suptitle("Évolution des profils verticaux de flux de Reynolds", fontsize=14, y=1.03)
-plt.show()
-
-
-
-
-
-# =============================================================================
-# 4. TRACÉ DES PROFILS DE FLUX SUR DIFFÉRENTES TRANCHES DE TEMPS
-# =============================================================================
-print("Génération des graphiques de profils de flux par tranches de temps...")
-
-# 1. Extraction des valeurs brutes de l'altitude (Tableau de 74 éléments)
-axe_z = u["altitude"].values  
-
-# 2. Choix des indices temporels à afficher
-num_times = flux_u_total_profile.time.size
-time_indices = np.linspace(0, num_times - 1, 5, dtype=int)
-
-# 3. Création de la figure (2 sous-graphiques côte à côte)
-fig_tranches, (ax1_t, ax2_t) = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
-
-# Boucle sur les indices de temps sélectionnés pour tracer les courbes
-for t_idx in time_indices:
-    # Récupération de la valeur réelle du temps pour la légende
-    time_val = flux_u_total_profile.time.values[t_idx]
-    time_label = f"T = {str(time_val)[:16]}" 
-    
-    # EN BLINDANT ICI AVEC .values : 
-    # On force xarray à donner un tableau NumPy pur à 1D (taille 74)
-    prof_u = flux_u_total_profile.isel(time=t_idx).values
-    prof_v = flux_v_total_profile.isel(time=t_idx).values
-    
-    # Tracé des flux : deux tableaux de taille 74, aucune erreur possible.
-    ax1_t.plot(prof_u, axe_z, label=time_label, linewidth=2)
-    ax2_t.plot(prof_v, axe_z, label=time_label, linewidth=2)
-
-# --- Configuration du graphique 1 (u'w' par tranches) ---
-ax1_t.axvline(0, color='grey', linestyle='-', alpha=0.5)
-ax1_t.set_title("Flux vertical de quantité de mouvement zonal $\\overline{u'w'}$")
-ax1_t.set_xlabel("Flux ($m^2/s^2$)")
-ax1_t.set_ylabel("Niveau vertical (Altitude / Index)")
-ax1_t.grid(True, alpha=0.3)
-ax1_t.legend()
-
-# --- Configuration du graphique 2 (v'w' par tranches) ---
-ax2_t.axvline(0, color='grey', linestyle='-', alpha=0.5)
-ax2_t.set_title("Flux vertical de quantité de mouvement méridien $\\overline{v'w'}$")
-ax2_t.set_xlabel("Flux ($m^2/s^2$)")
-ax2_t.grid(True, alpha=0.3)
-ax2_t.legend()
-
-plt.suptitle("Évolution des profils verticaux de flux de Reynolds (Tranches de temps)", fontsize=14, y=1.03)
+fig, ax = plt.subplots(figsize=(10, 4))
+ax.plot(time_days, prw_var, color='darkorange', lw=1.5)
+ax.axvline(time_days[t_stat], color='red', lw=1, linestyle='--',
+           label=f'Début état stationnaire (jour {time_days[t_stat]:.1f})')
+ax.set_xlabel('Temps (jours)')
+ax.set_ylabel('Variance spatiale PRW (kg²/m⁴)')
+ax.set_title('Variance spatiale de la PRW au cours du temps\n'
+             '(une variance croissante indique une agrégation en cours)',
+             fontweight='bold')
+ax.legend()
+ax.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.show()
 
+# ======================================================================
+# PRW — évolution temporelle par tranches
+# Objectif : voir comment la structure spatiale de la PRW évolue
+# On sélectionne N_TRANCHES instants régulièrement espacés sur toute la simulation
+# ======================================================================
+N_TRANCHES = 6  # nombre de snapshots à afficher
 
+indices = np.linspace(0, n_t - 1, N_TRANCHES, dtype=int)
 
+# Plage de couleur commune à tous les snapshots pour permettre la comparaison
+vmin_prw = float(prw_all.min())
+vmax_prw = float(prw_all.max())
 
+fig, axes = plt.subplots(N_TRANCHES, 1, figsize=(9, 3.5 * N_TRANCHES))
 
-# =============================================================================
-# 4. TRACÉ DES PROFILS DE FLUX SUR DIFFÉRENTES TRANCHES DE TEMPS
-# =============================================================================
-print("Génération des graphiques de profils de flux par tranches de temps...")
+for k, it in enumerate(indices):
+    ax = axes[k]
+    snap = prw_all.isel({dim_t: it}).values  # (ny, nx)
+    jour = time_days[it]
 
-# 1. Extraction de la coordonnée verticale (Altitude de taille 74)
-# On utilise directement data_ua qui contient la coordonnée "altitude"
-axe_z = data_ua["altitude"].values  
+    im = ax.pcolormesh(snap, cmap='Blues', vmin=vmin_prw, vmax=vmax_prw)
+    fig.colorbar(im, ax=ax, label='PRW (kg/m²)')
 
-# 2. Choix des indices temporels à afficher (répartis sur les 100 pas de temps)
-num_times = flux_u_total_profile.time.size # donne 100
-time_indices = np.linspace(0, num_times - 1, 5, dtype=int) # 5 tranches de temps
+    # Indicateur d'agrégation sur ce snapshot
+    var_snap = snap.var()
+    ax.set_title(f'Jour {jour:.1f}  —  variance spatiale = {var_snap:.1f} kg²/m⁴',
+                 fontweight='bold')
+    ax.set_xlabel('x')
+    ax.set_ylabel('y')
 
-# 3. Création de la figure (2 sous-graphiques côte à côte)
-fig_tranches, (ax1_t, ax2_t) = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
-
-# Boucle sur les indices de temps sélectionnés pour superposer les courbes
-for t_idx in time_indices:
-    # Récupération de la valeur réelle du temps pour la légende
-    time_val = flux_u_total_profile.time.values[t_idx]
-    time_label = f"T = {str(time_val)[:16]}" 
-    
-    # EXTRACTION SÉCURISÉE : 
-    # flux_u_total_profile est déjà de taille (100, 74) suite aux moyennes horizontales.
-    # En faisant .isel(time=t_idx).values, on extrait un vecteur NumPy pur de taille 74.
-    prof_u = flux_u_total_profile.isel(time=t_idx).values
-    prof_v = flux_v_total_profile.isel(time=t_idx).values
-    
-    # Tracé des flux : prof_u (74) et axe_z (74) ont la même dimension, aucune erreur possible.
-    ax1_t.plot(prof_u, axe_z, label=time_label, linewidth=2)
-    ax2_t.plot(prof_v, axe_z, label=time_label, linewidth=2)
-
-# --- Configuration du graphique 1 (u'w' par tranches) ---
-ax1_t.axvline(0, color='grey', linestyle='-', alpha=0.5)
-ax1_t.set_title("Flux vertical de quantité de mouvement zonal $\\overline{u'w'}$")
-ax1_t.set_xlabel("Flux ($m^2/s^2$)")
-ax1_t.set_ylabel("Niveau vertical (Altitude en mètres)")
-ax1_t.grid(True, alpha=0.3)
-ax1_t.legend()
-
-# --- Configuration du graphique 2 (v'w' par tranches) ---
-ax2_t.axvline(0, color='grey', linestyle='-', alpha=0.5)
-ax2_t.set_title("Flux vertical de quantité de mouvement méridien $\\overline{v'w'}$")
-ax2_t.set_xlabel("Flux ($m^2/s^2$)")
-ax2_t.grid(True, alpha=0.3)
-ax2_t.legend()
-
-plt.suptitle("Évolution des profils verticaux de flux de Reynolds (Tranches de temps)", fontsize=14, y=1.03)
+plt.suptitle('Évolution temporelle de la PRW (snapshots régulièrement espacés)',
+             fontsize=13, fontweight='bold', y=1.002)
 plt.tight_layout()
 plt.show()
-
-
-
-
-
-
-<xarray.DataArray 'time' (time: 100)> Size: 800B
-array([6501600000000000, 6523200000000000, 6544800000000000, 6566400000000000,
-       6588000000000000, 6609600000000000, 6631200000000000, 6652800000000000,
-       6674400000000000, 6696000000000000, 6717600000000000, 6739200000000000,
-       6760800000000000, 6782400000000000, 6804000000000000, 6825600000000000,
-       6847200000000000, 6868800000000000, 6890400000000000, 6912000000000000,
-       6933600000000000, 6955200000000000, 6976800000000000, 6998400000000000,
-       7020000000000000, 7041600000000000, 7063200000000000, 7084800000000000,
-       7106400000000000, 7128000000000000, 7149600000000000, 7171200000000000,
-       7192800000000000, 7214400000000000, 7236000000000000, 7257600000000000,
-       7279200000000000, 7300800000000000, 7322400000000000, 7344000000000000,
-       7365600000000000, 7387200000000000, 7408800000000000, 7430400000000000,
-       7452000000000000, 7473600000000000, 7495200000000000, 7516800000000000,
-       7538400000000000, 7560000000000000, 7581600000000000, 7603200000000000,
-       7624800000000000, 7646400000000000, 7668000000000000, 7689600000000000,
-       7711200000000000, 7732800000000000, 7754400000000000, 7776000000000000,
-       7797600000000000, 7819200000000000, 7840800000000000, 7862400000000000,
-       7884000000000000, 7905600000000000, 7927200000000000, 7948800000000000,
-       7970400000000000, 7992000000000000, 8013600000000000, 8035200000000000,
-       8056800000000000, 8078400000000000, 8100000000000000, 8121600000000000,
-       8143200000000000, 8164800000000000, 8186400000000000, 8208000000000000,
-       8229600000000000, 8251200000000000, 8272800000000000, 8294400000000000,
-       8316000000000000, 8337600000000000, 8359200000000000, 8380800000000000,
-       8402400000000000, 8424000000000000, 8445600000000000, 8467200000000000,
-       8488800000000000, 8510400000000000, 8532000000000000, 8553600000000000,
-...
-Coordinates:
-  * time     (time) timedelta64[ns] 800B 75 days 06:00:00 ... 100 days 00:00:00
-Attributes:
-    standard_name:  time
