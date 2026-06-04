@@ -78,3 +78,34 @@ plt.suptitle('Évolution temporelle de la PRW (snapshots régulièrement espacé
              fontsize=13, fontweight='bold', y=1.002)
 plt.tight_layout()
 plt.show()
+
+
+
+
+
+
+# ==============================================================================
+# CORRECTIF : On s'assure que prw_var est une moyenne ou variance purement temporelle (taille 2400)
+# Si prw_var est un tableau Xarray avec des dimensions (time, space) :
+if hasattr(prw_var, 'dims') and 'x' in prw_var.dims: # ou 'lon', 'lat' selon ton fichier
+    prw_var_plot = prw_var.var(dim='x') 
+# Si c'est un tableau NumPy de shape (2400, 100) ou (100, 2400) :
+elif hasattr(prw_var, 'shape') and len(prw_var.shape) > 1:
+    # On force la variance sur l'axe qui fait 100 pour ne garder que l'axe de 2400
+    axis_to_reduce = 0 if prw_var.shape[0] == 100 else 1
+    prw_var_plot = prw_var.var(axis=axis_to_reduce)
+else:
+    # Au cas où c'était déjà un vecteur mais mal orienté
+    prw_var_plot = prw_var.squeeze()
+# ==============================================================================
+
+# Variance temporelle / spatiale de la PRW
+ax3 = axes[2]
+ax3.plot(time_days, prw_var_plot, color='darkorange', lw=1.5) # Utilisation de la variable corrigée
+ax3.axvline(time_days[t_stat], color='red', lw=1, linestyle='--',
+            label='Début état stationnaire')
+ax3.set_xlabel('Temps (jours)') 
+ax3.set_ylabel('Variance PRW (kg²/m⁴)')
+ax3.set_title('Variance spatiale PRW\n(croît si agrégation)', fontweight='bold')
+ax3.legend() 
+ax3.grid(True, alpha=0.3)
