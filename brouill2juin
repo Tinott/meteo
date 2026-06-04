@@ -1,111 +1,35 @@
-# ======================================================================
-# PRW — visualisations empilées
-# ======================================================================
+# Ajuster PRW_SEUIL selon le creux de la distribution observée au §3
+PRW_SEUIL = float(np.median(prw_flat))
+print(f'Seuil : {PRW_SEUIL:.1f} kg/m²')
 
-# --- 1. Carte 2D PRW moyenne ---
+mh = (prw_mean.values > PRW_SEUIL)   # bool (y, x)
+ms = ~mh
+
+print(f'Humide : {mh.mean()*100:.1f}%   Sec : {ms.mean()*100:.1f}%')
+
+# --- Carte sec / humide ---
 fig, ax = plt.subplots(figsize=(8, 5))
-im = ax.pcolormesh(prw_mean.values, cmap='Blues', vmin=0)
-fig.colorbar(im, ax=ax, label='PRW (kg/m²)')
-ax.set_title('Carte PRW moyenne — état stationnaire', fontweight='bold')
+cmap_sh = mcolors.ListedColormap(['#f5deb3', '#1a6faf'])
+im = ax.pcolormesh(mh.astype(int), cmap=cmap_sh, vmin=0, vmax=1)
+cbar = fig.colorbar(im, ax=ax, ticks=[0.25, 0.75])
+cbar.ax.set_yticklabels(['Sec', 'Humide'])
+ax.set_title(f'Carte sec / humide (seuil = {PRW_SEUIL:.1f} kg/m²)', fontweight='bold')
 ax.set_xlabel('x')
 ax.set_ylabel('y')
-# Pas de set_aspect('equal') : x et y n'ont pas la même résolution/dimension
 plt.tight_layout()
 plt.show()
 
-# --- 2. Distribution de la PRW ---
+# --- Distribution avec seuil ---
 fig, ax = plt.subplots(figsize=(8, 4))
-med = np.median(prw_flat)
 ax.hist(prw_flat, bins=80, color='steelblue', edgecolor='white', lw=0.3)
-ax.axvline(med, color='red', lw=1.5, linestyle='--', label=f'Médiane = {med:.1f} kg/m²')
+ax.axvline(PRW_SEUIL, color='black', lw=2, linestyle='--',
+           label=f'Seuil = {PRW_SEUIL:.1f} kg/m²')
+ax.axvspan(0,                    PRW_SEUIL,        alpha=0.1, color='saddlebrown', label='Sec')
+ax.axvspan(PRW_SEUIL, prw_flat.max() + 1,          alpha=0.1, color='royalblue',   label='Humide')
 ax.set_xlabel('PRW (kg/m²)')
 ax.set_ylabel('Colonnes')
-ax.set_title('Distribution PRW\n(bimodale → agrégation)', fontweight='bold')
+ax.set_title('Distribution avec seuil', fontweight='bold')
 ax.legend()
 ax.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.show()
-
-# --- 3. Variance spatiale de la PRW au cours du temps ---
-# On calcule la variance sur les axes y et x indépendamment de leurs tailles
-prw_var = prw_all.var(dim=[dim_y, dim_x]).values  # (n_times,)
-
-fig, ax = plt.subplots(figsize=(10, 4))
-ax.plot(time_days, prw_var, color='darkorange', lw=1.5)
-ax.axvline(time_days[t_stat], color='red', lw=1, linestyle='--',
-           label=f'Début état stationnaire (jour {time_days[t_stat]:.1f})')
-ax.set_xlabel('Temps (jours)')
-ax.set_ylabel('Variance spatiale PRW (kg²/m⁴)')
-ax.set_title('Variance spatiale de la PRW au cours du temps\n'
-             '(une variance croissante indique une agrégation en cours)',
-             fontweight='bold')
-ax.legend()
-ax.grid(True, alpha=0.3)
-plt.tight_layout()
-plt.show()
-
-# ======================================================================
-# PRW — évolution temporelle par tranches
-# Objectif : voir comment la structure spatiale de la PRW évolue
-# On sélectionne N_TRANCHES instants régulièrement espacés sur toute la simulation
-# ======================================================================
-N_TRANCHES = 6  # nombre de snapshots à afficher
-
-indices = np.linspace(0, n_t - 1, N_TRANCHES, dtype=int)
-
-# Plage de couleur commune à tous les snapshots pour permettre la comparaison
-vmin_prw = float(prw_all.min())
-vmax_prw = float(prw_all.max())
-
-fig, axes = plt.subplots(N_TRANCHES, 1, figsize=(9, 3.5 * N_TRANCHES))
-
-for k, it in enumerate(indices):
-    ax = axes[k]
-    snap = prw_all.isel({dim_t: it}).values  # (ny, nx)
-    jour = time_days[it]
-
-    im = ax.pcolormesh(snap, cmap='Blues', vmin=vmin_prw, vmax=vmax_prw)
-    fig.colorbar(im, ax=ax, label='PRW (kg/m²)')
-
-    # Indicateur d'agrégation sur ce snapshot
-    var_snap = snap.var()
-    ax.set_title(f'Jour {jour:.1f}  —  variance spatiale = {var_snap:.1f} kg²/m⁴',
-                 fontweight='bold')
-    ax.set_xlabel('x')
-    ax.set_ylabel('y')
-
-plt.suptitle('Évolution temporelle de la PRW (snapshots régulièrement espacés)',
-             fontsize=13, fontweight='bold', y=1.002)
-plt.tight_layout()
-plt.show()
-
-
-
-
-
-
-# ==============================================================================
-# CORRECTIF : On s'assure que prw_var est une moyenne ou variance purement temporelle (taille 2400)
-# Si prw_var est un tableau Xarray avec des dimensions (time, space) :
-if hasattr(prw_var, 'dims') and 'x' in prw_var.dims: # ou 'lon', 'lat' selon ton fichier
-    prw_var_plot = prw_var.var(dim='x') 
-# Si c'est un tableau NumPy de shape (2400, 100) ou (100, 2400) :
-elif hasattr(prw_var, 'shape') and len(prw_var.shape) > 1:
-    # On force la variance sur l'axe qui fait 100 pour ne garder que l'axe de 2400
-    axis_to_reduce = 0 if prw_var.shape[0] == 100 else 1
-    prw_var_plot = prw_var.var(axis=axis_to_reduce)
-else:
-    # Au cas où c'était déjà un vecteur mais mal orienté
-    prw_var_plot = prw_var.squeeze()
-# ==============================================================================
-
-# Variance temporelle / spatiale de la PRW
-ax3 = axes[2]
-ax3.plot(time_days, prw_var_plot, color='darkorange', lw=1.5) # Utilisation de la variable corrigée
-ax3.axvline(time_days[t_stat], color='red', lw=1, linestyle='--',
-            label='Début état stationnaire')
-ax3.set_xlabel('Temps (jours)') 
-ax3.set_ylabel('Variance PRW (kg²/m⁴)')
-ax3.set_title('Variance spatiale PRW\n(croît si agrégation)', fontweight='bold')
-ax3.legend() 
-ax3.grid(True, alpha=0.3)
