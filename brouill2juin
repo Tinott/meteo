@@ -1,33 +1,39 @@
-def tendance(flux_profil):
-    """Force de Reynolds : -1/rho0 · d(rho0 <phi'w'>) / dz"""
-    return -np.gradient(flux_profil, alt) / rho0
+tend_conv = tendance(flux_conv)
+tend_sec  = tendance(flux_sec)
+tend_sub  = tendance(flux_sub)
+tend_rest = tendance(flux_rest_cond)
+tend_tot  = tendance(flux_tot_cond)
 
-tend_u_glob = tendance(flux_uw)
-tend_v_glob = tendance(flux_vw)
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 8), sharey=True)
 
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7), sharey=True)
+kw = dict(tot  = dict(color='black',      lw=2.5),
+          conv = dict(color='crimson',    lw=1.8, linestyle='--'),
+          sec  = dict(color='darkorange', lw=1.8, linestyle='--'),
+          sub  = dict(color='royalblue',  lw=1.8, linestyle=':'),
+          rest = dict(color='grey',       lw=1.5, alpha=0.7))
 
-ax1.plot(flux_uw, alt, color='royalblue', lw=2, label=r"$\rho_0\overline{u'w'}$")
-ax1.plot(flux_vw, alt, color='seagreen',  lw=2, linestyle='--', label=r"$\rho_0\overline{v'w'}$")
-ax1.axvline(0, color='grey', alpha=0.5)
-ax1.set_xlabel('Flux rho0 <phi w>  (kg m-1 s-2)')
-ax1.set_ylabel('Altitude (m)')
-ax1.set_title('A. Flux vertical de QdM', fontweight='bold')
-ax1.legend()
-ax1.grid(True, alpha=0.3)
+ax1.plot(flux_tot_cond,  alt, label='Total',                    **kw['tot'])
+ax1.plot(flux_conv,      alt, label='Convection nuageuse',       **kw['conv'])
+ax1.plot(flux_sec,       alt, label='Thermiques secs (CBL)',     **kw['sec'])
+ax1.plot(flux_sub,       alt, label='Subsidence',                **kw['sub'])
+ax1.plot(flux_rest_cond, alt, label='Petite turbulence (reste)', **kw['rest'])
+ax1.axvline(0, color='grey', alpha=0.4)
+ax1.set_title('A. Flux ρ₀⟨u′w′⟩ par régime', fontweight='bold')
+ax1.set_xlabel('Flux (kg m⁻¹ s⁻²)') ; ax1.set_ylabel('Altitude (m)')
+ax1.legend(fontsize=9) ; ax1.grid(True, alpha=0.3)
 
-titre_b = (
-    "B. Tendance du vent par la turbulence\n"
-    r"$-\frac{1}{\rho_0}\frac{\partial}{\partial z}(\rho_0\overline{u'w'})$"
-)
-ax2.plot(tend_u_glob * 1e5, alt, color='royalblue', lw=2, label='Tendance u')
-ax2.plot(tend_v_glob * 1e5, alt, color='seagreen',  lw=2, linestyle='--', label='Tendance v')
-ax2.axvline(0, color='grey', alpha=0.5)
-ax2.set_xlabel('Tendance (x1e-5 m/s2)')
-ax2.set_title(titre_b, fontweight='bold')
-ax2.legend()
-ax2.grid(True, alpha=0.3)
+sc = 1e5
+ax2.plot(tend_tot  * sc, alt, label='Total',                    **kw['tot'])
+ax2.plot(tend_conv * sc, alt, label='Convection nuageuse',       **kw['conv'])
+ax2.plot(tend_sec  * sc, alt, label='Thermiques secs (CBL)',     **kw['sec'])
+ax2.plot(tend_sub  * sc, alt, label='Subsidence',                **kw['sub'])
+ax2.plot(tend_rest * sc, alt, label='Petite turbulence (reste)', **kw['rest'])
+ax2.axvline(0, color='grey', alpha=0.4)
+ax2.set_title('B. Tendance vent zonal par régime\n'
+              r'$-\frac{1}{\rho_0}\frac{\partial}{\partial z}'
+              r'(\rho_0\overline{u\'w\'})$  (×10⁻⁵ m/s²)', fontweight='bold')
+ax2.set_xlabel('Tendance (×10⁻⁵ m/s²)')
+ax2.legend(fontsize=9) ; ax2.grid(True, alpha=0.3)
 
-plt.suptitle('Bilan global de QdM — état stationnaire', fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
+plt.suptitle('Bilan conditionnel de QdM — état stationnaire', fontsize=13, fontweight='bold')
+plt.tight_layout() ; plt.show()
