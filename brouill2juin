@@ -360,3 +360,86 @@ ax.set_ylabel('Altitude (m)')
 ax.set_title('Test de fermeture du bilan de QdM', fontweight='bold')
 ax.legend() ; ax.grid(True, alpha=0.3)
 plt.tight_layout() ; plt.show()
+
+
+
+
+
+# ======================================================================
+# §14 — Reynolds comme résidu
+# SEULE CORRECTION vs version originale : dt_sec = 6h = 21600 s
+# On travaille sur les champs locaux (y,x) et on moyenne le résultat.
+# ======================================================================
+
+dt_sec = 6.0 * 3600.0   # 21600 s
+print(f'dt_sec = {dt_sec:.0f} s ({dt_sec/3600:.1f} h)')
+
+residu = np.zeros(n_z)
+
+ds_u = xr.open_dataset(path3d('ua'))
+ds_v = xr.open_dataset(path3d('va'))
+ds_w = xr.open_dataset(path3d('wa'))
+ds_p = xr.open_dataset(path3d('pa'))
+
+for iz in range(n_z):
+    acc = 0.0
+    n   = 0
+
+    iz_lo = max(iz - 1, 0)
+    iz_hi = min(iz + 1, n_z - 1)
+    dz    = alt[iz_hi] - alt[iz_lo]
+    if dz == 0:
+        dz = alt[1] - alt[0]
+
+    for it in range(t_stat, n_t - 1):
+        u_2d = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values
+        v_2d = ds_v['va'].isel({dim_t: it,     dim_z: iz}).values
+        w_2d = ds_w['wa'].isel({dim_t: it,     dim_z: iz}).values
+        p_2d = ds_p['pa'].isel({dim_t: it,     dim_z: iz}).values
+
+        # ∂u/∂t local
+        u_next = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
+        dudt   = (u_next - u_2d) / dt_sec
+        del u_next
+
+        # Advection locale
+        u_lo = ds_u['ua'].isel({dim_t: it, dim_z: iz_lo}).values
+        u_hi = ds_u['ua'].isel({dim_t: it, dim_z: iz_hi}).values
+        adv  = -(u_2d * np.gradient(u_2d, dx, axis=1)
+               + v_2d * np.gradient(u_2d, dy, axis=0)
+               + w_2d * (u_hi - u_lo) / dz)
+        del u_lo, u_hi
+
+        # Terme de pression
+        pres = -np.gradient(p_2d, dx, axis=1) / rho0[iz]
+
+        acc += (dudt + adv + pres).mean()
+        n   += 1
+
+        del u_2d, v_2d, w_2d, p_2d, dudt, adv, pres
+        gc.collect()
+
+    residu[iz] = acc / n if n > 0 else 0.0
+
+    if iz % 10 == 0:
+        print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
+
+ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
+del ds_u, ds_v, ds_w, ds_p
+gc.collect()
+print('Résidu calculé.')
+
+# Visualisation
+fig, ax = plt.subplots(figsize=(12, 8))
+ax.plot(tend_u_glob * 1e5, alt, color='royalblue', lw=2,
+        label=r"Reynolds direct $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$")
+ax.plot(residu * 1e5,      alt, color='crimson',   lw=2, linestyle='--',
+        label='Résidu (∂u/∂t + advection + pression)')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
+ax.set_ylabel('Altitude (m)')
+ax.set_title('Test de fermeture du bilan de QdM', fontweight='bold')
+ax.legend()
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()
