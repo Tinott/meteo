@@ -1,47 +1,243 @@
-for iz in [0, 10, 30, 73]:
-    ds_u = xr.open_dataset(path3d('ua'))
-    ds_w = xr.open_dataset(path3d('wa'))
+## 13. Termes de Navier-Stokes : cartes 2D par niveau
 
-    sl = {dim_t: idx_stat, dim_z: iz}
-    u_lev = ds_u['ua'].isel(sl).values   # (n_stat, ny, nx)
-    w_lev = ds_w['wa'].isel(sl).values
+Même présentation que la section 12 (cartes pour `iz` = [0, 10, 30, 73]),
+mais pour les trois termes de l'équation de QdM zonale :
 
-    ds_u.close() ; ds_w.close()
-    del ds_u, ds_w
-    gc.collect()
+$$\frac{\partial u}{\partial t} =
+- u\frac{\partial u}{\partial x}
+- v\frac{\partial u}{\partial y}
+- w\frac{\partial u}{\partial z}
+- \frac{1}{\rho_0}\frac{\partial p}{\partial x} + \cdots$$
 
-    u_p = u_lev - u_lev.mean(axis=(1, 2), keepdims=True)
-    w_p = w_lev - w_lev.mean(axis=(1, 2), keepdims=True)
-    flux_2d = (rho0[iz] * u_p * w_p).mean(axis=0)   # (ny, nx)
+- **Terme 1 — ∂u/∂t** : différence finie temporelle sur 2 pas consécutifs (état stationnaire)
+- **Terme 2 — Advection** : $-(u\partial_x u + v\partial_y u + w\partial_z u)$, gradients centrés
+- **Terme 3 — Pression** : $-(1/\rho_0)\,\partial_x p$, gradient centré
 
-    del u_lev, w_lev, u_p, w_p
-    gc.collect()
+On travaille **niveau par niveau** pour limiter la RAM.
+Contour noir = limite zone humide/sèche (même masque `mh` que §12).
+
+
+
+
+
+# ======================================================================
+# §13 — Configuration commune
+# ======================================================================
+
+IZ_LEVELS = [0, 10, 30, 73]   # mêmes niveaux que §12
+
+# Indice central de l'état stationnaire
+it_mid = t_stat + n_stat // 2
+it_a   = it_mid
+it_b   = it_mid + 1
+
+# dt en secondes
+dt_days = float(time_days[it_b] - time_days[it_a])
+dt_sec  = dt_days * 86400.0
+it_c    = it_mid   # pas de temps unique pour advection et pression
+print(f'dt utilisé pour ∂u/∂t : {dt_sec:.0f} s  ({dt_days:.4f} j)')
+
+# Résolution horizontale (inférée depuis les coordonnées, sinon 2 km par défaut)
+try:
+    _ds2 = xr.open_dataset(path3d('ua'))
+    _xv  = _ds2['ua'][dim_x].values
+    _yv  = _ds2['ua'][dim_y].values
+    dx   = float(np.mean(np.diff(_xv)))
+    dy   = float(np.mean(np.diff(_yv)))
+    _ds2.close() ; del _ds2, _xv, _yv
+    if abs(dx) <= 1.5:   # coordonnées = indices entiers → on force la vraie résolution
+        dx = 2000.0 ; dy = 2000.0
+except Exception:
+    dx = 2000.0 ; dy = 2000.0
+print(f'Résolution horizontale : dx={dx:.0f} m  dy={dy:.0f} m')
+
+
+
+
+
+# ======================================================================
+# §13.1 — Terme ∂u/∂t  (différence finie temporelle)
+# ======================================================================
+
+ds_u = xr.open_dataset(path3d('ua'))
+
+for iz in IZ_LEVELS:
+    u_a = ds_u['ua'].isel({dim_t: it_a, dim_z: iz}).values   # (ny, nx)
+    u_b = ds_u['ua'].isel({dim_t: it_b, dim_z: iz}).values
+
+    dudt_2d = (u_b - u_a) / dt_sec   # m/s²
+    del u_a, u_b ; gc.collect()
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    vmax = np.abs(flux_2d).max()
-    im = ax.pcolormesh(flux_2d, cmap='RdBu_r', vmin=-vmax, vmax=vmax)
-    fig.colorbar(im, ax=ax, label='rho0 u-prime w-prime  (kg m-1 s-2)')
+    vmax = np.percentile(np.abs(dudt_2d), 99)
+    if vmax == 0: vmax = 1e-9
+    im = ax.pcolormesh(dudt_2d, cmap='RdBu_r', vmin=-vmax, vmax=vmax)
+    fig.colorbar(im, ax=ax, label=r'$\partial u/\partial t$  (m s$^{-2}$)')
     ax.contour(mh.astype(float), levels=[0.5], colors='black',
                linewidths=1.2, linestyles='--')
-    ax.set_title(f'Flux de Reynolds — niveau iz={iz}\n'
-                 f'Contour noir = limite humide/sec',
-                 fontweight='bold')
+    ax.set_title(
+        rf'$\partial u / \partial t$ — iz={iz}  (z≈{alt[iz]:.0f} m)'
+        '\nContour = limite humide/sec', fontweight='bold')
+    ax.set_xlabel('x') ; ax.set_ylabel('y')
+    plt.tight_layout() ; plt.show()
+    del dudt_2d
+
+ds_u.close() ; del ds_u ; gc.collect()
+print('§13.1 ∂u/∂t terminé.')
+
+
+
+
+
+# ======================================================================
+# §13.2 — Terme d'advection  -(u*du/dx + v*du/dy + w*du/dz)
+# ======================================================================
+
+ds_u = xr.open_dataset(path3d('ua'))
+ds_v = xr.open_dataset(path3d('va'))
+ds_w = xr.open_dataset(path3d('wa'))
+
+for iz in IZ_LEVELS:
+    u_2d = ds_u['ua'].isel({dim_t: it_c, dim_z: iz}).values   # (ny, nx)
+    v_2d = ds_v['va'].isel({dim_t: it_c, dim_z: iz}).values
+    w_2d = ds_w['wa'].isel({dim_t: it_c, dim_z: iz}).values
+
+    # Gradients horizontaux (différences finies centrées)
+    dudx = np.gradient(u_2d, dx, axis=1)
+    dudy = np.gradient(u_2d, dy, axis=0)
+
+    # Gradient vertical centré
+    iz_lo = max(iz - 1, 0)
+    iz_hi = min(iz + 1, n_z - 1)
+    u_lo  = ds_u['ua'].isel({dim_t: it_c, dim_z: iz_lo}).values
+    u_hi  = ds_u['ua'].isel({dim_t: it_c, dim_z: iz_hi}).values
+    dz    = alt[iz_hi] - alt[iz_lo]
+    if dz == 0: dz = alt[1] - alt[0]
+    dudz  = (u_hi - u_lo) / dz
+    del u_lo, u_hi
+
+    adv_2d = -(u_2d * dudx + v_2d * dudy + w_2d * dudz)   # m/s²
+    del u_2d, v_2d, w_2d, dudx, dudy, dudz ; gc.collect()
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    vmax = np.percentile(np.abs(adv_2d), 99)
+    if vmax == 0: vmax = 1e-9
+    im = ax.pcolormesh(adv_2d, cmap='RdBu_r', vmin=-vmax, vmax=vmax)
+    fig.colorbar(im, ax=ax, label=r'Advection  (m s$^{-2}$)')
+    ax.contour(mh.astype(float), levels=[0.5], colors='black',
+               linewidths=1.2, linestyles='--')
+    ax.set_title(
+        rf'Advection $-(u\partial_x u + v\partial_y u + w\partial_z u)$'
+        rf' — iz={iz}  (z≈{alt[iz]:.0f} m)'
+        '\nContour = limite humide/sec', fontweight='bold')
+    ax.set_xlabel('x') ; ax.set_ylabel('y')
+    plt.tight_layout() ; plt.show()
+    del adv_2d
+
+ds_u.close() ; ds_v.close() ; ds_w.close()
+del ds_u, ds_v, ds_w ; gc.collect()
+print('§13.2 Advection terminé.')
+
+
+
+
+
+
+# ======================================================================
+# §13.3 — Terme de pression  -(1/rho0) * dp/dx
+# ======================================================================
+
+ds_p = xr.open_dataset(path3d('pa'))
+
+for iz in IZ_LEVELS:
+    p_2d    = ds_p['pa'].isel({dim_t: it_c, dim_z: iz}).values   # (ny, nx)
+    dpdx    = np.gradient(p_2d, dx, axis=1)
+    pres_2d = -dpdx / rho0[iz]   # m/s²
+    del p_2d, dpdx ; gc.collect()
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    vmax = np.percentile(np.abs(pres_2d), 99)
+    if vmax == 0: vmax = 1e-9
+    im = ax.pcolormesh(pres_2d, cmap='RdBu_r', vmin=-vmax, vmax=vmax)
+    fig.colorbar(im, ax=ax, label=r'Terme pression  (m s$^{-2}$)')
+    ax.contour(mh.astype(float), levels=[0.5], colors='black',
+               linewidths=1.2, linestyles='--')
+    ax.set_title(
+        rf'Terme de pression $-\frac{{1}}{{\rho_0}}\partial_x p$'
+        rf' — iz={iz}  (z≈{alt[iz]:.0f} m)'
+        '\nContour = limite humide/sec', fontweight='bold')
+    ax.set_xlabel('x') ; ax.set_ylabel('y')
+    plt.tight_layout() ; plt.show()
+    del pres_2d
+
+ds_p.close() ; del ds_p ; gc.collect()
+print('§13.3 Pression terminé.')
+
+
+
+
+
+# ======================================================================
+# §13.4 — Synthèse : les 3 termes côte à côte pour un niveau donné
+# ======================================================================
+
+IZ_SYNTH = 30   # à ajuster selon le niveau d'intérêt
+
+ds_u = xr.open_dataset(path3d('ua'))
+ds_v = xr.open_dataset(path3d('va'))
+ds_w = xr.open_dataset(path3d('wa'))
+ds_p = xr.open_dataset(path3d('pa'))
+
+# ∂u/∂t
+u_a_s  = ds_u['ua'].isel({dim_t: it_a, dim_z: IZ_SYNTH}).values
+u_b_s  = ds_u['ua'].isel({dim_t: it_b, dim_z: IZ_SYNTH}).values
+dudt_s = (u_b_s - u_a_s) / dt_sec
+del u_a_s, u_b_s
+
+# Advection
+u_s    = ds_u['ua'].isel({dim_t: it_c, dim_z: IZ_SYNTH}).values
+v_s    = ds_v['va'].isel({dim_t: it_c, dim_z: IZ_SYNTH}).values
+w_s    = ds_w['wa'].isel({dim_t: it_c, dim_z: IZ_SYNTH}).values
+iz_lo  = max(IZ_SYNTH - 1, 0) ; iz_hi = min(IZ_SYNTH + 1, n_z - 1)
+u_lo_s = ds_u['ua'].isel({dim_t: it_c, dim_z: iz_lo}).values
+u_hi_s = ds_u['ua'].isel({dim_t: it_c, dim_z: iz_hi}).values
+dz_s   = alt[iz_hi] - alt[iz_lo]
+if dz_s == 0: dz_s = alt[1] - alt[0]
+adv_s  = -(u_s * np.gradient(u_s, dx, axis=1)
+           + v_s * np.gradient(u_s, dy, axis=0)
+           + w_s * (u_hi_s - u_lo_s) / dz_s)
+del u_s, v_s, w_s, u_lo_s, u_hi_s
+
+# Pression
+p_s    = ds_p['pa'].isel({dim_t: it_c, dim_z: IZ_SYNTH}).values
+pres_s = -np.gradient(p_s, dx, axis=1) / rho0[IZ_SYNTH]
+del p_s
+
+ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
+del ds_u, ds_v, ds_w, ds_p ; gc.collect()
+
+terms  = [dudt_s, adv_s, pres_s]
+titres = [r'$\partial u / \partial t$',
+          r'$-(u\partial_x u + v\partial_y u + w\partial_z u)$',
+          r'$-\frac{1}{\rho_0}\partial_x p$']
+clbls  = [r'$\partial u/\partial t$  (m/s²)',
+          r'Advection  (m/s²)',
+          r'Pression  (m/s²)']
+
+fig, axes = plt.subplots(1, 3, figsize=(19, 6), sharey=True)
+for ax, term, titre, cbl in zip(axes, terms, titres, clbls):
+    vmax = np.percentile(np.abs(term), 99)
+    if vmax == 0: vmax = 1e-9
+    im = ax.pcolormesh(term, cmap='RdBu_r', vmin=-vmax, vmax=vmax)
+    fig.colorbar(im, ax=ax, label=cbl, orientation='horizontal', pad=0.06)
+    ax.contour(mh.astype(float), levels=[0.5], colors='black',
+               linewidths=1.2, linestyles='--')
+    ax.set_title(titre, fontweight='bold')
     ax.set_xlabel('x')
-    ax.set_ylabel('y')
-    plt.tight_layout()
-    plt.show()
-
-
-
-
-
-En dessous de la tropopause — les flux s'annulent
-Dans la troposphère, la convection génère des ondes de gravité qui se propagent vers le haut. Ces ondes transportent du flux de QdM u′w′. Mais la troposphère est un milieu qui favorise les allers-retours : une onde monte, atteint un niveau où elle est réfléchie (par exemple là où sa fréquence dépasse la fréquence de Brunt-Väisälä locale), redescend, remonte, etc. Au bout d'un moment la moyenne temporelle de u′w′ s'annule parce que l'onde transporte autant vers le haut que vers le bas. C'est ça l'instabilité dont on t'a parlé — plus précisément c'est la résonance des ondes dans la cavité troposphérique.
-
-À la tropopause — un filtre
-La tropopause est une barrière dynamique forte : la stabilité statique augmente brutalement (on passe de la troposphère convective à la stratosphère très stable). Les ondes qui n'ont pas assez d'énergie pour franchir cette barrière sont réfléchies vers le bas et continuent leurs allers-retours dans la troposphère — leur contribution nette à u′w′ reste nulle.
-Seules les ondes avec suffisamment d'énergie percent la tropopause et se propagent vers le haut en stratosphère. Celles-là ne reviennent jamais — il n'y a plus de réflexion pour les renvoyer vers le bas. Leur flux u′w′ est donc unilatéral et non compensé.
-
-Ce qui amène le vent non nul en haut
-C'est là la question clé. Les ondes qui ont percé la tropopause transportent du flux u′w′ vers le haut, et quand elles déferlent (comme une vague sur une plage) à une certaine altitude en stratosphère, elles déposent leur QdM dans le vent moyen. Le déferlement se produit quand l'amplitude de l'onde devient trop grande par rapport à la densité locale — or la densité diminue avec l'altitude, donc une onde d'amplitude constante va inevitablement déferler à un moment.
-Ce dépôt de QdM par déferlement d'ondes s'appelle le forçage d'Eliassen-Palm et c'est précisément ce qui accélère ou décélère le vent moyen en stratosphère. Le vent que tu observes à iz=73 est le résultat de l'accumulation de ces dépôts au cours de la simulation.
+axes[0].set_ylabel('y')
+plt.suptitle(
+    f'Termes de Navier-Stokes — iz={IZ_SYNTH}  (z≈{alt[IZ_SYNTH]:.0f} m)',
+    fontsize=13, fontweight='bold')
+plt.tight_layout() ; plt.show()
+del dudt_s, adv_s, pres_s ; gc.collect()
+print('§13.4 synthèse terminée.')
