@@ -706,3 +706,79 @@ iz=50  z= 21000m  dudt=3.400e-06  adv=3.163e-05  pres=-8.148e-09  total=3.502e-0
 iz=60  z= 26000m  dudt=-1.594e-05  adv=1.269e-04  pres=-9.647e-09  total=1.109e-04
 iz=70  z= 31000m  dudt=2.053e-06  adv=6.992e-05  pres=5.883e-09  total=7.197e-05
 32
+
+
+
+
+
+
+
+
+
+# ======================================================================
+# §14 — Test de fermeture : ∂ū/∂t  vs  Reynolds direct
+# L'advection est dominée par les ondes en stratosphère et sort du cadre
+# du bilan Reynolds — on compare uniquement la tendance du vent moyen.
+# ======================================================================
+
+dt_sec = 6.0 * 3600.0
+
+dudt_prof = np.zeros(n_z)
+
+ds_u = xr.open_dataset(path3d('ua'))
+
+for iz in range(n_z):
+    acc = 0.0
+    n   = 0
+
+    for it in range(t_stat, n_t - 1):
+        u_2d   = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values
+        u_next = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
+        acc   += ((u_next - u_2d) / dt_sec).mean()
+        n     += 1
+        del u_2d, u_next
+        gc.collect()
+
+    dudt_prof[iz] = acc / n if n > 0 else 0.0
+
+    if iz % 10 == 0:
+        print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
+
+ds_u.close()
+del ds_u
+gc.collect()
+print('∂ū/∂t calculé.')
+
+# ── Visualisation ─────────────────────────────────────────────────────
+fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
+
+# Panel gauche : troposphère seulement (0–15 km)
+idx_tropo = np.searchsorted(alt, 15000)
+
+ax = axes[0]
+ax.plot(tend_u_glob[:idx_tropo] * 1e5, alt[:idx_tropo], color='royalblue', lw=2,
+        label=r"Reynolds direct $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$")
+ax.plot(dudt_prof[:idx_tropo]   * 1e5, alt[:idx_tropo], color='crimson', lw=2, linestyle='--',
+        label=r'$\partial \bar{u}/\partial t$')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
+ax.set_ylabel('Altitude (m)')
+ax.set_title('Troposphère (0–15 km)', fontweight='bold')
+ax.legend()
+ax.grid(True, alpha=0.3)
+
+# Panel droit : colonne complète
+ax = axes[1]
+ax.plot(tend_u_glob * 1e5, alt, color='royalblue', lw=2,
+        label=r"Reynolds direct $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$")
+ax.plot(dudt_prof   * 1e5, alt, color='crimson', lw=2, linestyle='--',
+        label=r'$\partial \bar{u}/\partial t$')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
+ax.set_title('Colonne complète', fontweight='bold')
+ax.legend()
+ax.grid(True, alpha=0.3)
+
+plt.suptitle('Test de fermeture du bilan de QdM', fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
