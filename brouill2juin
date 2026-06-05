@@ -782,3 +782,89 @@ ax.grid(True, alpha=0.3)
 plt.suptitle('Test de fermeture du bilan de QdM', fontsize=13, fontweight='bold')
 plt.tight_layout()
 plt.show()
+
+
+
+
+
+
+# ======================================================================
+# §14 — Test de fermeture : ∂ū/∂t  vs  Reynolds direct
+# + terme w̄·∂ū/∂z pour vérifier sa nullité en RCE
+# ======================================================================
+
+dt_sec = 6.0 * 3600.0
+
+dudt_prof  = np.zeros(n_z)
+wdudz_prof = np.zeros(n_z)
+
+ds_u = xr.open_dataset(path3d('ua'))
+ds_w = xr.open_dataset(path3d('wa'))
+
+for iz in range(n_z):
+    acc_dudt  = 0.0
+    acc_wdudz = 0.0
+    n = 0
+
+    iz_lo = max(iz - 1, 0)
+    iz_hi = min(iz + 1, n_z - 1)
+    dz    = alt[iz_hi] - alt[iz_lo]
+    if dz == 0:
+        dz = alt[1] - alt[0]
+
+    for it in range(t_stat, n_t - 1):
+        u_2d   = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values
+        u_next = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
+        w_2d   = ds_w['wa'].isel({dim_t: it,     dim_z: iz}).values
+
+        acc_dudt += ((u_next - u_2d) / dt_sec).mean()
+
+        # w̄·∂ū/∂z : on utilise les moyennes horizontales
+        w_bar  = w_2d.mean()
+        u_lo   = ds_u['ua'].isel({dim_t: it, dim_z: iz_lo}).values.mean()
+        u_hi   = ds_u['ua'].isel({dim_t: it, dim_z: iz_hi}).values.mean()
+        dudz   = (u_hi - u_lo) / dz
+        acc_wdudz += w_bar * dudz
+
+        n += 1
+        del u_2d, u_next, w_2d, u_lo, u_hi
+        gc.collect()
+
+    dudt_prof[iz]  = acc_dudt  / n if n > 0 else 0.0
+    wdudz_prof[iz] = acc_wdudz / n if n > 0 else 0.0
+
+    if iz % 10 == 0:
+        print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
+
+ds_u.close() ; ds_w.close()
+del ds_u, ds_w
+gc.collect()
+print('Calcul terminé.')
+
+# ── Visualisation ─────────────────────────────────────────────────────
+fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
+
+for ax, idx, titre in zip(
+        axes,
+        [slice(None, np.searchsorted(alt, 15000)), slice(None)],
+        ['Troposphère (0–15 km)', 'Colonne complète']):
+
+    ax.plot(tend_u_glob[idx] * 1e5, alt[idx], color='royalblue', lw=2,
+            label=r"Reynolds direct $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$")
+    ax.plot(dudt_prof[idx]   * 1e5, alt[idx], color='crimson',   lw=2, linestyle='--',
+            label=r'$\partial\bar{u}/\partial t$')
+    ax.plot(wdudz_prof[idx]  * 1e5, alt[idx], color='seagreen',  lw=1.5, linestyle=':',
+            label=r'$\bar{w}\,\partial_z\bar{u}$')
+    ax.plot((dudt_prof[idx] + wdudz_prof[idx]) * 1e5, alt[idx],
+            color='darkorange', lw=1.5, linestyle='-.',
+            label=r'$\partial\bar{u}/\partial t + \bar{w}\,\partial_z\bar{u}$')
+    ax.axvline(0, color='grey', alpha=0.4)
+    ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
+    ax.set_title(titre, fontweight='bold')
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+axes[0].set_ylabel('Altitude (m)')
+plt.suptitle('Test de fermeture — nullité de w̄·∂ū/∂z en RCE', fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
