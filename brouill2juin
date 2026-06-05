@@ -636,3 +636,60 @@ for iz in [0, 10, 30, 50, 60, 70]:
 ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
 del ds_u, ds_v, ds_w, ds_p
 gc.collect()
+
+
+
+# ======================================================================
+# §14 — Diagnostic terme par terme
+# ======================================================================
+
+dt_sec = 6.0 * 3600.0
+
+ds_u = xr.open_dataset(path3d('ua'))
+ds_v = xr.open_dataset(path3d('va'))
+ds_w = xr.open_dataset(path3d('wa'))
+ds_p = xr.open_dataset(path3d('pa'))
+
+for iz in [0, 10, 30, 50, 60, 70]:
+    acc_dudt = 0.0
+    acc_adv  = 0.0
+    acc_pres = 0.0
+    n = 0
+
+    iz_lo = max(iz - 1, 0)
+    iz_hi = min(iz + 1, n_z - 1)
+    dz    = alt[iz_hi] - alt[iz_lo]
+    if dz == 0:
+        dz = alt[1] - alt[0]
+
+    for it in range(t_stat, n_t - 1):
+        u_2d = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values
+        v_2d = ds_v['va'].isel({dim_t: it,     dim_z: iz}).values
+        p_2d = ds_p['pa'].isel({dim_t: it,     dim_z: iz}).values
+
+        u_next      = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
+        dudt        = (u_next - u_2d) / dt_sec
+        del u_next
+
+        adv  = -(u_2d * np.gradient(u_2d, dx, axis=1)
+               + v_2d * np.gradient(u_2d, dy, axis=0))
+
+        pres = -np.gradient(p_2d, dx, axis=1) / rho0[iz]
+
+        acc_dudt += dudt.mean()
+        acc_adv  += adv.mean()
+        acc_pres += pres.mean()
+        n += 1
+
+        del u_2d, v_2d, p_2d, dudt, adv, pres
+        gc.collect()
+
+    print(f'iz={iz:2d}  z={alt[iz]:6.0f}m  '
+          f'dudt={acc_dudt/n:.3e}  '
+          f'adv={acc_adv/n:.3e}  '
+          f'pres={acc_pres/n:.3e}  '
+          f'total={( acc_dudt+acc_adv+acc_pres)/n:.3e}')
+
+ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
+del ds_u, ds_v, ds_w, ds_p
+gc.collect()
