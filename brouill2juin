@@ -443,3 +443,132 @@ ax.legend()
 ax.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.show()
+
+
+
+
+
+
+
+
+
+# ======================================================================
+# §14 — Reynolds comme résidu — version complète
+# Termes : ∂u/∂t + advection + ∂xp/ρ₀ + ∂zp/ρ₀ + flottabilité
+# ======================================================================
+
+dt_sec = 6.0 * 3600.0
+p0     = 1e5
+cp     = 1004.0
+g      = 9.81
+print(f'dt_sec = {dt_sec:.0f} s')
+
+# ── Profil θ₀(z) (moyenne spatiotemporelle sur état stationnaire) ──────
+print('Calcul de θ₀...')
+theta0_sum = np.zeros(n_z)
+n_th = 0
+
+ds_ta = xr.open_dataset(path3d('ta'))
+ds_pa = xr.open_dataset(path3d('pa'))
+
+for t0 in range(t_stat, n_t, BLOC):
+    t1 = min(t0 + BLOC, n_t)
+    sl = {dim_t: slice(t0, t1)}
+    T_blk = ds_ta['ta'].isel(sl).values
+    p_blk = ds_pa['pa'].isel(sl).values
+    th_blk = T_blk * (p0 / p_blk) ** (Rd / cp)
+    theta0_sum += th_blk.mean(axis=(0, 2, 3)) * (t1 - t0)
+    n_th += (t1 - t0)
+    del T_blk, p_blk, th_blk
+    gc.collect()
+
+ds_ta.close() ; ds_pa.close()
+del ds_ta, ds_pa
+gc.collect()
+
+theta0 = theta0_sum / n_th
+print('θ₀ calculé.')
+
+# ── Résidu ────────────────────────────────────────────────────────────
+residu = np.zeros(n_z)
+
+ds_u  = xr.open_dataset(path3d('ua'))
+ds_v  = xr.open_dataset(path3d('va'))
+ds_w  = xr.open_dataset(path3d('wa'))
+ds_p  = xr.open_dataset(path3d('pa'))
+ds_ta = xr.open_dataset(path3d('ta'))
+
+for iz in range(n_z):
+    acc = 0.0
+    n   = 0
+
+    iz_lo = max(iz - 1, 0)
+    iz_hi = min(iz + 1, n_z - 1)
+    dz    = alt[iz_hi] - alt[iz_lo]
+    if dz == 0:
+        dz = alt[1] - alt[0]
+
+    for it in range(t_stat, n_t - 1):
+        u_2d = ds_u['ua'].isel({dim_t: it, dim_z: iz}).values
+        v_2d = ds_v['va'].isel({dim_t: it, dim_z: iz}).values
+        w_2d = ds_w['wa'].isel({dim_t: it, dim_z: iz}).values
+        p_2d = ds_p['pa'].isel({dim_t: it, dim_z: iz}).values
+        T_2d = ds_ta['ta'].isel({dim_t: it, dim_z: iz}).values
+
+        # ∂u/∂t
+        u_next = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
+        dudt   = (u_next - u_2d) / dt_sec
+        del u_next
+
+        # Advection
+        u_lo = ds_u['ua'].isel({dim_t: it, dim_z: iz_lo}).values
+        u_hi = ds_u['ua'].isel({dim_t: it, dim_z: iz_hi}).values
+        adv  = -(u_2d * np.gradient(u_2d, dx, axis=1)
+               + v_2d * np.gradient(u_2d, dy, axis=0)
+               + w_2d * (u_hi - u_lo) / dz)
+        del u_lo, u_hi
+
+        # Gradient horizontal de pression
+        pres_h = -np.gradient(p_2d, dx, axis=1) / rho0[iz]
+
+        # Gradient vertical de pression
+        p_lo = ds_p['pa'].isel({dim_t: it, dim_z: iz_lo}).values
+        p_hi = ds_p['pa'].isel({dim_t: it, dim_z: iz_hi}).values
+        pres_v = -((p_hi - p_lo) / dz) / rho0[iz]
+        del p_lo, p_hi
+
+        # Flottabilité : g * θ'/θ₀   avec θ' = θ - θ₀
+        theta_2d = T_2d * (p0 / p_2d) ** (Rd / cp)
+        buoy     = g * (theta_2d - theta0[iz]) / theta0[iz]
+        del theta_2d
+
+        acc += (dudt + adv + pres_h + pres_v + buoy).mean()
+        n   += 1
+
+        del u_2d, v_2d, w_2d, p_2d, T_2d, dudt, adv, pres_h, pres_v, buoy
+        gc.collect()
+
+    residu[iz] = acc / n if n > 0 else 0.0
+
+    if iz % 10 == 0:
+        print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
+
+ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close() ; ds_ta.close()
+del ds_u, ds_v, ds_w, ds_p, ds_ta
+gc.collect()
+print('Résidu calculé.')
+
+# ── Visualisation ─────────────────────────────────────────────────────
+fig, ax = plt.subplots(figsize=(12, 8))
+ax.plot(tend_u_glob * 1e5, alt, color='royalblue', lw=2,
+        label=r"Reynolds direct $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$")
+ax.plot(residu * 1e5,      alt, color='crimson',   lw=2, linestyle='--',
+        label=r'Résidu ($\partial_t u$ + adv + $\partial_x p/\rho_0$ + $\partial_z p/\rho_0$ + flott.)')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
+ax.set_ylabel('Altitude (m)')
+ax.set_title('Test de fermeture du bilan de QdM — termes complets', fontweight='bold')
+ax.legend()
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()
