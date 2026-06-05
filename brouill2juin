@@ -693,3 +693,16 @@ for iz in [0, 10, 30, 50, 60, 70]:
 ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
 del ds_u, ds_v, ds_w, ds_p
 gc.collect()
+
+
+
+
+
+
+iz= 0  z=     0m  dudt=1.331e-07  adv=-7.568e-06  pres=1.266e-09  total=-7.434e-06
+iz=10  z=  1331m  dudt=1.039e-06  adv=1.892e-05  pres=3.065e-09  total=1.996e-05
+iz=30  z= 11000m  dudt=-5.738e-07  adv=3.035e-05  pres=-1.321e-09  total=2.977e-05
+iz=50  z= 21000m  dudt=3.400e-06  adv=3.163e-05  pres=-8.148e-09  total=3.502e-05
+iz=60  z= 26000m  dudt=-1.594e-05  adv=1.269e-04  pres=-9.647e-09  total=1.109e-04
+iz=70  z= 31000m  dudt=2.053e-06  adv=6.992e-05  pres=5.883e-09  total=7.197e-05
+32
