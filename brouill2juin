@@ -259,3 +259,86 @@ ax.legend()
 ax.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.show()
+
+
+
+
+
+
+
+
+
+## 14. Test de fermeture du bilan de QdM — Reynolds comme résidu
+
+L'équation complète de la QdM zonale moyennée est :
+
+$$\frac{\partial u}{\partial t} = - u\partial_x u - v\partial_y u - w\partial_z u - \frac{1}{\rho_0}\partial_x p - \frac{1}{\rho_0}\partial_z(\rho_0 \overline{u'w'})$$
+
+On a déjà calculé le terme de Reynolds **directement** au §7 à partir de $u'w'$.  
+L'idée ici est de le **retrouver comme résidu** en isolant le membre droit :
+
+$$-\frac{1}{\rho_0}\partial_z(\rho_0 \overline{u'w'}) = \frac{\partial u}{\partial t} + u\partial_x u + v\partial_y u + w\partial_z u + \frac{1}{\rho_0}\partial_x p$$
+
+On calcule donc la somme des quatre termes connus, moyennée sur tout l'état stationnaire,  
+et on compare le profil vertical obtenu avec `tend_u_glob` du §7.  
+Si les deux profils coïncident → le bilan est fermé et les calculs sont cohérents.  
+Un écart résiduel indiquerait des termes implicites du modèle (diffusion numérique,  
+schéma d'advection non conservatif, paramétrisation de sous-maille) absents des sorties.
+
+
+
+# ======================================================================
+# §14 — Reynolds comme résidu : somme des autres termes de Navier-Stokes
+# Tous les termes sont moyennés sur tout idx_stat pour cohérence avec §7
+# ======================================================================
+
+residu = np.zeros(n_z)
+
+ds_u = xr.open_dataset(path3d('ua'))
+ds_v = xr.open_dataset(path3d('va'))
+ds_w = xr.open_dataset(path3d('wa'))
+ds_p = xr.open_dataset(path3d('pa'))
+
+for iz in range(n_z):
+    acc = 0.0
+    n   = 0
+
+    for it in range(t_stat, n_t - 1):
+        u_2d = ds_u['ua'].isel({dim_t: it,   dim_z: iz}).values
+        v_2d = ds_v['va'].isel({dim_t: it,   dim_z: iz}).values
+        w_2d = ds_w['wa'].isel({dim_t: it,   dim_z: iz}).values
+        p_2d = ds_p['pa'].isel({dim_t: it,   dim_z: iz}).values
+
+        # ∂u/∂t
+        u_next = ds_u['ua'].isel({dim_t: it+1, dim_z: iz}).values
+        dudt   = (u_next - u_2d) / dt_sec
+        del u_next
+
+        # Advection : gradients horizontaux centrés + gradient vertical centré
+        iz_lo = max(iz - 1, 0) ; iz_hi = min(iz + 1, n_z - 1)
+        u_lo  = ds_u['ua'].isel({dim_t: it, dim_z: iz_lo}).values
+        u_hi  = ds_u['ua'].isel({dim_t: it, dim_z: iz_hi}).values
+        dz    = alt[iz_hi] - alt[iz_lo]
+        if dz == 0: dz = alt[1] - alt[0]
+        adv   = -(u_2d * np.gradient(u_2d, dx, axis=1)
+                + v_2d * np.gradient(u_2d, dy, axis=0)
+                + w_2d * (u_hi - u_lo) / dz)
+        del u_lo, u_hi
+
+        # Pression
+        pres  = -np.gradient(p_2d, dx, axis=1) / rho0[iz]
+
+        acc += (dudt + adv + pres).mean()
+        n   += 1
+
+        del u_2d, v_2d, w_2d, p_2d, dudt, adv, pres
+        gc.collect()
+
+    residu[iz] = acc / n
+    if iz % 10 == 0:
+        print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
+
+ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
+del ds_u, ds_v, ds_w, ds_p
+gc.collect()
+print('Résidu calculé.')
