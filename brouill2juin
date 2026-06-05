@@ -342,3 +342,21 @@ ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
 del ds_u, ds_v, ds_w, ds_p
 gc.collect()
 print('Résidu calculé.')
+
+
+
+
+
+
+
+fig, ax = plt.subplots(figsize=(6, 8))
+ax.plot(tend_u_glob * 1e5, alt, color='royalblue', lw=2,
+        label=r"Reynolds direct $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$")
+ax.plot(residu * 1e5,      alt, color='crimson',   lw=2, linestyle='--',
+        label='Résidu (somme autres termes)')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
+ax.set_ylabel('Altitude (m)')
+ax.set_title('Test de fermeture du bilan de QdM', fontweight='bold')
+ax.legend() ; ax.grid(True, alpha=0.3)
+plt.tight_layout() ; plt.show()
