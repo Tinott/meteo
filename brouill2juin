@@ -1,142 +1,14 @@
-## 13. Termes de Navier-Stokes : cartes 2D par niveau
+## 15. Fermeture du bilan de QdM par région (humide / sèche)
 
-Même présentation que la section 12 (cartes pour `iz` = [0, 10, 30, 73]),
-mais pour les trois termes de l'équation de QdM zonale :
+On vérifie si l'équation de Navier-Stokes se ferme séparément dans chaque région.
 
-$$\frac{\partial u}{\partial t} =
-- u\frac{\partial u}{\partial x}
-- v\frac{\partial u}{\partial y}
-- w\frac{\partial u}{\partial z}
-- \frac{1}{\rho_0}\frac{\partial p}{\partial x} + \cdots$$
+**Méthode directe** : dérivée du flux de Reynolds calculée à partir de ρ₀⟨u′w′⟩ restreint aux colonnes humides (ou sèches), exactement comme au §9.
 
-- **Terme 1 — ∂u/∂t** : différence finie temporelle sur 2 pas consécutifs (état stationnaire)
-- **Terme 2 — Advection** : $-(u\partial_x u + v\partial_y u + w\partial_z u)$, gradients centrés
-- **Terme 3 — Pression** : $-(1/\rho_0)\,\partial_x p$, gradient centré
+**Méthode résiduelle** : ∂ū/∂t calculé en ne moyennant que sur les colonnes humides (ou sèches).
 
-On travaille **niveau par niveau** pour limiter la RAM.
-Contour noir = limite zone humide/sèche (même masque `mh` que §12).
+Si l'advection et la pression ne s'annulent plus localement (contrairement au cas global), l'écart entre les deux profils sera plus grand. On visualise les deux profils côte à côte pour chaque région.
 
 
-
-
-
-# ======================================================================
-# §13 — Configuration commune
-# ======================================================================
-
-IZ_LEVELS = [0, 10, 30, 73]   # mêmes niveaux que §12
-
-# Indice central de l'état stationnaire
-it_mid = t_stat + n_stat // 2
-it_a   = it_mid
-it_b   = it_mid + 1
-
-# dt en secondes
-dt_days = float(time_days[it_b] - time_days[it_a])
-dt_sec  = dt_days * 86400.0
-it_c    = it_mid   # pas de temps unique pour advection et pression
-print(f'dt utilisé pour ∂u/∂t : {dt_sec:.0f} s  ({dt_days:.4f} j)')
-
-# Résolution horizontale (inférée depuis les coordonnées, sinon 2 km par défaut)
-try:
-    _ds2 = xr.open_dataset(path3d('ua'))
-    _xv  = _ds2['ua'][dim_x].values
-    _yv  = _ds2['ua'][dim_y].values
-    dx   = float(np.mean(np.diff(_xv)))
-    dy   = float(np.mean(np.diff(_yv)))
-    _ds2.close() ; del _ds2, _xv, _yv
-    if abs(dx) <= 1.5:   # coordonnées = indices entiers → on force la vraie résolution
-        dx = 2000.0 ; dy = 2000.0
-except Exception:
-    dx = 2000.0 ; dy = 2000.0
-print(f'Résolution horizontale : dx={dx:.0f} m  dy={dy:.0f} m')
-
-
-
-
-
-# ======================================================================
-# §13.1 — Terme ∂u/∂t  (différence finie temporelle)
-# ======================================================================
-
-ds_u = xr.open_dataset(path3d('ua'))
-
-for iz in IZ_LEVELS:
-    u_a = ds_u['ua'].isel({dim_t: it_a, dim_z: iz}).values   # (ny, nx)
-    u_b = ds_u['ua'].isel({dim_t: it_b, dim_z: iz}).values
-
-    dudt_2d = (u_b - u_a) / dt_sec   # m/s²
-    del u_a, u_b ; gc.collect()
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    vmax = np.percentile(np.abs(dudt_2d), 99)
-    if vmax == 0: vmax = 1e-9
-    im = ax.pcolormesh(dudt_2d, cmap='RdBu_r', vmin=-vmax, vmax=vmax)
-    fig.colorbar(im, ax=ax, label=r'$\partial u/\partial t$  (m s$^{-2}$)')
-    ax.contour(mh.astype(float), levels=[0.5], colors='black',
-               linewidths=1.2, linestyles='--')
-    ax.set_title(
-        rf'$\partial u / \partial t$ — iz={iz}  (z≈{alt[iz]:.0f} m)'
-        '\nContour = limite humide/sec', fontweight='bold')
-    ax.set_xlabel('x') ; ax.set_ylabel('y')
-    plt.tight_layout() ; plt.show()
-    del dudt_2d
-
-ds_u.close() ; del ds_u ; gc.collect()
-print('§13.1 ∂u/∂t terminé.')
-
-
-
-
-
-# ======================================================================
-# §13.2 — Terme d'advection  -(u*du/dx + v*du/dy + w*du/dz)
-# ======================================================================
-
-ds_u = xr.open_dataset(path3d('ua'))
-ds_v = xr.open_dataset(path3d('va'))
-ds_w = xr.open_dataset(path3d('wa'))
-
-for iz in IZ_LEVELS:
-    u_2d = ds_u['ua'].isel({dim_t: it_c, dim_z: iz}).values   # (ny, nx)
-    v_2d = ds_v['va'].isel({dim_t: it_c, dim_z: iz}).values
-    w_2d = ds_w['wa'].isel({dim_t: it_c, dim_z: iz}).values
-
-    # Gradients horizontaux (différences finies centrées)
-    dudx = np.gradient(u_2d, dx, axis=1)
-    dudy = np.gradient(u_2d, dy, axis=0)
-
-    # Gradient vertical centré
-    iz_lo = max(iz - 1, 0)
-    iz_hi = min(iz + 1, n_z - 1)
-    u_lo  = ds_u['ua'].isel({dim_t: it_c, dim_z: iz_lo}).values
-    u_hi  = ds_u['ua'].isel({dim_t: it_c, dim_z: iz_hi}).values
-    dz    = alt[iz_hi] - alt[iz_lo]
-    if dz == 0: dz = alt[1] - alt[0]
-    dudz  = (u_hi - u_lo) / dz
-    del u_lo, u_hi
-
-    adv_2d = -(u_2d * dudx + v_2d * dudy + w_2d * dudz)   # m/s²
-    del u_2d, v_2d, w_2d, dudx, dudy, dudz ; gc.collect()
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    vmax = np.percentile(np.abs(adv_2d), 99)
-    if vmax == 0: vmax = 1e-9
-    im = ax.pcolormesh(adv_2d, cmap='RdBu_r', vmin=-vmax, vmax=vmax)
-    fig.colorbar(im, ax=ax, label=r'Advection  (m s$^{-2}$)')
-    ax.contour(mh.astype(float), levels=[0.5], colors='black',
-               linewidths=1.2, linestyles='--')
-    ax.set_title(
-        rf'Advection $-(u\partial_x u + v\partial_y u + w\partial_z u)$'
-        rf' — iz={iz}  (z≈{alt[iz]:.0f} m)'
-        '\nContour = limite humide/sec', fontweight='bold')
-    ax.set_xlabel('x') ; ax.set_ylabel('y')
-    plt.tight_layout() ; plt.show()
-    del adv_2d
-
-ds_u.close() ; ds_v.close() ; ds_w.close()
-del ds_u, ds_v, ds_w ; gc.collect()
-print('§13.2 Advection terminé.')
 
 
 
@@ -144,602 +16,47 @@ print('§13.2 Advection terminé.')
 
 
 # ======================================================================
-# §13.3 — Terme de pression  -(1/rho0) * dp/dx
-# ======================================================================
-
-ds_p = xr.open_dataset(path3d('pa'))
-
-for iz in IZ_LEVELS:
-    p_2d    = ds_p['pa'].isel({dim_t: it_c, dim_z: iz}).values   # (ny, nx)
-    dpdx    = np.gradient(p_2d, dx, axis=1)
-    pres_2d = -dpdx / rho0[iz]   # m/s²
-    del p_2d, dpdx ; gc.collect()
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    vmax = np.percentile(np.abs(pres_2d), 99)
-    if vmax == 0: vmax = 1e-9
-    im = ax.pcolormesh(pres_2d, cmap='RdBu_r', vmin=-vmax, vmax=vmax)
-    fig.colorbar(im, ax=ax, label=r'Terme pression  (m s$^{-2}$)')
-    ax.contour(mh.astype(float), levels=[0.5], colors='black',
-               linewidths=1.2, linestyles='--')
-    ax.set_title(
-        rf'Terme de pression $-\frac{{1}}{{\rho_0}}\partial_x p$'
-        rf' — iz={iz}  (z≈{alt[iz]:.0f} m)'
-        '\nContour = limite humide/sec', fontweight='bold')
-    ax.set_xlabel('x') ; ax.set_ylabel('y')
-    plt.tight_layout() ; plt.show()
-    del pres_2d
-
-ds_p.close() ; del ds_p ; gc.collect()
-print('§13.3 Pression terminé.')
-
-
-
-
-
-# ======================================================================
-# §13.4 — Synthèse : les 3 termes côte à côte pour un niveau donné
-# ======================================================================
-
-IZ_SYNTH = 30   # à ajuster selon le niveau d'intérêt
-
-ds_u = xr.open_dataset(path3d('ua'))
-ds_v = xr.open_dataset(path3d('va'))
-ds_w = xr.open_dataset(path3d('wa'))
-ds_p = xr.open_dataset(path3d('pa'))
-
-# ∂u/∂t
-u_a_s  = ds_u['ua'].isel({dim_t: it_a, dim_z: IZ_SYNTH}).values
-u_b_s  = ds_u['ua'].isel({dim_t: it_b, dim_z: IZ_SYNTH}).values
-dudt_s = (u_b_s - u_a_s) / dt_sec
-del u_a_s, u_b_s
-
-# Advection
-u_s    = ds_u['ua'].isel({dim_t: it_c, dim_z: IZ_SYNTH}).values
-v_s    = ds_v['va'].isel({dim_t: it_c, dim_z: IZ_SYNTH}).values
-w_s    = ds_w['wa'].isel({dim_t: it_c, dim_z: IZ_SYNTH}).values
-iz_lo  = max(IZ_SYNTH - 1, 0) ; iz_hi = min(IZ_SYNTH + 1, n_z - 1)
-u_lo_s = ds_u['ua'].isel({dim_t: it_c, dim_z: iz_lo}).values
-u_hi_s = ds_u['ua'].isel({dim_t: it_c, dim_z: iz_hi}).values
-dz_s   = alt[iz_hi] - alt[iz_lo]
-if dz_s == 0: dz_s = alt[1] - alt[0]
-adv_s  = -(u_s * np.gradient(u_s, dx, axis=1)
-           + v_s * np.gradient(u_s, dy, axis=0)
-           + w_s * (u_hi_s - u_lo_s) / dz_s)
-del u_s, v_s, w_s, u_lo_s, u_hi_s
-
-# Pression
-p_s    = ds_p['pa'].isel({dim_t: it_c, dim_z: IZ_SYNTH}).values
-pres_s = -np.gradient(p_s, dx, axis=1) / rho0[IZ_SYNTH]
-del p_s
-
-ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
-del ds_u, ds_v, ds_w, ds_p ; gc.collect()
-
-terms  = [dudt_s, adv_s, pres_s]
-titres = [r'$\partial u / \partial t$',
-          r'$-(u\partial_x u + v\partial_y u + w\partial_z u)$',
-          r'$-\frac{1}{\rho_0}\partial_x p$']
-clbls  = [r'$\partial u/\partial t$  (m/s²)',
-          r'Advection  (m/s²)',
-          r'Pression  (m/s²)']
-
-fig, axes = plt.subplots(1, 3, figsize=(19, 6), sharey=True)
-for ax, term, titre, cbl in zip(axes, terms, titres, clbls):
-    vmax = np.percentile(np.abs(term), 99)
-    if vmax == 0: vmax = 1e-9
-    im = ax.pcolormesh(term, cmap='RdBu_r', vmin=-vmax, vmax=vmax)
-    fig.colorbar(im, ax=ax, label=cbl, orientation='horizontal', pad=0.06)
-    ax.contour(mh.astype(float), levels=[0.5], colors='black',
-               linewidths=1.2, linestyles='--')
-    ax.set_title(titre, fontweight='bold')
-    ax.set_xlabel('x')
-axes[0].set_ylabel('y')
-plt.suptitle(
-    f'Termes de Navier-Stokes — iz={IZ_SYNTH}  (z≈{alt[IZ_SYNTH]:.0f} m)',
-    fontsize=13, fontweight='bold')
-plt.tight_layout() ; plt.show()
-del dudt_s, adv_s, pres_s ; gc.collect()
-print('§13.4 synthèse terminée.')
-
-
-
-
-
-
-fig, ax = plt.subplots(figsize=(8, 4))
-prw_flat_all = prw_all.values.ravel()  # (n_t, ny, nx) → 1D, tous les temps
-med = np.median(prw_flat_all)
-ax.hist(prw_flat_all, bins=80, color='steelblue', edgecolor='white', lw=0.3)
-ax.axvline(med, color='red', lw=1.5, linestyle='--', label=f'Médiane = {med:.1f} kg/m²')
-ax.set_xlabel('PRW (kg/m²)')
-ax.set_ylabel('Colonnes')
-ax.set_title('Distribution PRW — tous les temps', fontweight='bold')
-ax.legend()
-ax.grid(True, alpha=0.3)
-plt.tight_layout()
-plt.show()
-
-
-
-
-
-
-
-
-
-## 14. Test de fermeture du bilan de QdM — Reynolds comme résidu
-
-L'équation complète de la QdM zonale moyennée est :
-
-$$\frac{\partial u}{\partial t} = - u\partial_x u - v\partial_y u - w\partial_z u - \frac{1}{\rho_0}\partial_x p - \frac{1}{\rho_0}\partial_z(\rho_0 \overline{u'w'})$$
-
-On a déjà calculé le terme de Reynolds **directement** au §7 à partir de $u'w'$.  
-L'idée ici est de le **retrouver comme résidu** en isolant le membre droit :
-
-$$-\frac{1}{\rho_0}\partial_z(\rho_0 \overline{u'w'}) = \frac{\partial u}{\partial t} + u\partial_x u + v\partial_y u + w\partial_z u + \frac{1}{\rho_0}\partial_x p$$
-
-On calcule donc la somme des quatre termes connus, moyennée sur tout l'état stationnaire,  
-et on compare le profil vertical obtenu avec `tend_u_glob` du §7.  
-Si les deux profils coïncident → le bilan est fermé et les calculs sont cohérents.  
-Un écart résiduel indiquerait des termes implicites du modèle (diffusion numérique,  
-schéma d'advection non conservatif, paramétrisation de sous-maille) absents des sorties.
-
-
-
-# ======================================================================
-# §14 — Reynolds comme résidu : somme des autres termes de Navier-Stokes
-# Tous les termes sont moyennés sur tout idx_stat pour cohérence avec §7
-# ======================================================================
-
-residu = np.zeros(n_z)
-
-ds_u = xr.open_dataset(path3d('ua'))
-ds_v = xr.open_dataset(path3d('va'))
-ds_w = xr.open_dataset(path3d('wa'))
-ds_p = xr.open_dataset(path3d('pa'))
-
-for iz in range(n_z):
-    acc = 0.0
-    n   = 0
-
-    for it in range(t_stat, n_t - 1):
-        u_2d = ds_u['ua'].isel({dim_t: it,   dim_z: iz}).values
-        v_2d = ds_v['va'].isel({dim_t: it,   dim_z: iz}).values
-        w_2d = ds_w['wa'].isel({dim_t: it,   dim_z: iz}).values
-        p_2d = ds_p['pa'].isel({dim_t: it,   dim_z: iz}).values
-
-        # ∂u/∂t
-        u_next = ds_u['ua'].isel({dim_t: it+1, dim_z: iz}).values
-        dudt   = (u_next - u_2d) / dt_sec
-        del u_next
-
-        # Advection : gradients horizontaux centrés + gradient vertical centré
-        iz_lo = max(iz - 1, 0) ; iz_hi = min(iz + 1, n_z - 1)
-        u_lo  = ds_u['ua'].isel({dim_t: it, dim_z: iz_lo}).values
-        u_hi  = ds_u['ua'].isel({dim_t: it, dim_z: iz_hi}).values
-        dz    = alt[iz_hi] - alt[iz_lo]
-        if dz == 0: dz = alt[1] - alt[0]
-        adv   = -(u_2d * np.gradient(u_2d, dx, axis=1)
-                + v_2d * np.gradient(u_2d, dy, axis=0)
-                + w_2d * (u_hi - u_lo) / dz)
-        del u_lo, u_hi
-
-        # Pression
-        pres  = -np.gradient(p_2d, dx, axis=1) / rho0[iz]
-
-        acc += (dudt + adv + pres).mean()
-        n   += 1
-
-        del u_2d, v_2d, w_2d, p_2d, dudt, adv, pres
-        gc.collect()
-
-    residu[iz] = acc / n
-    if iz % 10 == 0:
-        print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
-
-ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
-del ds_u, ds_v, ds_w, ds_p
-gc.collect()
-print('Résidu calculé.')
-
-
-
-
-
-
-
-fig, ax = plt.subplots(figsize=(6, 8))
-ax.plot(tend_u_glob * 1e5, alt, color='royalblue', lw=2,
-        label=r"Reynolds direct $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$")
-ax.plot(residu * 1e5,      alt, color='crimson',   lw=2, linestyle='--',
-        label='Résidu (somme autres termes)')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
-ax.set_ylabel('Altitude (m)')
-ax.set_title('Test de fermeture du bilan de QdM', fontweight='bold')
-ax.legend() ; ax.grid(True, alpha=0.3)
-plt.tight_layout() ; plt.show()
-
-
-
-
-
-# ======================================================================
-# §14 — Reynolds comme résidu
-# SEULE CORRECTION vs version originale : dt_sec = 6h = 21600 s
-# On travaille sur les champs locaux (y,x) et on moyenne le résultat.
-# ======================================================================
-
-dt_sec = 6.0 * 3600.0   # 21600 s
-print(f'dt_sec = {dt_sec:.0f} s ({dt_sec/3600:.1f} h)')
-
-residu = np.zeros(n_z)
-
-ds_u = xr.open_dataset(path3d('ua'))
-ds_v = xr.open_dataset(path3d('va'))
-ds_w = xr.open_dataset(path3d('wa'))
-ds_p = xr.open_dataset(path3d('pa'))
-
-for iz in range(n_z):
-    acc = 0.0
-    n   = 0
-
-    iz_lo = max(iz - 1, 0)
-    iz_hi = min(iz + 1, n_z - 1)
-    dz    = alt[iz_hi] - alt[iz_lo]
-    if dz == 0:
-        dz = alt[1] - alt[0]
-
-    for it in range(t_stat, n_t - 1):
-        u_2d = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values
-        v_2d = ds_v['va'].isel({dim_t: it,     dim_z: iz}).values
-        w_2d = ds_w['wa'].isel({dim_t: it,     dim_z: iz}).values
-        p_2d = ds_p['pa'].isel({dim_t: it,     dim_z: iz}).values
-
-        # ∂u/∂t local
-        u_next = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
-        dudt   = (u_next - u_2d) / dt_sec
-        del u_next
-
-        # Advection locale
-        u_lo = ds_u['ua'].isel({dim_t: it, dim_z: iz_lo}).values
-        u_hi = ds_u['ua'].isel({dim_t: it, dim_z: iz_hi}).values
-        adv  = -(u_2d * np.gradient(u_2d, dx, axis=1)
-               + v_2d * np.gradient(u_2d, dy, axis=0)
-               + w_2d * (u_hi - u_lo) / dz)
-        del u_lo, u_hi
-
-        # Terme de pression
-        pres = -np.gradient(p_2d, dx, axis=1) / rho0[iz]
-
-        acc += (dudt + adv + pres).mean()
-        n   += 1
-
-        del u_2d, v_2d, w_2d, p_2d, dudt, adv, pres
-        gc.collect()
-
-    residu[iz] = acc / n if n > 0 else 0.0
-
-    if iz % 10 == 0:
-        print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
-
-ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
-del ds_u, ds_v, ds_w, ds_p
-gc.collect()
-print('Résidu calculé.')
-
-# Visualisation
-fig, ax = plt.subplots(figsize=(12, 8))
-ax.plot(tend_u_glob * 1e5, alt, color='royalblue', lw=2,
-        label=r"Reynolds direct $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$")
-ax.plot(residu * 1e5,      alt, color='crimson',   lw=2, linestyle='--',
-        label='Résidu (∂u/∂t + advection + pression)')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
-ax.set_ylabel('Altitude (m)')
-ax.set_title('Test de fermeture du bilan de QdM', fontweight='bold')
-ax.legend()
-ax.grid(True, alpha=0.3)
-plt.tight_layout()
-plt.show()
-
-
-
-
-
-
-
-
-
-# ======================================================================
-# §14 — Reynolds comme résidu — version complète
-# Termes : ∂u/∂t + advection + ∂xp/ρ₀ + ∂zp/ρ₀ + flottabilité
-# ======================================================================
-
-dt_sec = 6.0 * 3600.0
-p0     = 1e5
-cp     = 1004.0
-g      = 9.81
-print(f'dt_sec = {dt_sec:.0f} s')
-
-# ── Profil θ₀(z) (moyenne spatiotemporelle sur état stationnaire) ──────
-print('Calcul de θ₀...')
-theta0_sum = np.zeros(n_z)
-n_th = 0
-
-ds_ta = xr.open_dataset(path3d('ta'))
-ds_pa = xr.open_dataset(path3d('pa'))
-
-for t0 in range(t_stat, n_t, BLOC):
-    t1 = min(t0 + BLOC, n_t)
-    sl = {dim_t: slice(t0, t1)}
-    T_blk = ds_ta['ta'].isel(sl).values
-    p_blk = ds_pa['pa'].isel(sl).values
-    th_blk = T_blk * (p0 / p_blk) ** (Rd / cp)
-    theta0_sum += th_blk.mean(axis=(0, 2, 3)) * (t1 - t0)
-    n_th += (t1 - t0)
-    del T_blk, p_blk, th_blk
-    gc.collect()
-
-ds_ta.close() ; ds_pa.close()
-del ds_ta, ds_pa
-gc.collect()
-
-theta0 = theta0_sum / n_th
-print('θ₀ calculé.')
-
-# ── Résidu ────────────────────────────────────────────────────────────
-residu = np.zeros(n_z)
-
-ds_u  = xr.open_dataset(path3d('ua'))
-ds_v  = xr.open_dataset(path3d('va'))
-ds_w  = xr.open_dataset(path3d('wa'))
-ds_p  = xr.open_dataset(path3d('pa'))
-ds_ta = xr.open_dataset(path3d('ta'))
-
-for iz in range(n_z):
-    acc = 0.0
-    n   = 0
-
-    iz_lo = max(iz - 1, 0)
-    iz_hi = min(iz + 1, n_z - 1)
-    dz    = alt[iz_hi] - alt[iz_lo]
-    if dz == 0:
-        dz = alt[1] - alt[0]
-
-    for it in range(t_stat, n_t - 1):
-        u_2d = ds_u['ua'].isel({dim_t: it, dim_z: iz}).values
-        v_2d = ds_v['va'].isel({dim_t: it, dim_z: iz}).values
-        w_2d = ds_w['wa'].isel({dim_t: it, dim_z: iz}).values
-        p_2d = ds_p['pa'].isel({dim_t: it, dim_z: iz}).values
-        T_2d = ds_ta['ta'].isel({dim_t: it, dim_z: iz}).values
-
-        # ∂u/∂t
-        u_next = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
-        dudt   = (u_next - u_2d) / dt_sec
-        del u_next
-
-        # Advection
-        u_lo = ds_u['ua'].isel({dim_t: it, dim_z: iz_lo}).values
-        u_hi = ds_u['ua'].isel({dim_t: it, dim_z: iz_hi}).values
-        adv  = -(u_2d * np.gradient(u_2d, dx, axis=1)
-               + v_2d * np.gradient(u_2d, dy, axis=0)
-               + w_2d * (u_hi - u_lo) / dz)
-        del u_lo, u_hi
-
-        # Gradient horizontal de pression
-        pres_h = -np.gradient(p_2d, dx, axis=1) / rho0[iz]
-
-        # Gradient vertical de pression
-        p_lo = ds_p['pa'].isel({dim_t: it, dim_z: iz_lo}).values
-        p_hi = ds_p['pa'].isel({dim_t: it, dim_z: iz_hi}).values
-        pres_v = -((p_hi - p_lo) / dz) / rho0[iz]
-        del p_lo, p_hi
-
-        # Flottabilité : g * θ'/θ₀   avec θ' = θ - θ₀
-        theta_2d = T_2d * (p0 / p_2d) ** (Rd / cp)
-        buoy     = g * (theta_2d - theta0[iz]) / theta0[iz]
-        del theta_2d
-
-        acc += (dudt + adv + pres_h + pres_v + buoy).mean()
-        n   += 1
-
-        del u_2d, v_2d, w_2d, p_2d, T_2d, dudt, adv, pres_h, pres_v, buoy
-        gc.collect()
-
-    residu[iz] = acc / n if n > 0 else 0.0
-
-    if iz % 10 == 0:
-        print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
-
-ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close() ; ds_ta.close()
-del ds_u, ds_v, ds_w, ds_p, ds_ta
-gc.collect()
-print('Résidu calculé.')
-
-# ── Visualisation ─────────────────────────────────────────────────────
-fig, ax = plt.subplots(figsize=(12, 8))
-ax.plot(tend_u_glob * 1e5, alt, color='royalblue', lw=2,
-        label=r"Reynolds direct $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$")
-ax.plot(residu * 1e5,      alt, color='crimson',   lw=2, linestyle='--',
-        label=r'Résidu ($\partial_t u$ + adv + $\partial_x p/\rho_0$ + $\partial_z p/\rho_0$ + flott.)')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
-ax.set_ylabel('Altitude (m)')
-ax.set_title('Test de fermeture du bilan de QdM — termes complets', fontweight='bold')
-ax.legend()
-ax.grid(True, alpha=0.3)
-plt.tight_layout()
-plt.show()
-
-
-
-
-
-
-
-
-
-
-# ======================================================================
-# §14 — Diagnostic terme par terme
+# §15 — Fermeture du bilan par région : humide vs sèche
+#
+# Méthode A (directe)   : -1/rho0 * d(rho0 <u'w'>_region)/dz
+#                          flux_h / flux_s déjà disponibles depuis §9
+#
+# Méthode B (résiduelle) : <∂u/∂t>_region  moyenné sur les colonnes
+#                          de la région à chaque pas de temps
+#
+# mh / ms : masques 2D (ny, nx) construits au §4
 # ======================================================================
 
 dt_sec = 6.0 * 3600.0
 
-ds_u = xr.open_dataset(path3d('ua'))
-ds_v = xr.open_dataset(path3d('va'))
-ds_w = xr.open_dataset(path3d('wa'))
-ds_p = xr.open_dataset(path3d('pa'))
+dudt_h = np.zeros(n_z)   # ∂ū/∂t moyenné sur colonnes humides
+dudt_s = np.zeros(n_z)   # ∂ū/∂t moyenné sur colonnes sèches
 
-for iz in [0, 10, 30, 50, 60, 70]:
-    acc_dudt = 0.0
-    acc_adv  = 0.0
-    acc_pres = 0.0
+ds_u = xr.open_dataset(path3d('ua'))
+
+for iz in range(n_z):
+
+    acc_h = 0.0
+    acc_s = 0.0
     n = 0
 
-    iz_lo = max(iz - 1, 0)
-    iz_hi = min(iz + 1, n_z - 1)
-    dz    = alt[iz_hi] - alt[iz_lo]
-    if dz == 0:
-        dz = alt[1] - alt[0]
-
     for it in range(t_stat, n_t - 1):
-        u_2d = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values
-        v_2d = ds_v['va'].isel({dim_t: it,     dim_z: iz}).values
-        p_2d = ds_p['pa'].isel({dim_t: it,     dim_z: iz}).values
 
-        u_next      = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
-        dudt        = (u_next - u_2d) / dt_sec
-        del u_next
-
-        adv  = -(u_2d * np.gradient(u_2d, dx, axis=1)
-               + v_2d * np.gradient(u_2d, dy, axis=0))
-
-        pres = -np.gradient(p_2d, dx, axis=1) / rho0[iz]
-
-        acc_dudt += dudt.mean()
-        acc_adv  += adv.mean()
-        acc_pres += pres.mean()
-        n += 1
-
-        del u_2d, v_2d, p_2d, dudt, adv, pres
-        gc.collect()
-
-    print(f'iz={iz:2d}  z={alt[iz]:6.0f}m  '
-          f'dudt={acc_dudt/n:.3e}  '
-          f'adv={acc_adv/n:.3e}  '
-          f'pres={acc_pres/n:.3e}  '
-          f'total={( acc_dudt+acc_adv+acc_pres)/n:.3e}')
-
-ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
-del ds_u, ds_v, ds_w, ds_p
-gc.collect()
-
-
-
-# ======================================================================
-# §14 — Diagnostic terme par terme
-# ======================================================================
-
-dt_sec = 6.0 * 3600.0
-
-ds_u = xr.open_dataset(path3d('ua'))
-ds_v = xr.open_dataset(path3d('va'))
-ds_w = xr.open_dataset(path3d('wa'))
-ds_p = xr.open_dataset(path3d('pa'))
-
-for iz in [0, 10, 30, 50, 60, 70]:
-    acc_dudt = 0.0
-    acc_adv  = 0.0
-    acc_pres = 0.0
-    n = 0
-
-    iz_lo = max(iz - 1, 0)
-    iz_hi = min(iz + 1, n_z - 1)
-    dz    = alt[iz_hi] - alt[iz_lo]
-    if dz == 0:
-        dz = alt[1] - alt[0]
-
-    for it in range(t_stat, n_t - 1):
-        u_2d = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values
-        v_2d = ds_v['va'].isel({dim_t: it,     dim_z: iz}).values
-        p_2d = ds_p['pa'].isel({dim_t: it,     dim_z: iz}).values
-
-        u_next      = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
-        dudt        = (u_next - u_2d) / dt_sec
-        del u_next
-
-        adv  = -(u_2d * np.gradient(u_2d, dx, axis=1)
-               + v_2d * np.gradient(u_2d, dy, axis=0))
-
-        pres = -np.gradient(p_2d, dx, axis=1) / rho0[iz]
-
-        acc_dudt += dudt.mean()
-        acc_adv  += adv.mean()
-        acc_pres += pres.mean()
-        n += 1
-
-        del u_2d, v_2d, p_2d, dudt, adv, pres
-        gc.collect()
-
-    print(f'iz={iz:2d}  z={alt[iz]:6.0f}m  '
-          f'dudt={acc_dudt/n:.3e}  '
-          f'adv={acc_adv/n:.3e}  '
-          f'pres={acc_pres/n:.3e}  '
-          f'total={( acc_dudt+acc_adv+acc_pres)/n:.3e}')
-
-ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
-del ds_u, ds_v, ds_w, ds_p
-gc.collect()
-
-
-
-
-
-
-iz= 0  z=     0m  dudt=1.331e-07  adv=-7.568e-06  pres=1.266e-09  total=-7.434e-06
-iz=10  z=  1331m  dudt=1.039e-06  adv=1.892e-05  pres=3.065e-09  total=1.996e-05
-iz=30  z= 11000m  dudt=-5.738e-07  adv=3.035e-05  pres=-1.321e-09  total=2.977e-05
-iz=50  z= 21000m  dudt=3.400e-06  adv=3.163e-05  pres=-8.148e-09  total=3.502e-05
-iz=60  z= 26000m  dudt=-1.594e-05  adv=1.269e-04  pres=-9.647e-09  total=1.109e-04
-iz=70  z= 31000m  dudt=2.053e-06  adv=6.992e-05  pres=5.883e-09  total=7.197e-05
-32
-
-
-
-
-
-
-
-
-
-# ======================================================================
-# §14 — Test de fermeture : ∂ū/∂t  vs  Reynolds direct
-# L'advection est dominée par les ondes en stratosphère et sort du cadre
-# du bilan Reynolds — on compare uniquement la tendance du vent moyen.
-# ======================================================================
-
-dt_sec = 6.0 * 3600.0
-
-dudt_prof = np.zeros(n_z)
-
-ds_u = xr.open_dataset(path3d('ua'))
-
-for iz in range(n_z):
-    acc = 0.0
-    n   = 0
-
-    for it in range(t_stat, n_t - 1):
-        u_2d   = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values
+        u_now  = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values  # (ny, nx)
         u_next = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
-        acc   += ((u_next - u_2d) / dt_sec).mean()
-        n     += 1
-        del u_2d, u_next
+
+        dudt_2d = (u_next - u_now) / dt_sec  # (ny, nx)
+
+        # Moyenne sur les colonnes de chaque région
+        acc_h += dudt_2d[mh].mean()
+        acc_s += dudt_2d[ms].mean()
+        n += 1
+
+        del u_now, u_next, dudt_2d
         gc.collect()
 
-    dudt_prof[iz] = acc / n if n > 0 else 0.0
+    dudt_h[iz] = acc_h / n if n > 0 else 0.0
+    dudt_s[iz] = acc_s / n if n > 0 else 0.0
 
     if iz % 10 == 0:
         print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
@@ -747,124 +64,83 @@ for iz in range(n_z):
 ds_u.close()
 del ds_u
 gc.collect()
-print('∂ū/∂t calculé.')
 
-# ── Visualisation ─────────────────────────────────────────────────────
-fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
+# Méthode directe : tendance par divergence du flux de Reynolds
+# flux_h et flux_s sont déjà calculés au §9
+tend_h_direct = tendance(flux_h)   # -1/rho0 * d(rho0 <u'w'>_h)/dz
+tend_s_direct = tendance(flux_s)
 
-# Panel gauche : troposphère seulement (0–15 km)
+print('§15 : calcul terminé.')
+
+
+
+
+
+
+
+
+# ======================================================================
+# §15 — Visualisation : comparaison directe vs résiduelle par région
+# ======================================================================
+
 idx_tropo = np.searchsorted(alt, 15000)
+sc = 1e5
 
-ax = axes[0]
-ax.plot(tend_u_glob[:idx_tropo] * 1e5, alt[:idx_tropo], color='royalblue', lw=2,
-        label=r"Reynolds direct $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$")
-ax.plot(dudt_prof[:idx_tropo]   * 1e5, alt[:idx_tropo], color='crimson', lw=2, linestyle='--',
-        label=r'$\partial \bar{u}/\partial t$')
+fig, axes = plt.subplots(2, 2, figsize=(14, 14), sharey='row')
+
+# ── Ligne 1 : troposphère (0–15 km) ───────────────────────────────────
+sl = slice(None, idx_tropo)
+
+ax = axes[0, 0]
+ax.plot(tend_h_direct[sl] * sc, alt[sl], color='royalblue', lw=2,
+        label=r"Directe $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'}_h)$")
+ax.plot(dudt_h[sl] * sc,        alt[sl], color='crimson',   lw=2, linestyle='--',
+        label=r'Résidu $\langle\partial u/\partial t\rangle_h$')
 ax.axvline(0, color='grey', alpha=0.4)
+ax.set_title('Région HUMIDE — troposphère', fontweight='bold')
 ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
 ax.set_ylabel('Altitude (m)')
-ax.set_title('Troposphère (0–15 km)', fontweight='bold')
 ax.legend()
 ax.grid(True, alpha=0.3)
 
-# Panel droit : colonne complète
-ax = axes[1]
-ax.plot(tend_u_glob * 1e5, alt, color='royalblue', lw=2,
-        label=r"Reynolds direct $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$")
-ax.plot(dudt_prof   * 1e5, alt, color='crimson', lw=2, linestyle='--',
-        label=r'$\partial \bar{u}/\partial t$')
+ax = axes[0, 1]
+ax.plot(tend_s_direct[sl] * sc, alt[sl], color='saddlebrown', lw=2,
+        label=r"Directe $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'}_s)$")
+ax.plot(dudt_s[sl] * sc,        alt[sl], color='crimson',     lw=2, linestyle='--',
+        label=r'Résidu $\langle\partial u/\partial t\rangle_s$')
 ax.axvline(0, color='grey', alpha=0.4)
+ax.set_title('Région SÈCHE — troposphère', fontweight='bold')
 ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
-ax.set_title('Colonne complète', fontweight='bold')
 ax.legend()
 ax.grid(True, alpha=0.3)
 
-plt.suptitle('Test de fermeture du bilan de QdM', fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
+# ── Ligne 2 : colonne complète ─────────────────────────────────────────
+ax = axes[1, 0]
+ax.plot(tend_h_direct * sc, alt, color='royalblue', lw=2,
+        label=r"Directe $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'}_h)$")
+ax.plot(dudt_h * sc,        alt, color='crimson',   lw=2, linestyle='--',
+        label=r'Résidu $\langle\partial u/\partial t\rangle_h$')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_title('Région HUMIDE — colonne complète', fontweight='bold')
+ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
+ax.set_ylabel('Altitude (m)')
+ax.legend()
+ax.grid(True, alpha=0.3)
 
+ax = axes[1, 1]
+ax.plot(tend_s_direct * sc, alt, color='saddlebrown', lw=2,
+        label=r"Directe $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'}_s)$")
+ax.plot(dudt_s * sc,        alt, color='crimson',     lw=2, linestyle='--',
+        label=r'Résidu $\langle\partial u/\partial t\rangle_s$')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_title('Région SÈCHE — colonne complète', fontweight='bold')
+ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
+ax.legend()
+ax.grid(True, alpha=0.3)
 
-
-
-
-
-# ======================================================================
-# §14 — Test de fermeture : ∂ū/∂t  vs  Reynolds direct
-# + terme w̄·∂ū/∂z pour vérifier sa nullité en RCE
-# ======================================================================
-
-dt_sec = 6.0 * 3600.0
-
-dudt_prof  = np.zeros(n_z)
-wdudz_prof = np.zeros(n_z)
-
-ds_u = xr.open_dataset(path3d('ua'))
-ds_w = xr.open_dataset(path3d('wa'))
-
-for iz in range(n_z):
-    acc_dudt  = 0.0
-    acc_wdudz = 0.0
-    n = 0
-
-    iz_lo = max(iz - 1, 0)
-    iz_hi = min(iz + 1, n_z - 1)
-    dz    = alt[iz_hi] - alt[iz_lo]
-    if dz == 0:
-        dz = alt[1] - alt[0]
-
-    for it in range(t_stat, n_t - 1):
-        u_2d   = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values
-        u_next = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
-        w_2d   = ds_w['wa'].isel({dim_t: it,     dim_z: iz}).values
-
-        acc_dudt += ((u_next - u_2d) / dt_sec).mean()
-
-        # w̄·∂ū/∂z : on utilise les moyennes horizontales
-        w_bar  = w_2d.mean()
-        u_lo   = ds_u['ua'].isel({dim_t: it, dim_z: iz_lo}).values.mean()
-        u_hi   = ds_u['ua'].isel({dim_t: it, dim_z: iz_hi}).values.mean()
-        dudz   = (u_hi - u_lo) / dz
-        acc_wdudz += w_bar * dudz
-
-        n += 1
-        del u_2d, u_next, w_2d, u_lo, u_hi
-        gc.collect()
-
-    dudt_prof[iz]  = acc_dudt  / n if n > 0 else 0.0
-    wdudz_prof[iz] = acc_wdudz / n if n > 0 else 0.0
-
-    if iz % 10 == 0:
-        print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
-
-ds_u.close() ; ds_w.close()
-del ds_u, ds_w
-gc.collect()
-print('Calcul terminé.')
-
-# ── Visualisation ─────────────────────────────────────────────────────
-fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
-
-for ax, idx, titre in zip(
-        axes,
-        [slice(None, np.searchsorted(alt, 15000)), slice(None)],
-        ['Troposphère (0–15 km)', 'Colonne complète']):
-
-    ax.plot(tend_u_glob[idx] * 1e5, alt[idx], color='royalblue', lw=2,
-            label=r"Reynolds direct $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$")
-    ax.plot(dudt_prof[idx]   * 1e5, alt[idx], color='crimson',   lw=2, linestyle='--',
-            label=r'$\partial\bar{u}/\partial t$')
-    ax.plot(wdudz_prof[idx]  * 1e5, alt[idx], color='seagreen',  lw=1.5, linestyle=':',
-            label=r'$\bar{w}\,\partial_z\bar{u}$')
-    ax.plot((dudt_prof[idx] + wdudz_prof[idx]) * 1e5, alt[idx],
-            color='darkorange', lw=1.5, linestyle='-.',
-            label=r'$\partial\bar{u}/\partial t + \bar{w}\,\partial_z\bar{u}$')
-    ax.axvline(0, color='grey', alpha=0.4)
-    ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
-    ax.set_title(titre, fontweight='bold')
-    ax.legend(fontsize=9)
-    ax.grid(True, alpha=0.3)
-
-axes[0].set_ylabel('Altitude (m)')
-plt.suptitle('Test de fermeture — nullité de w̄·∂ū/∂z en RCE', fontsize=13, fontweight='bold')
+plt.suptitle('Fermeture du bilan de QdM : régions humide vs sèche\n'
+             r"Directe = $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$   "
+             r"Résidu = $\langle\partial u/\partial t\rangle$",
+             fontsize=13, fontweight='bold')
 plt.tight_layout()
 plt.show()
