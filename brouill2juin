@@ -757,3 +757,240 @@ for region, mg, md, vdy, pres, couleur in [
     )
     plt.tight_layout()
     plt.show()
+
+
+
+
+
+
+
+
+
+
+## 15. Fermeture complète du bilan de QdM par région (humide / sèche)
+
+On ne néglige rien et on vérifie graphiquement que l'équation est vérifiée :
+
+$$\langle\partial_t\bar{u}\rangle_R = -\frac{1}{\rho_0}\partial_z(\rho_0\langle\overline{u'w'}\rangle_R)
+- \langle\bar{u}\partial_x\bar{u}\rangle_R
+- \langle\bar{v}\partial_y\bar{u}\rangle_R
+- \langle\bar{w}\partial_z\bar{u}\rangle_R
+- \frac{1}{\rho_0}\langle\partial_x\bar{p}\rangle_R$$
+
+Si le bilan est correct, la courbe $\langle\partial_t\bar{u}\rangle_R$ doit coïncider
+avec la somme de tous les termes du membre droit.
+On vérifie aussi quels termes sont effectivement négligeables en RCE.
+
+
+# ======================================================================
+# §15 — Bilan complet sans approximation dans chaque région
+#
+# Tous les termes sont calculés depuis les champs 2D moyens temporels,
+# sauf le flux de Reynolds qui nécessite les fluctuations instantanées.
+#
+# Termes calculés :
+#   MG  : <∂u/∂t>_R                              (membre gauche)
+#   T1  : -1/rho0 * d(rho0 <u'w'>_R)/dz          (flux Reynolds)
+#   T2  : -<ū ∂ū/∂x>_R                           (advection zonale)
+#   T3  : -<v̄ ∂ū/∂y>_R                           (advection méridionale)
+#   T4  : -<w̄ ∂ū/∂z>_R                           (advection verticale)
+#   T5  : -1/rho0 * <∂p̄/∂x>_R                   (pression)
+#
+# Vérification : MG ≈ T1 + T2 + T3 + T4 + T5
+# ======================================================================
+
+dt_sec = 6.0 * 3600.0
+
+# ── Tableaux résultats ────────────────────────────────────────────────
+flux_h2  = np.zeros(n_z)   # ρ₀⟨u′w′⟩_R  (pour T1)
+flux_s2  = np.zeros(n_z)
+
+mg_h     = np.zeros(n_z)   # <∂ū/∂t>_R
+mg_s     = np.zeros(n_z)
+
+t2_h     = np.zeros(n_z)   # -<ū ∂ū/∂x>_R
+t2_s     = np.zeros(n_z)
+t3_h     = np.zeros(n_z)   # -<v̄ ∂ū/∂y>_R
+t3_s     = np.zeros(n_z)
+t5_h     = np.zeros(n_z)   # -1/rho0 <∂p̄/∂x>_R
+t5_s     = np.zeros(n_z)
+
+# Champs 2D moyens temporels (ny, nx) — pour T2, T3, T4, T5
+ubar_2d  = np.zeros((n_z, n_y, n_x))
+vbar_2d  = np.zeros((n_z, n_y, n_x))
+wbar_2d  = np.zeros((n_z, n_y, n_x))
+pbar_2d  = np.zeros((n_z, n_y, n_x))
+
+ds_u = xr.open_dataset(path3d('ua'))
+ds_v = xr.open_dataset(path3d('va'))
+ds_w = xr.open_dataset(path3d('wa'))
+ds_p = xr.open_dataset(path3d('pa'))
+
+for iz in range(n_z):
+
+    acc_uw_h  = 0.0 ; acc_uw_s  = 0.0
+    acc_mg_h  = 0.0 ; acc_mg_s  = 0.0
+    acc_u2d   = np.zeros((n_y, n_x))
+    acc_v2d   = np.zeros((n_y, n_x))
+    acc_w2d   = np.zeros((n_y, n_x))
+    acc_p2d   = np.zeros((n_y, n_x))
+    n = 0
+
+    for it in range(t_stat, n_t - 1):
+
+        u_2d = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values
+        u_nx = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
+        v_2d = ds_v['va'].isel({dim_t: it,     dim_z: iz}).values
+        w_2d = ds_w['wa'].isel({dim_t: it,     dim_z: iz}).values
+        p_2d = ds_p['pa'].isel({dim_t: it,     dim_z: iz}).values
+
+        # ── Membre gauche <∂ū/∂t>_R ──────────────────────────────────
+        dudt_2d  = (u_nx - u_2d) / dt_sec
+        acc_mg_h += dudt_2d[mh].mean()
+        acc_mg_s += dudt_2d[ms].mean()
+
+        # ── Flux Reynolds : anomalies intra-région ────────────────────
+        u_h   = u_2d[mh] ; u_s   = u_2d[ms]
+        w_h   = w_2d[mh] ; w_s   = w_2d[ms]
+        u_p_h = u_h - u_h.mean()
+        u_p_s = u_s - u_s.mean()
+        w_p_h = w_h - w_h.mean()
+        w_p_s = w_s - w_s.mean()
+        acc_uw_h += (u_p_h * w_p_h).mean()
+        acc_uw_s += (u_p_s * w_p_s).mean()
+
+        # ── Accumulation champs 2D pour moyennes temporelles ─────────
+        acc_u2d += u_2d
+        acc_v2d += v_2d
+        acc_w2d += w_2d
+        acc_p2d += p_2d
+
+        n += 1
+        del u_2d, u_nx, v_2d, w_2d, p_2d
+        del dudt_2d, u_h, u_s, w_h, w_s
+        del u_p_h, u_p_s, w_p_h, w_p_s
+        gc.collect()
+
+    flux_h2[iz] = rho0[iz] * acc_uw_h / n
+    flux_s2[iz] = rho0[iz] * acc_uw_s / n
+    mg_h[iz]    = acc_mg_h / n
+    mg_s[iz]    = acc_mg_s / n
+    ubar_2d[iz] = acc_u2d  / n
+    vbar_2d[iz] = acc_v2d  / n
+    wbar_2d[iz] = acc_w2d  / n
+    pbar_2d[iz] = acc_p2d  / n
+
+    if iz % 10 == 0:
+        print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
+
+ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
+del ds_u, ds_v, ds_w, ds_p
+gc.collect()
+
+# ======================================================================
+# Calcul de T2, T3, T4, T5 depuis les champs moyens
+# ======================================================================
+
+t4_h = np.zeros(n_z)   # -<w̄ ∂ū/∂z>_R  (nécessite profil complet en z)
+t4_s = np.zeros(n_z)
+
+for iz in range(n_z):
+
+    u2d = ubar_2d[iz]   # (ny, nx)
+    v2d = vbar_2d[iz]
+    w2d = wbar_2d[iz]
+    p2d = pbar_2d[iz]
+
+    # T2 : -<ū ∂ū/∂x>_R
+    dudx     = np.gradient(u2d, dx, axis=1)
+    t2_h[iz] = -(u2d * dudx)[mh].mean()
+    t2_s[iz] = -(u2d * dudx)[ms].mean()
+
+    # T3 : -<v̄ ∂ū/∂y>_R
+    dudy     = np.gradient(u2d, dy, axis=0)
+    t3_h[iz] = -(v2d * dudy)[mh].mean()
+    t3_s[iz] = -(v2d * dudy)[ms].mean()
+
+    # T5 : -1/rho0 <∂p̄/∂x>_R
+    dpdx     = np.gradient(p2d, dx, axis=1)
+    t5_h[iz] = (-dpdx[mh] / rho0[iz]).mean()
+    t5_s[iz] = (-dpdx[ms] / rho0[iz]).mean()
+
+# T4 : -<w̄ ∂ū/∂z>_R  —  gradient vertical calculé niveau par niveau
+# on utilise les champs 2D moyens complets pour le gradient centré
+for iz in range(n_z):
+    iz_lo = max(iz - 1, 0)
+    iz_hi = min(iz + 1, n_z - 1)
+    dz    = alt[iz_hi] - alt[iz_lo]
+    if dz == 0:
+        dz = alt[1] - alt[0]
+    dudz_2d  = (ubar_2d[iz_hi] - ubar_2d[iz_lo]) / dz   # (ny, nx)
+    w2d      = wbar_2d[iz]
+    t4_h[iz] = -(w2d * dudz_2d)[mh].mean()
+    t4_s[iz] = -(w2d * dudz_2d)[ms].mean()
+
+# ── Membre gauche ─────────────────────────────────────────────────────
+# T1 : flux de Reynolds
+t1_h = tendance(flux_h2)
+t1_s = tendance(flux_s2)
+
+# ── Somme membre droit ────────────────────────────────────────────────
+somme_h = t1_h + t2_h + t3_h + t4_h + t5_h
+somme_s = t1_s + t2_s + t3_s + t4_s + t5_s
+
+print('§15 terminé.')
+
+
+# ======================================================================
+# §15 — Visualisation : vérification terme à terme
+# ======================================================================
+
+idx_tropo = np.searchsorted(alt, 15000)
+sc = 1e5
+
+for region, mg, somme, t1, t2, t3, t4, t5, couleur in [
+    ('HUMIDE', mg_h, somme_h, t1_h, t2_h, t3_h, t4_h, t5_h, 'royalblue'),
+    ('SÈCHE',  mg_s, somme_s, t1_s, t2_s, t3_s, t4_s, t5_s, 'saddlebrown'),
+]:
+    fig, axes = plt.subplots(1, 2, figsize=(14, 9), sharey=True)
+
+    for ax, sl, titre in zip(
+        axes,
+        [slice(None, idx_tropo), slice(None)],
+        ['Troposphère (0–15 km)', 'Colonne complète']
+    ):
+        ax.plot(mg[sl]    * sc, alt[sl],
+                color='black',      lw=2.5,
+                label=r'$\langle\partial_t\bar{u}\rangle_R$')
+        ax.plot(somme[sl] * sc, alt[sl],
+                color='black',      lw=1.5, linestyle='--',
+                label=r'$T_1+T_2+T_3+T_4+T_5$')
+        ax.plot(t1[sl]    * sc, alt[sl],
+                color=couleur,      lw=2,
+                label=r'$T_1=-\frac{1}{\rho_0}\partial_z(\rho_0\langle\overline{u\'w\'}\rangle_R)$')
+        ax.plot(t2[sl]    * sc, alt[sl],
+                color='steelblue',  lw=1.2, linestyle='-.',
+                label=r'$T_2=-\langle\bar{u}\partial_x\bar{u}\rangle_R$')
+        ax.plot(t3[sl]    * sc, alt[sl],
+                color='darkorange', lw=1.2, linestyle='-.',
+                label=r'$T_3=-\langle\bar{v}\partial_y\bar{u}\rangle_R$')
+        ax.plot(t4[sl]    * sc, alt[sl],
+                color='purple',     lw=1.2, linestyle='-.',
+                label=r'$T_4=-\langle\bar{w}\partial_z\bar{u}\rangle_R$')
+        ax.plot(t5[sl]    * sc, alt[sl],
+                color='seagreen',   lw=1.2, linestyle='-.',
+                label=r'$T_5=-\frac{1}{\rho_0}\langle\partial_x\bar{p}\rangle_R$')
+        ax.axvline(0, color='grey', alpha=0.4)
+        ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
+        ax.set_title(titre, fontweight='bold')
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    axes[0].set_ylabel('Altitude (m)')
+    plt.suptitle(
+        f'Région {region} — bilan complet de QdM\n'
+        r'$\langle\partial_t\bar{u}\rangle_R = T_1+T_2+T_3+T_4+T_5$',
+        fontsize=13, fontweight='bold'
+    )
+    plt.tight_layout()
+    plt.show()
