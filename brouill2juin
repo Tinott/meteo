@@ -1,295 +1,37 @@
-# ======================================================================
-# §15 — Fermeture conditionnelle : humide vs sèche
-#
-# u_bar, w_bar : moyennes sur le DOMAINE ENTIER (ny*nx)
-# u_prime = u_2d - u_bar  →  calculé sur toute la grille
-# Le masque est appliqué uniquement au moment de moyenner le produit u′w′
-#
-# mh / ms : masques 2D (ny, nx) du §4
-# ======================================================================
+ubar_h_intra = np.array([ubar_2d[iz][mh].mean() for iz in range(n_z)])
+ubar_s_intra = np.array([ubar_2d[iz][ms].mean() for iz in range(n_z)])
+ubar_dom     = np.array([ubar_2d[iz].mean()      for iz in range(n_z)])
 
-dt_sec = 6.0 * 3600.0
-print(f'dt = {dt_sec:.0f} s = {dt_sec/3600:.1f} h')
-
-# ── Tableaux résultats ────────────────────────────────────────────────
-flux_h2  = np.zeros(n_z)
-flux_s2  = np.zeros(n_z)
-
-dudt_h   = np.zeros(n_z)
-dudt_s   = np.zeros(n_z)
-wdudz_h  = np.zeros(n_z)
-wdudz_s  = np.zeros(n_z)
-pres_h   = np.zeros(n_z)
-pres_s   = np.zeros(n_z)
-
-ubar_h   = np.zeros(n_z)
-ubar_s   = np.zeros(n_z)
-
-ds_u = xr.open_dataset(path3d('ua'))
-ds_w = xr.open_dataset(path3d('wa'))
-ds_p = xr.open_dataset(path3d('pa'))
-
-for iz in range(n_z):
-
-    acc_uw_h   = 0.0 ; acc_uw_s   = 0.0
-    acc_dudt_h = 0.0 ; acc_dudt_s = 0.0
-    acc_pres_h = 0.0 ; acc_pres_s = 0.0
-    acc_wbar_h = 0.0 ; acc_wbar_s = 0.0
-    acc_ubar_h = 0.0 ; acc_ubar_s = 0.0
-    n = 0
-
-    for it in range(t_stat, n_t - 1):
-
-        u_2d = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values  # (ny, nx)
-        u_nx = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
-        w_2d = ds_w['wa'].isel({dim_t: it,     dim_z: iz}).values
-        p_2d = ds_p['pa'].isel({dim_t: it,     dim_z: iz}).values
-
-        # ── Moyennes sur le DOMAINE ENTIER ───────────────────────────
-        u_bar = u_2d.mean()
-        w_bar = w_2d.mean()
-
-        # ── Anomalies sur le DOMAINE ENTIER ──────────────────────────
-        u_p = u_2d - u_bar   # (ny, nx)
-        w_p = w_2d - w_bar   # (ny, nx)
-
-        # ── Flux direct : masque appliqué sur le produit u′w′ ────────
-        acc_uw_h += (u_p * w_p)[mh].mean()
-        acc_uw_s += (u_p * w_p)[ms].mean()
-
-        # ── ∂ū/∂t conditionné ────────────────────────────────────────
-        acc_dudt_h += (u_nx[mh] - u_2d[mh]).mean() / dt_sec
-        acc_dudt_s += (u_nx[ms] - u_2d[ms]).mean() / dt_sec
-
-        # ── Pression : gradient zonal moyenné sur la région ──────────
-        dpdx = np.gradient(p_2d, dx, axis=1)   # (ny, nx)
-        acc_pres_h += (-dpdx[mh] / rho0[iz]).mean()
-        acc_pres_s += (-dpdx[ms] / rho0[iz]).mean()
-
-        # ── Vent moyen de la région (pour wdudz après la boucle) ─────
-        acc_wbar_h += w_2d[mh].mean()
-        acc_wbar_s += w_2d[ms].mean()
-        acc_ubar_h += u_2d[mh].mean()
-        acc_ubar_s += u_2d[ms].mean()
-
-        n += 1
-        del u_2d, u_nx, w_2d, p_2d, u_p, w_p, dpdx
-        gc.collect()
-
-    flux_h2[iz]  = rho0[iz] * acc_uw_h   / n
-    flux_s2[iz]  = rho0[iz] * acc_uw_s   / n
-    dudt_h[iz]   = acc_dudt_h / n
-    dudt_s[iz]   = acc_dudt_s / n
-    pres_h[iz]   = acc_pres_h / n
-    pres_s[iz]   = acc_pres_s / n
-    ubar_h[iz]   = acc_ubar_h / n
-    ubar_s[iz]   = acc_ubar_s / n
-    wdudz_h[iz]  = acc_wbar_h / n   # stocke w̄_région temporairement
-    wdudz_s[iz]  = acc_wbar_s / n
-
-    if iz % 10 == 0:
-        print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
-
-ds_u.close() ; ds_w.close() ; ds_p.close()
-del ds_u, ds_w, ds_p
-gc.collect()
-
-# ── w̄_région · dū_région/dz ──────────────────────────────────────────
-wbar_h = wdudz_h.copy()
-wbar_s = wdudz_s.copy()
-dudz_h = np.gradient(ubar_h, alt)
-dudz_s = np.gradient(ubar_s, alt)
-wdudz_h = wbar_h * dudz_h
-wdudz_s = wbar_s * dudz_s
-
-# ── Tendances directes ────────────────────────────────────────────────
-tend_h_direct = tendance(flux_h2)
-tend_s_direct = tendance(flux_s2)
-
-# ── Résidu = somme des termes connus ─────────────────────────────────
-residuel_h = dudt_h + wdudz_h + pres_h
-residuel_s = dudt_s + wdudz_s + pres_s
-
-print('§15 terminé.')
-
-
-
-
-
-
-# ======================================================================
-# §15 — Vérification : ū_région vs ū_domaine
-# ======================================================================
-
-# ū_domaine : recalculé sur tout le domaine (sans masque)
-ubar_dom = np.zeros(n_z)
-
-ds_u = xr.open_dataset(path3d('ua'))
-for iz in range(n_z):
-    acc = 0.0
-    n = 0
-    for it in range(t_stat, n_t - 1):
-        u_2d = ds_u['ua'].isel({dim_t: it, dim_z: iz}).values
-        acc += u_2d.mean()
-        n += 1
-        del u_2d
-        gc.collect()
-    ubar_dom[iz] = acc / n
-    if iz % 10 == 0:
-        print(f'  iz={iz}/{n_z-1}')
-ds_u.close()
-del ds_u
-gc.collect()
-
-# ── Figure ────────────────────────────────────────────────────────────
-idx_tropo = np.searchsorted(alt, 15000)
-
-fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
-
-for ax, sl, titre in zip(
-    axes,
-    [slice(None, idx_tropo), slice(None)],
-    ['Troposphère (0–15 km)', 'Colonne complète']
-):
-    ax.plot(ubar_h[sl],   alt[sl], color='royalblue',   lw=2,   label=r'$\bar{u}_{\mathrm{humide}}$')
-    ax.plot(ubar_s[sl],   alt[sl], color='saddlebrown', lw=2,   label=r'$\bar{u}_{\mathrm{sèche}}$')
-    ax.plot(ubar_dom[sl], alt[sl], color='black',       lw=2, linestyle='--', label=r'$\bar{u}_{\mathrm{domaine}}$')
-    ax.axvline(0, color='grey', alpha=0.4)
-    ax.set_xlabel('Vent zonal moyen (m/s)')
-    ax.set_title(titre, fontweight='bold')
-    ax.legend(fontsize=10)
-    ax.grid(True, alpha=0.3)
-
-axes[0].set_ylabel('Altitude (m)')
-plt.suptitle(
-    r"Profils de $\bar{u}$ : humide, sèche, domaine entier",
-    fontsize=13, fontweight='bold'
-)
-plt.tight_layout()
-plt.show()
-
-
-
-
-
-
-
-
-
-
-# ū_domaine reconstruit depuis les profils régionaux déjà calculés
-n_h = mh.sum()
-n_s = ms.sum()
-ubar_dom = (ubar_h * n_h + ubar_s * n_s) / (n_h + n_s)
+# <u′>_reg dans le cas global : u′ = u - ū_dom, donc <u′>_reg = ū_reg - ū_dom
+uprime_mean_h = ubar_h_intra - ubar_dom   # non nul si les régions ont un vent moyen différent
+uprime_mean_s = ubar_s_intra - ubar_dom
 
 idx_tropo = np.searchsorted(alt, 15000)
-
-fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
-
-for ax, sl, titre in zip(
-    axes,
-    [slice(None, idx_tropo), slice(None)],
-    ['Troposphère (0–15 km)', 'Colonne complète']
-):
-    ax.plot(ubar_h[sl],   alt[sl], color='royalblue',   lw=2, label=r'$\bar{u}_{\mathrm{humide}}$')
-    ax.plot(ubar_s[sl],   alt[sl], color='saddlebrown', lw=2, label=r'$\bar{u}_{\mathrm{sèche}}$')
-    ax.plot(ubar_dom[sl], alt[sl], color='black', lw=2, linestyle='--', label=r'$\bar{u}_{\mathrm{domaine}}$')
-    ax.axvline(0, color='grey', alpha=0.4)
-    ax.set_xlabel('Vent zonal moyen (m/s)')
-    ax.set_title(titre, fontweight='bold')
-    ax.legend(fontsize=10)
-    ax.grid(True, alpha=0.3)
-
-axes[0].set_ylabel('Altitude (m)')
-plt.suptitle(r"Profils de $\bar{u}$ : humide, sèche, domaine entier", fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
-
-
-
-
-
-
-
-
-# ū_région depuis les champs moyens déjà calculés
-ubar_h_15 = np.array([ubar_2d[iz][mh].mean() for iz in range(n_z)])
-ubar_s_15 = np.array([ubar_2d[iz][ms].mean() for iz in range(n_z)])
-ubar_dom  = np.array([ubar_2d[iz].mean()      for iz in range(n_z)])
-
-# ── Figure ────────────────────────────────────────────────────────────
-idx_tropo = np.searchsorted(alt, 15000)
-
-fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
-
-for ax, sl, titre in zip(
-    axes,
-    [slice(None, idx_tropo), slice(None)],
-    ['Troposphère (0–15 km)', 'Colonne complète']
-):
-    ax.plot(ubar_h_15[sl], alt[sl], color='royalblue',   lw=2, label=r'$\bar{u}_{\mathrm{humide}}$')
-    ax.plot(ubar_s_15[sl], alt[sl], color='saddlebrown', lw=2, label=r'$\bar{u}_{\mathrm{sèche}}$')
-    ax.plot(ubar_dom[sl],  alt[sl], color='black', lw=2, linestyle='--', label=r'$\bar{u}_{\mathrm{domaine}}$')
-    ax.axvline(0, color='grey', alpha=0.4)
-    ax.set_xlabel('Vent zonal moyen (m/s)')
-    ax.set_title(titre, fontweight='bold')
-    ax.legend(fontsize=10)
-    ax.grid(True, alpha=0.3)
-
-axes[0].set_ylabel('Altitude (m)')
-plt.suptitle(r"Profils de $\bar{u}$ : humide, sèche, domaine entier", fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
-
-
-
-
-
-
-ubar_h_15 = np.array([ubar_2d[iz][mh].mean() for iz in range(n_z)])
-ubar_s_15 = np.array([ubar_2d[iz][ms].mean() for iz in range(n_z)])
-ubar_dom  = np.array([ubar_2d[iz].mean()      for iz in range(n_z)])
-
-t1_h_intra  = tendance(flux_h2)   # anomalies intra-région
-t1_s_intra  = tendance(flux_s2)
-t1_h_dom    = tendance(flux_h)    # anomalies domaine entier (§9)
-t1_s_dom    = tendance(flux_s)
-
-idx_tropo = np.searchsorted(alt, 15000)
-sc = 1e5
-
-fig, axes = plt.subplots(1, 3, figsize=(19, 8), sharey=True)
 sl = slice(None, idx_tropo)
 
-# ── Panneau 1 : ū ─────────────────────────────────────────────────────
+fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
+
+# ── Panneau 1 : ū_reg vs ū_dom ────────────────────────────────────────
 ax = axes[0]
-ax.plot(ubar_h_15[sl], alt[sl], color='royalblue',   lw=2, label=r'$\bar{u}_{\mathrm{humide}}$')
-ax.plot(ubar_s_15[sl], alt[sl], color='saddlebrown', lw=2, label=r'$\bar{u}_{\mathrm{sèche}}$')
-ax.plot(ubar_dom[sl],  alt[sl], color='black', lw=2, linestyle='--', label=r'$\bar{u}_{\mathrm{domaine}}$')
+ax.plot(ubar_h_intra[sl], alt[sl], color='royalblue',   lw=2, label=r'$\bar{u}_{\mathrm{humide}}$')
+ax.plot(ubar_s_intra[sl], alt[sl], color='saddlebrown', lw=2, label=r'$\bar{u}_{\mathrm{sèche}}$')
+ax.plot(ubar_dom[sl],     alt[sl], color='black', lw=2, linestyle='--', label=r'$\bar{u}_{\mathrm{domaine}}$')
 ax.axvline(0, color='grey', alpha=0.4)
 ax.set_xlabel('m/s')
-ax.set_title(r'$\bar{u}$ par région', fontweight='bold')
-ax.legend(fontsize=9) ; ax.grid(True, alpha=0.3)
 ax.set_ylabel('Altitude (m)')
+ax.set_title(r'$\bar{u}$ selon le centrage', fontweight='bold')
+ax.legend(fontsize=10) ; ax.grid(True, alpha=0.3)
 
-# ── Panneau 2 : flux intra-région ─────────────────────────────────────
+# ── Panneau 2 : <u′>_reg dans le cas global ───────────────────────────
 ax = axes[1]
-ax.plot(t1_h_intra[sl] * sc, alt[sl], color='royalblue',   lw=2, label='humide')
-ax.plot(t1_s_intra[sl] * sc, alt[sl], color='saddlebrown', lw=2, label='sèche')
+ax.plot(uprime_mean_h[sl], alt[sl], color='royalblue',   lw=2, label=r"$\langle u' \rangle_{\mathrm{humide}} = \bar{u}_{\mathrm{humide}} - \bar{u}_{\mathrm{dom}}$")
+ax.plot(uprime_mean_s[sl], alt[sl], color='saddlebrown', lw=2, label=r"$\langle u' \rangle_{\mathrm{sèche}} = \bar{u}_{\mathrm{sèche}} - \bar{u}_{\mathrm{dom}}$")
 ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('×10⁻⁵ m/s²')
-ax.set_title(r"$-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$ — $u'$ intra-région", fontweight='bold')
-ax.legend(fontsize=9) ; ax.grid(True, alpha=0.3)
+ax.set_xlabel('m/s')
+ax.set_title(r"$\langle u' \rangle_{\mathrm{rég}}$ si $u' = u - \bar{u}_{\mathrm{dom}}$ (non nul)", fontweight='bold')
+ax.legend(fontsize=10) ; ax.grid(True, alpha=0.3)
 
-# ── Panneau 3 : flux domaine entier ───────────────────────────────────
-ax = axes[2]
-ax.plot(t1_h_dom[sl] * sc, alt[sl], color='royalblue',   lw=2, label='humide')
-ax.plot(t1_s_dom[sl] * sc, alt[sl], color='saddlebrown', lw=2, label='sèche')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('×10⁻⁵ m/s²')
-ax.set_title(r"$-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$ — $u'$ domaine entier", fontweight='bold')
-ax.legend(fontsize=9) ; ax.grid(True, alpha=0.3)
-
-plt.suptitle(r"Comparaison $\bar{u}$ et flux de Reynolds selon le centrage", fontsize=13, fontweight='bold')
+plt.suptitle(r"Centrage intra-région vs domaine entier : $\bar{u}$ et $\langle u'\rangle_{\mathrm{rég}}$",
+             fontsize=13, fontweight='bold')
 plt.tight_layout()
 plt.show()
