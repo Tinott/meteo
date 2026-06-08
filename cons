@@ -1,16 +1,275 @@
- dissipation de quantité de mouvement dans l'atmosphère: il s'agit d'essayer de 
-  comprendre comment la friction en surface est communiquée à l'ensemble
-de la troposphère par les différents types de turbulence convective
-(la viscosité de l'air étant faible, le transport visqueux est négligeable).
-  C'est un travail qui doit alimenter des modèles théoriques et simples de la dynamique.
-Le sujet utilisera des données de simulations 
-idéalisées avec un modèles haute résolution et/ou des données de réanalyses
-(compilation de données observées avec un modèle moyenne résolution). Mais l'analyse de données fait aussi appel à 
-  du développement de code, de l'interprétation physique, de l'apprentissage de la physique 
-  atmosphérique et du climat.
+## 15b. Fermeture complète du bilan de QdM par région — anomalies globales
+
+Même équation qu'au §15a, mais la décomposition de Reynolds est faite sur le **domaine entier** :
+
+$$u' = u - \overline{u}^{\,\text{domaine}}, \quad w' = w - \overline{w}^{\,\text{domaine}}$$
+
+Le masque humide / sec est appliqué **après**, sur le produit $u'w'$.
+Cela revient à inclure dans $\overline{u'w'}|_R$ les échanges entre régions
+("advection inter-régions").
+
+$$\langle\partial_t\bar{u}\rangle_R
+= \underbrace{-\frac{1}{\rho_0}\partial_z\!\left(\rho_0\langle\overline{u'w'}\rangle_R\right)}_{\text{T1 Reynolds global}}
+\underbrace{-\langle\bar{u}\,\partial_x\bar{u}\rangle_R}_{\text{T2}}
+\underbrace{-\langle\bar{v}\,\partial_y\bar{u}\rangle_R}_{\text{T3}}
+\underbrace{-\langle\bar{w}\,\partial_z\bar{u}\rangle_R}_{\text{T4}}
+\underbrace{-\frac{1}{\rho_0}\langle\partial_x\bar{p}\rangle_R}_{\text{T5}}$$
+
+Si le bilan est correct, $\langle\partial_t\bar{u}\rangle_R$ doit coïncider avec T1+T2+T3+T4+T5.
 
 
 
-analyser le terme de dissipation/transport petite échelle de quantité 
-de mouvement dans les simulations idéalisées RCEMIP pour comprendre 
-comment il peut être modélisé simplement
+
+
+
+# ======================================================================
+# §15b — Bilan complet, anomalies Reynolds sur le DOMAINE ENTIER
+#
+# Différence avec §15a :
+#   §15a : u' = u - mean(u[region])   →  anomalie intra-région
+#   §15b : u' = u - mean(u)           →  anomalie globale,
+#                                        masque appliqué sur u'w'
+#
+# Termes calculés :
+#   mg_b  : <∂u/∂t>_R                              (membre gauche)
+#   t1_b  : -1/rho0 * d(rho0 <u'w'>_R)/dz          (Reynolds global)
+#   t2_b  : -<ū ∂ū/∂x>_R                           (advection zonale)
+#   t3_b  : -<v̄ ∂ū/∂y>_R                           (advection méridionale)
+#   t4_b  : -<w̄ ∂ū/∂z>_R                           (advection verticale)
+#   t5_b  : -1/rho0 * <∂p̄/∂x>_R                   (pression)
+#
+# Vérification : mg_b ≈ t1_b + t2_b + t3_b + t4_b + t5_b
+# Toutes les variables portent le suffixe _b  (§15b).
+# ======================================================================
+
+dt_sec = 6.0 * 3600.0
+
+# ── Tableaux résultats ────────────────────────────────────────────────
+flux_b_h = np.zeros(n_z)   # ρ₀⟨u′w′⟩_R  anomalies globales
+flux_b_s = np.zeros(n_z)
+
+mg_b_h   = np.zeros(n_z)   # <∂ū/∂t>_R
+mg_b_s   = np.zeros(n_z)
+
+t2_b_h   = np.zeros(n_z)   # -<ū ∂ū/∂x>_R
+t2_b_s   = np.zeros(n_z)
+t3_b_h   = np.zeros(n_z)   # -<v̄ ∂ū/∂y>_R
+t3_b_s   = np.zeros(n_z)
+t5_b_h   = np.zeros(n_z)   # -1/rho0 <∂p̄/∂x>_R
+t5_b_s   = np.zeros(n_z)
+
+# Champs 2D moyens temporels (ny, nx) — pour T2, T3, T4, T5
+ubar_b_2d = np.zeros((n_z, n_y, n_x))
+vbar_b_2d = np.zeros((n_z, n_y, n_x))
+wbar_b_2d = np.zeros((n_z, n_y, n_x))
+pbar_b_2d = np.zeros((n_z, n_y, n_x))
+
+ds_u = xr.open_dataset(path3d('ua'))
+ds_v = xr.open_dataset(path3d('va'))
+ds_w = xr.open_dataset(path3d('wa'))
+ds_p = xr.open_dataset(path3d('pa'))
+
+for iz in range(n_z):
+
+    acc_uw_h  = 0.0 ; acc_uw_s  = 0.0
+    acc_mg_h  = 0.0 ; acc_mg_s  = 0.0
+    acc_u2d   = np.zeros((n_y, n_x))
+    acc_v2d   = np.zeros((n_y, n_x))
+    acc_w2d   = np.zeros((n_y, n_x))
+    acc_p2d   = np.zeros((n_y, n_x))
+    n = 0
+
+    for it in range(t_stat, n_t - 1):
+
+        u_2d = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values
+        u_nx = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
+        v_2d = ds_v['va'].isel({dim_t: it,     dim_z: iz}).values
+        w_2d = ds_w['wa'].isel({dim_t: it,     dim_z: iz}).values
+        p_2d = ds_p['pa'].isel({dim_t: it,     dim_z: iz}).values
+
+        # ── Membre gauche <∂ū/∂t>_R ──────────────────────────────────
+        dudt_2d   = (u_nx - u_2d) / dt_sec
+        acc_mg_h += dudt_2d[mh].mean()
+        acc_mg_s += dudt_2d[ms].mean()
+
+        # ── Flux Reynolds : anomalies sur le DOMAINE ENTIER ──────────
+        u_p = u_2d - u_2d.mean()   # (ny, nx)
+        w_p = w_2d - w_2d.mean()   # (ny, nx)
+        acc_uw_h += (u_p * w_p)[mh].mean()
+        acc_uw_s += (u_p * w_p)[ms].mean()
+
+        # ── Accumulation champs 2D pour moyennes temporelles ─────────
+        acc_u2d += u_2d
+        acc_v2d += v_2d
+        acc_w2d += w_2d
+        acc_p2d += p_2d
+
+        n += 1
+        del u_2d, u_nx, v_2d, w_2d, p_2d, dudt_2d, u_p, w_p
+        gc.collect()
+
+    flux_b_h[iz]  = rho0[iz] * acc_uw_h / n
+    flux_b_s[iz]  = rho0[iz] * acc_uw_s / n
+    mg_b_h[iz]    = acc_mg_h / n
+    mg_b_s[iz]    = acc_mg_s / n
+    ubar_b_2d[iz] = acc_u2d  / n
+    vbar_b_2d[iz] = acc_v2d  / n
+    wbar_b_2d[iz] = acc_w2d  / n
+    pbar_b_2d[iz] = acc_p2d  / n
+
+    if iz % 10 == 0:
+        print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
+
+ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
+del ds_u, ds_v, ds_w, ds_p
+gc.collect()
+
+# ======================================================================
+# T2, T3, T4, T5 depuis les champs moyens
+# ======================================================================
+
+t4_b_h = np.zeros(n_z)
+t4_b_s = np.zeros(n_z)
+
+for iz in range(n_z):
+
+    u2d = ubar_b_2d[iz]
+    v2d = vbar_b_2d[iz]
+    w2d = wbar_b_2d[iz]
+    p2d = pbar_b_2d[iz]
+
+    dudx      = np.gradient(u2d, dx, axis=1)
+    t2_b_h[iz] = -(u2d * dudx)[mh].mean()
+    t2_b_s[iz] = -(u2d * dudx)[ms].mean()
+
+    dudy      = np.gradient(u2d, dy, axis=0)
+    t3_b_h[iz] = -(v2d * dudy)[mh].mean()
+    t3_b_s[iz] = -(v2d * dudy)[ms].mean()
+
+    dpdx      = np.gradient(p2d, dx, axis=1)
+    t5_b_h[iz] = (-dpdx[mh] / rho0[iz]).mean()
+    t5_b_s[iz] = (-dpdx[ms] / rho0[iz]).mean()
+
+for iz in range(n_z):
+    iz_lo = max(iz - 1, 0)
+    iz_hi = min(iz + 1, n_z - 1)
+    dz = alt[iz_hi] - alt[iz_lo]
+    if dz == 0:
+        dz = alt[1] - alt[0]
+    dudz_2d    = (ubar_b_2d[iz_hi] - ubar_b_2d[iz_lo]) / dz
+    w2d        = wbar_b_2d[iz]
+    t4_b_h[iz] = -(w2d * dudz_2d)[mh].mean()
+    t4_b_s[iz] = -(w2d * dudz_2d)[ms].mean()
+
+# ── T1 : divergence du flux de Reynolds ──────────────────────────────
+t1_b_h = tendance(flux_b_h)
+t1_b_s = tendance(flux_b_s)
+
+# ── Somme membre droit ────────────────────────────────────────────────
+somme_b_h = t1_b_h + t2_b_h + t3_b_h + t4_b_h + t5_b_h
+somme_b_s = t1_b_s + t2_b_s + t3_b_s + t4_b_s + t5_b_s
+
+print('§15b terminé.')
+
+
+
+
+
+# ======================================================================
+# §15b — Visualisation : vérification terme à terme
+# ======================================================================
+
+idx_tropo = np.searchsorted(alt, 15000)
+sc = 1e5
+
+for region, mg, somme, t1, t2, t3, t4, t5, couleur in [
+    ('HUMIDE', mg_b_h, somme_b_h, t1_b_h, t2_b_h, t3_b_h, t4_b_h, t5_b_h, 'royalblue'),
+    ('SECHE',  mg_b_s, somme_b_s, t1_b_s, t2_b_s, t3_b_s, t4_b_s, t5_b_s, 'saddlebrown'),
+]:
+    fig, axes = plt.subplots(1, 2, figsize=(14, 9), sharey=True)
+
+    for ax, sl, titre in zip(
+        axes,
+        [slice(None, idx_tropo), slice(None)],
+        ['Troposphere (0-15 km)', 'Colonne complete'],
+    ):
+        ax.plot(mg[sl]    * sc, alt[sl],
+                color='black',      lw=2.5,
+                label='dtu_bar_R')
+        ax.plot(somme[sl] * sc, alt[sl],
+                color='black',      lw=1.5, linestyle='--',
+                label='T1+T2+T3+T4+T5')
+        ax.plot(t1[sl]    * sc, alt[sl],
+                color=couleur,      lw=2,
+                label='T1 Reynolds global')
+        ax.plot(t2[sl]    * sc, alt[sl],
+                color='steelblue',  lw=1.2, linestyle='-.',
+                label='T2 ubar dx ubar')
+        ax.plot(t3[sl]    * sc, alt[sl],
+                color='darkorange', lw=1.2, linestyle='-.',
+                label='T3 vbar dy ubar')
+        ax.plot(t4[sl]    * sc, alt[sl],
+                color='purple',     lw=1.2, linestyle='-.',
+                label='T4 wbar dz ubar')
+        ax.plot(t5[sl]    * sc, alt[sl],
+                color='seagreen',   lw=1.2, linestyle='-.',
+                label='T5 pression')
+        ax.axvline(0, color='grey', alpha=0.4)
+        ax.set_xlabel('Tendance (x1e-5 m/s2)')
+        ax.set_title(titre, fontweight='bold')
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    axes[0].set_ylabel('Altitude (m)')
+    plt.suptitle(
+        'Region ' + region + ' — §15b bilan complet (anomalies globales)\n'
+        'dtu_bar = T1+T2+T3+T4+T5',
+        fontsize=13, fontweight='bold',
+    )
+    plt.tight_layout()
+    plt.show()
+
+
+
+
+
+# ======================================================================
+# §15b — Visualisation simplifiée : Reynolds global vs résidu
+# ======================================================================
+
+idx_tropo = np.searchsorted(alt, 15000)
+sc = 1e5
+
+for region, t1, mg, t2, t3, t4, t5, couleur in [
+    ('HUMIDE', t1_b_h, mg_b_h, t2_b_h, t3_b_h, t4_b_h, t5_b_h, 'royalblue'),
+    ('SECHE',  t1_b_s, mg_b_s, t2_b_s, t3_b_s, t4_b_s, t5_b_s, 'saddlebrown'),
+]:
+    membre_droit = mg - t2 - t3 - t4 - t5
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
+
+    for ax, sl, titre in zip(
+        axes,
+        [slice(None, idx_tropo), slice(None)],
+        ['Troposphere (0-15 km)', 'Colonne complete'],
+    ):
+        ax.plot(t1[sl]           * sc, alt[sl],
+                color=couleur, lw=2.5,
+                label='Reynolds global T1')
+        ax.plot(membre_droit[sl] * sc, alt[sl],
+                color='black', lw=2, linestyle='--',
+                label='dt_u - T2 - T3 - T4 - T5')
+        ax.axvline(0, color='grey', alpha=0.4)
+        ax.set_xlabel('Tendance (x1e-5 m/s2)')
+        ax.set_title(titre, fontweight='bold')
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+
+    axes[0].set_ylabel('Altitude (m)')
+    plt.suptitle(
+        'Region ' + region + ' — §15b Reynolds global vs residu\n'
+        'Si coincident : bilan ferme',
+        fontsize=13, fontweight='bold',
+    )
+    plt.tight_layout()
+    plt.show()
