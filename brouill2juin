@@ -204,3 +204,39 @@ axes[0].set_ylabel('Altitude (m)')
 plt.suptitle(r"Profils de $\bar{u}$ : humide, sèche, domaine entier", fontsize=13, fontweight='bold')
 plt.tight_layout()
 plt.show()
+
+
+
+
+
+
+
+
+# ū_région depuis les champs moyens déjà calculés
+ubar_h_15 = np.array([ubar_2d[iz][mh].mean() for iz in range(n_z)])
+ubar_s_15 = np.array([ubar_2d[iz][ms].mean() for iz in range(n_z)])
+ubar_dom  = np.array([ubar_2d[iz].mean()      for iz in range(n_z)])
+
+# ── Figure ────────────────────────────────────────────────────────────
+idx_tropo = np.searchsorted(alt, 15000)
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
+
+for ax, sl, titre in zip(
+    axes,
+    [slice(None, idx_tropo), slice(None)],
+    ['Troposphère (0–15 km)', 'Colonne complète']
+):
+    ax.plot(ubar_h_15[sl], alt[sl], color='royalblue',   lw=2, label=r'$\bar{u}_{\mathrm{humide}}$')
+    ax.plot(ubar_s_15[sl], alt[sl], color='saddlebrown', lw=2, label=r'$\bar{u}_{\mathrm{sèche}}$')
+    ax.plot(ubar_dom[sl],  alt[sl], color='black', lw=2, linestyle='--', label=r'$\bar{u}_{\mathrm{domaine}}$')
+    ax.axvline(0, color='grey', alpha=0.4)
+    ax.set_xlabel('Vent zonal moyen (m/s)')
+    ax.set_title(titre, fontweight='bold')
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+
+axes[0].set_ylabel('Altitude (m)')
+plt.suptitle(r"Profils de $\bar{u}$ : humide, sèche, domaine entier", fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
