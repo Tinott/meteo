@@ -1,78 +1,116 @@
 ## 15. Fermeture du bilan de QdM par région (humide / sèche)
 
-On vérifie si l'équation de Navier-Stokes se ferme séparément dans chaque région.
+On vérifie terme à terme l'équation de Navier-Stokes conditionnée sur chaque région :
 
-**Méthode directe** : dérivée du flux de Reynolds calculée à partir de ρ₀⟨u′w′⟩ restreint aux colonnes humides (ou sèches), exactement comme au §9.
+$$-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'}_{\text{rég}}) \stackrel{?}{=} \left\langle\frac{\partial u}{\partial t}\right\rangle_{\text{rég}} + \left\langle u\partial_x u + v\partial_y u + w\partial_z u\right\rangle_{\text{rég}} + \left\langle\frac{1}{\rho_0}\partial_x p\right\rangle_{\text{rég}}$$
 
-**Méthode résiduelle** : ∂ū/∂t calculé en ne moyennant que sur les colonnes humides (ou sèches).
-
-Si l'advection et la pression ne s'annulent plus localement (contrairement au cas global), l'écart entre les deux profils sera plus grand. On visualise les deux profils côte à côte pour chaque région.
-
-
-
-
+**Méthode directe** : divergence de flux de Reynolds restreint aux colonnes de la région (réutilise `flux_h` / `flux_s` du §9).  
+**Méthode résiduelle** : somme de tous les termes connus (∂u/∂t + advection + pression), moyennés sur les mêmes colonnes.  
+Un écart résiduel persistant indique la diffusion sous-maille non disponible dans les sorties.
 
 
 
 
 # ======================================================================
-# §15 — Fermeture du bilan par région : humide vs sèche
+# §15 — Fermeture conditionnelle : humide vs sèche
 #
-# Méthode A (directe)   : -1/rho0 * d(rho0 <u'w'>_region)/dz
-#                          flux_h / flux_s déjà disponibles depuis §9
+# Pour chaque niveau iz, on calcule niveau par niveau :
+#   - dudt_2d    = (u(t+1) - u(t)) / dt          [§14 mais conditionné]
+#   - adv_2d     = -(u*du/dx + v*du/dy + w*du/dz) [§13.2 mais conditionné]
+#   - pres_2d    = -(1/rho0)*dp/dx                [§13.3 mais conditionné]
+# puis on moyenne sur mh / ms séparément.
 #
-# Méthode B (résiduelle) : <∂u/∂t>_region  moyenné sur les colonnes
-#                          de la région à chaque pas de temps
-#
-# mh / ms : masques 2D (ny, nx) construits au §4
+# La méthode directe réutilise flux_h / flux_s du §9 → tend_h_direct / tend_s_direct.
 # ======================================================================
 
 dt_sec = 6.0 * 3600.0
 
-dudt_h = np.zeros(n_z)   # ∂ū/∂t moyenné sur colonnes humides
-dudt_s = np.zeros(n_z)   # ∂ū/∂t moyenné sur colonnes sèches
+dudt_h  = np.zeros(n_z)
+dudt_s  = np.zeros(n_z)
+adv_h   = np.zeros(n_z)
+adv_s   = np.zeros(n_z)
+pres_h  = np.zeros(n_z)
+pres_s  = np.zeros(n_z)
 
 ds_u = xr.open_dataset(path3d('ua'))
+ds_v = xr.open_dataset(path3d('va'))
+ds_w = xr.open_dataset(path3d('wa'))
+ds_p = xr.open_dataset(path3d('pa'))
 
 for iz in range(n_z):
 
-    acc_h = 0.0
-    acc_s = 0.0
+    acc_dudt_h = 0.0 ; acc_dudt_s = 0.0
+    acc_adv_h  = 0.0 ; acc_adv_s  = 0.0
+    acc_pres_h = 0.0 ; acc_pres_s = 0.0
     n = 0
+
+    iz_lo = max(iz - 1, 0)
+    iz_hi = min(iz + 1, n_z - 1)
+    dz    = alt[iz_hi] - alt[iz_lo]
+    if dz == 0:
+        dz = alt[1] - alt[0]
 
     for it in range(t_stat, n_t - 1):
 
-        u_now  = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values  # (ny, nx)
+        u_2d   = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values  # (ny, nx)
         u_next = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
+        v_2d   = ds_v['va'].isel({dim_t: it,     dim_z: iz}).values
+        w_2d   = ds_w['wa'].isel({dim_t: it,     dim_z: iz}).values
+        p_2d   = ds_p['pa'].isel({dim_t: it,     dim_z: iz}).values
 
-        dudt_2d = (u_next - u_now) / dt_sec  # (ny, nx)
+        # ── ∂u/∂t ────────────────────────────────────────────────────
+        dudt_2d = (u_next - u_2d) / dt_sec
 
-        # Moyenne sur les colonnes de chaque région
-        acc_h += dudt_2d[mh].mean()
-        acc_s += dudt_2d[ms].mean()
+        # ── Advection ─────────────────────────────────────────────────
+        dudx = np.gradient(u_2d, dx, axis=1)
+        dudy = np.gradient(u_2d, dy, axis=0)
+
+        u_lo = ds_u['ua'].isel({dim_t: it, dim_z: iz_lo}).values
+        u_hi = ds_u['ua'].isel({dim_t: it, dim_z: iz_hi}).values
+        dudz = (u_hi - u_lo) / dz
+
+        adv_2d = -(u_2d * dudx + v_2d * dudy + w_2d * dudz)
+
+        # ── Pression ──────────────────────────────────────────────────
+        pres_2d = -np.gradient(p_2d, dx, axis=1) / rho0[iz]
+
+        # ── Accumulation conditionnée ─────────────────────────────────
+        acc_dudt_h += dudt_2d[mh].mean()
+        acc_dudt_s += dudt_2d[ms].mean()
+        acc_adv_h  += adv_2d[mh].mean()
+        acc_adv_s  += adv_2d[ms].mean()
+        acc_pres_h += pres_2d[mh].mean()
+        acc_pres_s += pres_2d[ms].mean()
         n += 1
 
-        del u_now, u_next, dudt_2d
+        del u_2d, u_next, v_2d, w_2d, p_2d
+        del dudx, dudy, dudz, u_lo, u_hi
+        del dudt_2d, adv_2d, pres_2d
         gc.collect()
 
-    dudt_h[iz] = acc_h / n if n > 0 else 0.0
-    dudt_s[iz] = acc_s / n if n > 0 else 0.0
+    dudt_h[iz] = acc_dudt_h / n
+    dudt_s[iz] = acc_dudt_s / n
+    adv_h[iz]  = acc_adv_h  / n
+    adv_s[iz]  = acc_adv_s  / n
+    pres_h[iz] = acc_pres_h / n
+    pres_s[iz] = acc_pres_s / n
 
     if iz % 10 == 0:
         print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
 
-ds_u.close()
-del ds_u
+ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
+del ds_u, ds_v, ds_w, ds_p
 gc.collect()
 
-# Méthode directe : tendance par divergence du flux de Reynolds
-# flux_h et flux_s sont déjà calculés au §9
-tend_h_direct = tendance(flux_h)   # -1/rho0 * d(rho0 <u'w'>_h)/dz
+# Somme des termes connus = ce que devrait être la tendance Reynolds
+residuel_h = dudt_h + adv_h + pres_h
+residuel_s = dudt_s + adv_s + pres_s
+
+# Méthode directe (réutilise flux_h / flux_s du §9)
+tend_h_direct = tendance(flux_h)
 tend_s_direct = tendance(flux_s)
 
-print('§15 : calcul terminé.')
-
-
+print('§15 terminé.')
 
 
 
@@ -80,67 +118,47 @@ print('§15 : calcul terminé.')
 
 
 # ======================================================================
-# §15 — Visualisation : comparaison directe vs résiduelle par région
+# §15 — Visualisation : directe vs résiduelle, terme par terme
 # ======================================================================
 
 idx_tropo = np.searchsorted(alt, 15000)
 sc = 1e5
 
-fig, axes = plt.subplots(2, 2, figsize=(14, 14), sharey='row')
+for region, direct, resid, dud, adv, pres, couleur in [
+    ('HUMIDE', tend_h_direct, residuel_h, dudt_h, adv_h, pres_h, 'royalblue'),
+    ('SÈCHE',  tend_s_direct, residuel_s, dudt_s, adv_s, pres_s, 'saddlebrown'),
+]:
+    fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
 
-# ── Ligne 1 : troposphère (0–15 km) ───────────────────────────────────
-sl = slice(None, idx_tropo)
+    for ax, sl, titre in zip(
+        axes,
+        [slice(None, idx_tropo), slice(None)],
+        ['Troposphère (0–15 km)', 'Colonne complète']
+    ):
+        ax.plot(direct[sl] * sc, alt[sl],
+                color=couleur, lw=2.5,
+                label=r"Directe $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$")
+        ax.plot(resid[sl]  * sc, alt[sl],
+                color='black', lw=2, linestyle='--',
+                label=r'Résidu $\partial_t u + \mathrm{adv} + \mathrm{pres}$')
+        ax.plot(dud[sl]    * sc, alt[sl],
+                color='grey',       lw=1.2, linestyle=':',  label=r'$\partial_t u$')
+        ax.plot(adv[sl]    * sc, alt[sl],
+                color='darkorange', lw=1.2, linestyle='-.', label='Advection')
+        ax.plot(pres[sl]   * sc, alt[sl],
+                color='seagreen',   lw=1.2, linestyle='-.', label='Pression')
+        ax.axvline(0, color='grey', alpha=0.4)
+        ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
+        ax.set_title(titre, fontweight='bold')
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
 
-ax = axes[0, 0]
-ax.plot(tend_h_direct[sl] * sc, alt[sl], color='royalblue', lw=2,
-        label=r"Directe $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'}_h)$")
-ax.plot(dudt_h[sl] * sc,        alt[sl], color='crimson',   lw=2, linestyle='--',
-        label=r'Résidu $\langle\partial u/\partial t\rangle_h$')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_title('Région HUMIDE — troposphère', fontweight='bold')
-ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
-ax.set_ylabel('Altitude (m)')
-ax.legend()
-ax.grid(True, alpha=0.3)
-
-ax = axes[0, 1]
-ax.plot(tend_s_direct[sl] * sc, alt[sl], color='saddlebrown', lw=2,
-        label=r"Directe $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'}_s)$")
-ax.plot(dudt_s[sl] * sc,        alt[sl], color='crimson',     lw=2, linestyle='--',
-        label=r'Résidu $\langle\partial u/\partial t\rangle_s$')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_title('Région SÈCHE — troposphère', fontweight='bold')
-ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
-ax.legend()
-ax.grid(True, alpha=0.3)
-
-# ── Ligne 2 : colonne complète ─────────────────────────────────────────
-ax = axes[1, 0]
-ax.plot(tend_h_direct * sc, alt, color='royalblue', lw=2,
-        label=r"Directe $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'}_h)$")
-ax.plot(dudt_h * sc,        alt, color='crimson',   lw=2, linestyle='--',
-        label=r'Résidu $\langle\partial u/\partial t\rangle_h$')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_title('Région HUMIDE — colonne complète', fontweight='bold')
-ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
-ax.set_ylabel('Altitude (m)')
-ax.legend()
-ax.grid(True, alpha=0.3)
-
-ax = axes[1, 1]
-ax.plot(tend_s_direct * sc, alt, color='saddlebrown', lw=2,
-        label=r"Directe $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'}_s)$")
-ax.plot(dudt_s * sc,        alt, color='crimson',     lw=2, linestyle='--',
-        label=r'Résidu $\langle\partial u/\partial t\rangle_s$')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_title('Région SÈCHE — colonne complète', fontweight='bold')
-ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
-ax.legend()
-ax.grid(True, alpha=0.3)
-
-plt.suptitle('Fermeture du bilan de QdM : régions humide vs sèche\n'
-             r"Directe = $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$   "
-             r"Résidu = $\langle\partial u/\partial t\rangle$",
-             fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
+    axes[0].set_ylabel('Altitude (m)')
+    plt.suptitle(
+        f'Région {region} — fermeture du bilan de QdM\n'
+        r"Si les courbes coïncident : $\partial_z(\rho_0\overline{u'w'})$ "
+        r"$= \rho_0(\partial_t u + \mathrm{adv} + \mathrm{pres})$",
+        fontsize=13, fontweight='bold'
+    )
+    plt.tight_layout()
+    plt.show()
