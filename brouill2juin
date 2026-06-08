@@ -1,12 +1,21 @@
 ## 15. Fermeture du bilan de QdM par région (humide / sèche)
 
-On vérifie terme à terme l'équation de Navier-Stokes conditionnée sur chaque région :
+On travaille **entièrement dans chaque région séparément**.
 
-$$-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'}_{\text{rég}}) \stackrel{?}{=} \left\langle\frac{\partial u}{\partial t}\right\rangle_{\text{rég}} + \left\langle u\partial_x u + v\partial_y u + w\partial_z u\right\rangle_{\text{rég}} + \left\langle\frac{1}{\rho_0}\partial_x p\right\rangle_{\text{rég}}$$
+**Méthode directe** : on recalcule u′, w′ comme anomalies par rapport à la moyenne
+de la région uniquement, puis on forme ρ₀⟨u′w′⟩_région et sa divergence.
 
-**Méthode directe** : divergence de flux de Reynolds restreint aux colonnes de la région (réutilise `flux_h` / `flux_s` du §9).  
-**Méthode résiduelle** : somme de tous les termes connus (∂u/∂t + advection + pression), moyennés sur les mêmes colonnes.  
-Un écart résiduel persistant indique la diffusion sous-maille non disponible dans les sorties.
+**Méthode résiduelle** : on calcule ∂ū/∂t, ū·∂ū/∂z (seul terme d'advection non nul
+en RCE où ū≈0) et (1/ρ₀)∂p̄/∂x, tous moyennés sur les colonnes de la région.
+Le flux de Reynolds est alors le résidu :
+
+$$-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'}) = \frac{\partial\bar{u}}{\partial t} + \bar{w}\partial_z\bar{u} + \frac{1}{\rho_0}\partial_x\bar{p}$$
+
+Si les deux profils coïncident → bilan fermé dans la région.
+
+
+
+
 
 
 
@@ -14,101 +23,140 @@ Un écart résiduel persistant indique la diffusion sous-maille non disponible d
 # ======================================================================
 # §15 — Fermeture conditionnelle : humide vs sèche
 #
-# Pour chaque niveau iz, on calcule niveau par niveau :
-#   - dudt_2d    = (u(t+1) - u(t)) / dt          [§14 mais conditionné]
-#   - adv_2d     = -(u*du/dx + v*du/dy + w*du/dz) [§13.2 mais conditionné]
-#   - pres_2d    = -(1/rho0)*dp/dx                [§13.3 mais conditionné]
-# puis on moyenne sur mh / ms séparément.
+# Tout est calculé séparément dans chaque région.
+# mh / ms : masques 2D (ny, nx) du §4
 #
-# La méthode directe réutilise flux_h / flux_s du §9 → tend_h_direct / tend_s_direct.
+# Pour chaque niveau iz et chaque pas de temps it :
+#
+#   Méthode directe
+#   ───────────────
+#   u_reg, w_reg : valeurs aux colonnes de la région → shape (n_stat, n_col_reg)
+#   u_bar_reg    : moyenne sur (t, colonnes) = scalaire par niveau
+#   u_p_reg      = u_reg - u_bar_reg   (anomalie intra-région)
+#   w_p_reg      = w_reg - w_bar_reg
+#   flux_reg[iz] = rho0[iz] * mean(u_p_reg * w_p_reg)
+#   tend_direct  = -1/rho0 * d(flux_reg)/dz
+#
+#   Méthode résiduelle (vent moyen de la région)
+#   ────────────────────────────────────────────
+#   dudt_reg[iz] = mean_t( (u_reg(t+1) - u_reg(t)) / dt )
+#   wdudz_reg[iz]: w̄_reg * dū_reg/dz  (advection verticale du vent moyen)
+#   pres_reg[iz] : mean( -(1/rho0) * dp/dx )  sur les colonnes de la région
+#
+#   résidu_reg = dudt_reg + wdudz_reg + pres_reg
 # ======================================================================
 
-dt_sec = 6.0 * 3600.0
+dt_sec = float(np.diff(time_days[:2])[0]) * 86400.0
+print(f'dt = {dt_sec:.0f} s = {dt_sec/3600:.1f} h')
 
-dudt_h  = np.zeros(n_z)
-dudt_s  = np.zeros(n_z)
-adv_h   = np.zeros(n_z)
-adv_s   = np.zeros(n_z)
-pres_h  = np.zeros(n_z)
-pres_s  = np.zeros(n_z)
+# ── Tableaux résultats ────────────────────────────────────────────────
+flux_h2  = np.zeros(n_z)   # ρ₀⟨u′w′⟩ recalculé dans la région humide
+flux_s2  = np.zeros(n_z)
+
+dudt_h   = np.zeros(n_z)
+dudt_s   = np.zeros(n_z)
+wdudz_h  = np.zeros(n_z)
+wdudz_s  = np.zeros(n_z)
+pres_h   = np.zeros(n_z)
+pres_s   = np.zeros(n_z)
+
+# Profils de vent moyen par région (nécessaires pour wdudz)
+ubar_h   = np.zeros(n_z)
+ubar_s   = np.zeros(n_z)
 
 ds_u = xr.open_dataset(path3d('ua'))
-ds_v = xr.open_dataset(path3d('va'))
 ds_w = xr.open_dataset(path3d('wa'))
 ds_p = xr.open_dataset(path3d('pa'))
 
 for iz in range(n_z):
 
+    # ── Accumulation sur l'état stationnaire ─────────────────────────
+    acc_uw_h   = 0.0 ; acc_uw_s   = 0.0   # pour flux direct
     acc_dudt_h = 0.0 ; acc_dudt_s = 0.0
-    acc_adv_h  = 0.0 ; acc_adv_s  = 0.0
     acc_pres_h = 0.0 ; acc_pres_s = 0.0
+    acc_wbar_h = 0.0 ; acc_wbar_s = 0.0   # pour w̄ région
+    acc_ubar_h = 0.0 ; acc_ubar_s = 0.0   # pour ū région
     n = 0
-
-    iz_lo = max(iz - 1, 0)
-    iz_hi = min(iz + 1, n_z - 1)
-    dz    = alt[iz_hi] - alt[iz_lo]
-    if dz == 0:
-        dz = alt[1] - alt[0]
 
     for it in range(t_stat, n_t - 1):
 
-        u_2d   = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values  # (ny, nx)
-        u_next = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
-        v_2d   = ds_v['va'].isel({dim_t: it,     dim_z: iz}).values
-        w_2d   = ds_w['wa'].isel({dim_t: it,     dim_z: iz}).values
-        p_2d   = ds_p['pa'].isel({dim_t: it,     dim_z: iz}).values
+        u_2d = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values  # (ny, nx)
+        u_nx = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
+        w_2d = ds_w['wa'].isel({dim_t: it,     dim_z: iz}).values
+        p_2d = ds_p['pa'].isel({dim_t: it,     dim_z: iz}).values
 
-        # ── ∂u/∂t ────────────────────────────────────────────────────
-        dudt_2d = (u_next - u_2d) / dt_sec
+        # Extraction dans chaque région → vecteur 1D (n_col_reg,)
+        u_h = u_2d[mh] ; u_s = u_2d[ms]
+        w_h = w_2d[mh] ; w_s = w_2d[ms]
+        p_h = p_2d[mh] ; p_s = p_2d[ms]
 
-        # ── Advection ─────────────────────────────────────────────────
-        dudx = np.gradient(u_2d, dx, axis=1)
-        dudy = np.gradient(u_2d, dy, axis=0)
+        # ── Flux direct : anomalies intra-région ─────────────────────
+        u_p_h = u_h - u_h.mean()
+        u_p_s = u_s - u_s.mean()
+        w_p_h = w_h - w_h.mean()
+        w_p_s = w_s - w_s.mean()
 
-        u_lo = ds_u['ua'].isel({dim_t: it, dim_z: iz_lo}).values
-        u_hi = ds_u['ua'].isel({dim_t: it, dim_z: iz_hi}).values
-        dudz = (u_hi - u_lo) / dz
+        acc_uw_h += (u_p_h * w_p_h).mean()
+        acc_uw_s += (u_p_s * w_p_s).mean()
 
-        adv_2d = -(u_2d * dudx + v_2d * dudy + w_2d * dudz)
+        # ── ∂ū/∂t conditionné ────────────────────────────────────────
+        u_nx_h = u_nx[mh] ; u_nx_s = u_nx[ms]
+        acc_dudt_h += (u_nx_h - u_h).mean() / dt_sec
+        acc_dudt_s += (u_nx_s - u_s).mean() / dt_sec
 
-        # ── Pression ──────────────────────────────────────────────────
-        pres_2d = -np.gradient(p_2d, dx, axis=1) / rho0[iz]
+        # ── Pression : gradient zonal moyenné sur la région ──────────
+        # On reconstruit dp/dx sur la grille complète puis on sélectionne
+        dpdx = np.gradient(p_2d, dx, axis=1)   # (ny, nx)
+        acc_pres_h += (-dpdx[mh] / rho0[iz]).mean()
+        acc_pres_s += (-dpdx[ms] / rho0[iz]).mean()
 
-        # ── Accumulation conditionnée ─────────────────────────────────
-        acc_dudt_h += dudt_2d[mh].mean()
-        acc_dudt_s += dudt_2d[ms].mean()
-        acc_adv_h  += adv_2d[mh].mean()
-        acc_adv_s  += adv_2d[ms].mean()
-        acc_pres_h += pres_2d[mh].mean()
-        acc_pres_s += pres_2d[ms].mean()
+        # ── Vent moyen de la région (pour wdudz après la boucle) ─────
+        acc_wbar_h += w_h.mean()
+        acc_wbar_s += w_s.mean()
+        acc_ubar_h += u_h.mean()
+        acc_ubar_s += u_s.mean()
+
         n += 1
-
-        del u_2d, u_next, v_2d, w_2d, p_2d
-        del dudx, dudy, dudz, u_lo, u_hi
-        del dudt_2d, adv_2d, pres_2d
+        del u_2d, u_nx, w_2d, p_2d
+        del u_h, u_s, w_h, w_s, p_h, p_s
+        del u_p_h, u_p_s, w_p_h, w_p_s
+        del u_nx_h, u_nx_s, dpdx
         gc.collect()
 
-    dudt_h[iz] = acc_dudt_h / n
-    dudt_s[iz] = acc_dudt_s / n
-    adv_h[iz]  = acc_adv_h  / n
-    adv_s[iz]  = acc_adv_s  / n
-    pres_h[iz] = acc_pres_h / n
-    pres_s[iz] = acc_pres_s / n
+    flux_h2[iz]  = rho0[iz] * acc_uw_h   / n
+    flux_s2[iz]  = rho0[iz] * acc_uw_s   / n
+    dudt_h[iz]   = acc_dudt_h / n
+    dudt_s[iz]   = acc_dudt_s / n
+    pres_h[iz]   = acc_pres_h / n
+    pres_s[iz]   = acc_pres_s / n
+    ubar_h[iz]   = acc_ubar_h / n
+    ubar_s[iz]   = acc_ubar_s / n
+    # w̄ moyen de la région stocké pour wdudz (calculé après la boucle iz)
+    wdudz_h[iz]  = acc_wbar_h / n   # on stocke w̄ temporairement
+    wdudz_s[iz]  = acc_wbar_s / n
 
     if iz % 10 == 0:
         print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
 
-ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
-del ds_u, ds_v, ds_w, ds_p
+ds_u.close() ; ds_w.close() ; ds_p.close()
+del ds_u, ds_w, ds_p
 gc.collect()
 
-# Somme des termes connus = ce que devrait être la tendance Reynolds
-residuel_h = dudt_h + adv_h + pres_h
-residuel_s = dudt_s + adv_s + pres_s
+# ── w̄_région · dū_région/dz  (après la boucle, on a les profils complets) ──
+wbar_h = wdudz_h.copy()   # récupère w̄ stocké
+wbar_s = wdudz_s.copy()
+dudz_h = np.gradient(ubar_h, alt)
+dudz_s = np.gradient(ubar_s, alt)
+wdudz_h = wbar_h * dudz_h
+wdudz_s = wbar_s * dudz_s
 
-# Méthode directe (réutilise flux_h / flux_s du §9)
-tend_h_direct = tendance(flux_h)
-tend_s_direct = tendance(flux_s)
+# ── Tendances directes ────────────────────────────────────────────────
+tend_h_direct = tendance(flux_h2)
+tend_s_direct = tendance(flux_s2)
+
+# ── Résidu = somme des termes connus ─────────────────────────────────
+residuel_h = dudt_h + wdudz_h + pres_h
+residuel_s = dudt_s + wdudz_s + pres_s
 
 print('§15 terminé.')
 
@@ -117,16 +165,19 @@ print('§15 terminé.')
 
 
 
+
+
+
 # ======================================================================
-# §15 — Visualisation : directe vs résiduelle, terme par terme
+# §15 — Visualisation
 # ======================================================================
 
 idx_tropo = np.searchsorted(alt, 15000)
 sc = 1e5
 
-for region, direct, resid, dud, adv, pres, couleur in [
-    ('HUMIDE', tend_h_direct, residuel_h, dudt_h, adv_h, pres_h, 'royalblue'),
-    ('SÈCHE',  tend_s_direct, residuel_s, dudt_s, adv_s, pres_s, 'saddlebrown'),
+for region, direct, resid, dud, wdz, pres, couleur in [
+    ('HUMIDE', tend_h_direct, residuel_h, dudt_h, wdudz_h, pres_h, 'royalblue'),
+    ('SÈCHE',  tend_s_direct, residuel_s, dudt_s, wdudz_s, pres_s, 'saddlebrown'),
 ]:
     fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
 
@@ -140,13 +191,16 @@ for region, direct, resid, dud, adv, pres, couleur in [
                 label=r"Directe $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$")
         ax.plot(resid[sl]  * sc, alt[sl],
                 color='black', lw=2, linestyle='--',
-                label=r'Résidu $\partial_t u + \mathrm{adv} + \mathrm{pres}$')
+                label=r'Résidu $\partial_t\bar{u} + \bar{w}\partial_z\bar{u} + \frac{1}{\rho_0}\partial_x\bar{p}$')
         ax.plot(dud[sl]    * sc, alt[sl],
-                color='grey',       lw=1.2, linestyle=':',  label=r'$\partial_t u$')
-        ax.plot(adv[sl]    * sc, alt[sl],
-                color='darkorange', lw=1.2, linestyle='-.', label='Advection')
+                color='grey',       lw=1.2, linestyle=':',
+                label=r'$\partial_t\bar{u}$')
+        ax.plot(wdz[sl]    * sc, alt[sl],
+                color='darkorange', lw=1.2, linestyle='-.',
+                label=r'$\bar{w}\partial_z\bar{u}$')
         ax.plot(pres[sl]   * sc, alt[sl],
-                color='seagreen',   lw=1.2, linestyle='-.', label='Pression')
+                color='seagreen',   lw=1.2, linestyle='-.',
+                label=r'$\frac{1}{\rho_0}\partial_x\bar{p}$')
         ax.axvline(0, color='grey', alpha=0.4)
         ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
         ax.set_title(titre, fontweight='bold')
@@ -156,8 +210,8 @@ for region, direct, resid, dud, adv, pres, couleur in [
     axes[0].set_ylabel('Altitude (m)')
     plt.suptitle(
         f'Région {region} — fermeture du bilan de QdM\n'
-        r"Si les courbes coïncident : $\partial_z(\rho_0\overline{u'w'})$ "
-        r"$= \rho_0(\partial_t u + \mathrm{adv} + \mathrm{pres})$",
+        r"Directe $= -\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'}_\mathrm{rég})$"
+        r"   Résidu $= \partial_t\bar{u} + \bar{w}\partial_z\bar{u} + \frac{1}{\rho_0}\partial_x\bar{p}$",
         fontsize=13, fontweight='bold'
     )
     plt.tight_layout()
