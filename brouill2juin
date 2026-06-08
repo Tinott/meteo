@@ -350,3 +350,208 @@ for region, direct, resid, dud, wdz, pres, couleur in [
     )
     plt.tight_layout()
     plt.show()
+
+
+
+
+
+
+
+
+## 15. Fermeture du bilan de QdM par région (humide / sèche)
+
+Équation de QdM zonale moyennée dans chaque région R :
+
+$$-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'}_R) = \partial_t\bar{u}_R + \bar{u}_R\partial_x\bar{u}_R + \bar{v}_R\partial_y\bar{u}_R + \bar{w}_R\partial_z\bar{u}_R + \frac{1}{\rho_0}\partial_x\bar{p}_R$$
+
+**Méthode directe** : flux de Reynolds recalculé avec anomalies intra-région.  
+**Méthode résiduelle** : somme de tous les termes du membre droit, moyennés sur les colonnes de la région.  
+Les termes d'advection horizontale sont calculés à partir des champs 2D moyennés sur l'état stationnaire.
+
+
+# ======================================================================
+# §15 — Fermeture conditionnelle humide / sèche
+#
+# Passage 1 (boucle iz/it) : accumulation temporelle niveau par niveau
+#   - flux direct u'w' avec anomalies intra-région
+#   - dudt conditionné
+#   - pres conditionné
+#   - profils moyens ū, v̄, w̄ par région (pour advection après)
+#   - champs 2D moyens ū_2d, v̄_2d pour ∂ū/∂x et ∂ū/∂y
+#
+# Passage 2 (après boucle) : calcul des termes d'advection
+#   - ū∂ū/∂x, v̄∂ū/∂y depuis les champs 2D moyens
+#   - w̄∂ū/∂z depuis les profils 1D moyens
+# ======================================================================
+
+dt_sec = 6.0 * 3600.0
+print(f'dt = {dt_sec:.0f} s = {dt_sec/3600:.1f} h')
+
+# ── Tableaux résultats ────────────────────────────────────────────────
+flux_h2   = np.zeros(n_z)
+flux_s2   = np.zeros(n_z)
+dudt_h    = np.zeros(n_z)
+dudt_s    = np.zeros(n_z)
+pres_h    = np.zeros(n_z)
+pres_s    = np.zeros(n_z)
+
+# Profils moyens 1D par région (pour w̄∂ū/∂z)
+ubar_h    = np.zeros(n_z)
+ubar_s    = np.zeros(n_z)
+wbar_h    = np.zeros(n_z)
+wbar_s    = np.zeros(n_z)
+
+# Champs 2D moyens (ny, nx) par niveau (pour ū∂ū/∂x et v̄∂ū/∂y)
+ubar_2d_h = np.zeros((n_z, n_y, n_x))
+ubar_2d_s = np.zeros((n_z, n_y, n_x))
+vbar_2d_h = np.zeros((n_z, n_y, n_x))
+vbar_2d_s = np.zeros((n_z, n_y, n_x))
+
+ds_u = xr.open_dataset(path3d('ua'))
+ds_v = xr.open_dataset(path3d('va'))
+ds_w = xr.open_dataset(path3d('wa'))
+ds_p = xr.open_dataset(path3d('pa'))
+
+for iz in range(n_z):
+
+    acc_uw_h   = 0.0 ; acc_uw_s   = 0.0
+    acc_dudt_h = 0.0 ; acc_dudt_s = 0.0
+    acc_pres_h = 0.0 ; acc_pres_s = 0.0
+    acc_wbar_h = 0.0 ; acc_wbar_s = 0.0
+    acc_ubar_h = 0.0 ; acc_ubar_s = 0.0
+    acc_u2d_h  = np.zeros((n_y, n_x))
+    acc_u2d_s  = np.zeros((n_y, n_x))
+    acc_v2d_h  = np.zeros((n_y, n_x))
+    acc_v2d_s  = np.zeros((n_y, n_x))
+    n = 0
+
+    for it in range(t_stat, n_t - 1):
+
+        u_2d = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values  # (ny, nx)
+        u_nx = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
+        v_2d = ds_v['va'].isel({dim_t: it,     dim_z: iz}).values
+        w_2d = ds_w['wa'].isel({dim_t: it,     dim_z: iz}).values
+        p_2d = ds_p['pa'].isel({dim_t: it,     dim_z: iz}).values
+
+        # Extraction dans chaque région
+        u_h = u_2d[mh] ; u_s = u_2d[ms]
+        w_h = w_2d[mh] ; w_s = w_2d[ms]
+
+        # ── Flux direct : anomalies intra-région ─────────────────────
+        u_p_h = u_h - u_h.mean()
+        u_p_s = u_s - u_s.mean()
+        w_p_h = w_h - w_h.mean()
+        w_p_s = w_s - w_s.mean()
+        acc_uw_h += (u_p_h * w_p_h).mean()
+        acc_uw_s += (u_p_s * w_p_s).mean()
+
+        # ── ∂ū/∂t conditionné ────────────────────────────────────────
+        u_nx_h = u_nx[mh] ; u_nx_s = u_nx[ms]
+        acc_dudt_h += (u_nx_h - u_h).mean() / dt_sec
+        acc_dudt_s += (u_nx_s - u_s).mean() / dt_sec
+
+        # ── Pression : -(1/rho0) dp/dx moyenné sur la région ─────────
+        dpdx = np.gradient(p_2d, dx, axis=1)
+        acc_pres_h += (-dpdx[mh] / rho0[iz]).mean()
+        acc_pres_s += (-dpdx[ms] / rho0[iz]).mean()
+
+        # ── Accumulation champs moyens ────────────────────────────────
+        acc_ubar_h += u_h.mean()
+        acc_ubar_s += u_s.mean()
+        acc_wbar_h += w_h.mean()
+        acc_wbar_s += w_s.mean()
+
+        # Champs 2D pour advection horizontale :
+        # on accumule u et v sur toute la grille, masqués ensuite
+        acc_u2d_h += u_2d * mh   # zéro hors région
+        acc_u2d_s += u_2d * ms
+        acc_v2d_h += v_2d * mh
+        acc_v2d_s += v_2d * ms
+
+        n += 1
+        del u_2d, u_nx, v_2d, w_2d, p_2d
+        del u_h, u_s, w_h, w_s
+        del u_p_h, u_p_s, w_p_h, w_p_s
+        del u_nx_h, u_nx_s, dpdx
+        gc.collect()
+
+    flux_h2[iz] = rho0[iz] * acc_uw_h   / n
+    flux_s2[iz] = rho0[iz] * acc_uw_s   / n
+    dudt_h[iz]  = acc_dudt_h / n
+    dudt_s[iz]  = acc_dudt_s / n
+    pres_h[iz]  = acc_pres_h / n
+    ubar_h[iz]  = acc_ubar_h / n
+    ubar_s[iz]  = acc_ubar_s / n
+    wbar_h[iz]  = acc_wbar_h / n
+    wbar_s[iz]  = acc_wbar_s / n
+    pres_s[iz]  = acc_pres_s / n
+
+    # Champs 2D moyens du niveau iz (divisés par n, nuls hors région)
+    ubar_2d_h[iz] = acc_u2d_h / n
+    ubar_2d_s[iz] = acc_u2d_s / n
+    vbar_2d_h[iz] = acc_v2d_h / n
+    vbar_2d_s[iz] = acc_v2d_s / n
+
+    if iz % 10 == 0:
+        print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
+
+ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
+del ds_u, ds_v, ds_w, ds_p
+gc.collect()
+
+# ======================================
+
+
+
+
+# ======================================================================
+# §15 — Visualisation
+# ======================================================================
+
+idx_tropo = np.searchsorted(alt, 15000)
+sc = 1e5
+
+for region, direct, resid, dud, adv_hz, wdz, pres, couleur in [
+    ('HUMIDE', tend_h_direct, residuel_h, dudt_h, adv_h, wdudz_h, pres_h, 'royalblue'),
+    ('SÈCHE',  tend_s_direct, residuel_s, dudt_s, adv_s, wdudz_s, pres_s, 'saddlebrown'),
+]:
+    fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
+
+    for ax, sl, titre in zip(
+        axes,
+        [slice(None, idx_tropo), slice(None)],
+        ['Troposphère (0–15 km)', 'Colonne complète']
+    ):
+        ax.plot(direct[sl] * sc, alt[sl],
+                color=couleur, lw=2.5,
+                label=r"Directe $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$")
+        ax.plot(resid[sl]  * sc, alt[sl],
+                color='black', lw=2, linestyle='--',
+                label=r'Résidu $\partial_t\bar{u}+\bar{u}\partial_x\bar{u}+\bar{v}\partial_y\bar{u}+\bar{w}\partial_z\bar{u}+\frac{1}{\rho_0}\partial_x\bar{p}$')
+        ax.plot(dud[sl]    * sc, alt[sl],
+                color='grey',       lw=1.2, linestyle=':',
+                label=r'$\partial_t\bar{u}$')
+        ax.plot(adv_hz[sl] * sc, alt[sl],
+                color='darkorange', lw=1.2, linestyle='-.',
+                label=r'$\bar{u}\partial_x\bar{u}+\bar{v}\partial_y\bar{u}$')
+        ax.plot(wdz[sl]    * sc, alt[sl],
+                color='purple',     lw=1.2, linestyle='-.',
+                label=r'$\bar{w}\partial_z\bar{u}$')
+        ax.plot(pres[sl]   * sc, alt[sl],
+                color='seagreen',   lw=1.2, linestyle='-.',
+                label=r'$\frac{1}{\rho_0}\partial_x\bar{p}$')
+        ax.axvline(0, color='grey', alpha=0.4)
+        ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
+        ax.set_title(titre, fontweight='bold')
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    axes[0].set_ylabel('Altitude (m)')
+    plt.suptitle(
+        f'Région {region} — fermeture du bilan de QdM\n'
+        r"Directe $= -\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'}_\mathrm{rég})$"
+        r"   Résidu $= \partial_t\bar{u}+\bar{u}\partial_x\bar{u}+\bar{v}\partial_y\bar{u}+\bar{w}\partial_z\bar{u}+\frac{1}{\rho_0}\partial_x\bar{p}$",
+        fontsize=11, fontweight='bold'
+    )
+    plt.tight_layout()
+    plt.show()
