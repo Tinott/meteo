@@ -994,3 +994,59 @@ for region, mg, somme, t1, t2, t3, t4, t5, couleur in [
     )
     plt.tight_layout()
     plt.show()
+
+
+
+# ======================================================================
+# §15 — Visualisation : vérification terme à terme
+# ======================================================================
+
+idx_tropo = np.searchsorted(alt, 15000)
+sc = 1e5
+
+for region, mg, somme, t1, t2, t3, t4, t5, couleur in [
+    ('HUMIDE', mg_h, somme_h, t1_h, t2_h, t3_h, t4_h, t5_h, 'royalblue'),
+    ('SECHE',  mg_s, somme_s, t1_s, t2_s, t3_s, t4_s, t5_s, 'saddlebrown'),
+]:
+    fig, axes = plt.subplots(1, 2, figsize=(14, 9), sharey=True)
+
+    for ax, sl, titre in zip(
+        axes,
+        [slice(None, idx_tropo), slice(None)],
+        ['Troposphere (0-15 km)', 'Colonne complete']
+    ):
+        ax.plot(mg[sl]    * sc, alt[sl],
+                color='black',      lw=2.5,
+                label='dtu_bar_R')
+        ax.plot(somme[sl] * sc, alt[sl],
+                color='black',      lw=1.5, linestyle='--',
+                label='T1+T2+T3+T4+T5')
+        ax.plot(t1[sl]    * sc, alt[sl],
+                color=couleur,      lw=2,
+                label='T1 Reynolds')
+        ax.plot(t2[sl]    * sc, alt[sl],
+                color='steelblue',  lw=1.2, linestyle='-.',
+                label='T2 ubar dx ubar')
+        ax.plot(t3[sl]    * sc, alt[sl],
+                color='darkorange', lw=1.2, linestyle='-.',
+                label='T3 vbar dy ubar')
+        ax.plot(t4[sl]    * sc, alt[sl],
+                color='purple',     lw=1.2, linestyle='-.',
+                label='T4 wbar dz ubar')
+        ax.plot(t5[sl]    * sc, alt[sl],
+                color='seagreen',   lw=1.2, linestyle='-.',
+                label='T5 pression')
+        ax.axvline(0, color='grey', alpha=0.4)
+        ax.set_xlabel('Tendance (x1e-5 m/s2)')
+        ax.set_title(titre, fontweight='bold')
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    axes[0].set_ylabel('Altitude (m)')
+    plt.suptitle(
+        'Region ' + region + ' — bilan complet de QdM\n'
+        'dtu_bar = T1+T2+T3+T4+T5',
+        fontsize=13, fontweight='bold'
+    )
+    plt.tight_layout()
+    plt.show()
