@@ -145,3 +145,151 @@ for region, direct, resid, dud, wdz, pres, couleur in [
     )
     plt.tight_layout()
     plt.show()
+
+
+
+
+
+
+
+
+
+# ======================================================================
+# §15 — Fermeture conditionnelle : humide vs sèche
+#
+# Tout est calculé séparément dans chaque région.
+# mh / ms : masques 2D (ny, nx) du §4
+#
+# Pour chaque niveau iz et chaque pas de temps it :
+#
+#   Méthode directe
+#   ───────────────
+#   u_reg, w_reg : valeurs aux colonnes de la région → shape (n_stat, n_col_reg)
+#   u_bar_reg    : moyenne sur (t, colonnes) = scalaire par niveau
+#   u_p_reg      = u_reg - u_bar_reg   (anomalie intra-région)
+#   w_p_reg      = w_reg - w_bar_reg
+#   flux_reg[iz] = rho0[iz] * mean(u_p_reg * w_p_reg)
+#   tend_direct  = -1/rho0 * d(flux_reg)/dz
+#
+#   Méthode résiduelle (vent moyen de la région)
+#   ────────────────────────────────────────────
+#   dudt_reg[iz] = mean_t( (u_reg(t+1) - u_reg(t)) / dt )
+#   wdudz_reg[iz]: w̄_reg * dū_reg/dz  (advection verticale du vent moyen)
+#   pres_reg[iz] : mean( -(1/rho0) * dp/dx )  sur les colonnes de la région
+#
+#   résidu_reg = dudt_reg + wdudz_reg + pres_reg
+# ======================================================================
+
+dt_sec = float(np.diff(time_days[:2])[0]) * 86400.0
+print(f'dt = {dt_sec:.0f} s = {dt_sec/3600:.1f} h')
+
+# ── Tableaux résultats ────────────────────────────────────────────────
+flux_h2  = np.zeros(n_z)   # ρ₀⟨u′w′⟩ recalculé dans la région humide
+flux_s2  = np.zeros(n_z)
+
+dudt_h   = np.zeros(n_z)
+dudt_s   = np.zeros(n_z)
+wdudz_h  = np.zeros(n_z)
+wdudz_s  = np.zeros(n_z)
+pres_h   = np.zeros(n_z)
+pres_s   = np.zeros(n_z)
+
+# Profils de vent moyen par région (nécessaires pour wdudz)
+ubar_h   = np.zeros(n_z)
+ubar_s   = np.zeros(n_z)
+
+ds_u = xr.open_dataset(path3d('ua'))
+ds_w = xr.open_dataset(path3d('wa'))
+ds_p = xr.open_dataset(path3d('pa'))
+
+for iz in range(n_z):
+
+    # ── Accumulation sur l'état stationnaire ─────────────────────────
+    acc_uw_h   = 0.0 ; acc_uw_s   = 0.0   # pour flux direct
+    acc_dudt_h = 0.0 ; acc_dudt_s = 0.0
+    acc_pres_h = 0.0 ; acc_pres_s = 0.0
+    acc_wbar_h = 0.0 ; acc_wbar_s = 0.0   # pour w̄ région
+    acc_ubar_h = 0.0 ; acc_ubar_s = 0.0   # pour ū région
+    n = 0
+
+    for it in range(t_stat, n_t - 1):
+
+        u_2d = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values  # (ny, nx)
+        u_nx = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
+        w_2d = ds_w['wa'].isel({dim_t: it,     dim_z: iz}).values
+        p_2d = ds_p['pa'].isel({dim_t: it,     dim_z: iz}).values
+
+        # Extraction dans chaque région → vecteur 1D (n_col_reg,)
+        u_h = u_2d[mh] ; u_s = u_2d[ms]
+        w_h = w_2d[mh] ; w_s = w_2d[ms]
+        p_h = p_2d[mh] ; p_s = p_2d[ms]
+
+        # ── Flux direct : anomalies intra-région ─────────────────────
+        u_p_h = u_h - u_h.mean()
+        u_p_s = u_s - u_s.mean()
+        w_p_h = w_h - w_h.mean()
+        w_p_s = w_s - w_s.mean()
+
+        acc_uw_h += (u_p_h * w_p_h).mean()
+        acc_uw_s += (u_p_s * w_p_s).mean()
+
+        # ── ∂ū/∂t conditionné ────────────────────────────────────────
+        u_nx_h = u_nx[mh] ; u_nx_s = u_nx[ms]
+        acc_dudt_h += (u_nx_h - u_h).mean() / dt_sec
+        acc_dudt_s += (u_nx_s - u_s).mean() / dt_sec
+
+        # ── Pression : gradient zonal moyenné sur la région ──────────
+        # On reconstruit dp/dx sur la grille complète puis on sélectionne
+        dpdx = np.gradient(p_2d, dx, axis=1)   # (ny, nx)
+        acc_pres_h += (-dpdx[mh] / rho0[iz]).mean()
+        acc_pres_s += (-dpdx[ms] / rho0[iz]).mean()
+
+        # ── Vent moyen de la région (pour wdudz après la boucle) ─────
+        acc_wbar_h += w_h.mean()
+        acc_wbar_s += w_s.mean()
+        acc_ubar_h += u_h.mean()
+        acc_ubar_s += u_s.mean()
+
+        n += 1
+        del u_2d, u_nx, w_2d, p_2d
+        del u_h, u_s, w_h, w_s, p_h, p_s
+        del u_p_h, u_p_s, w_p_h, w_p_s
+        del u_nx_h, u_nx_s, dpdx
+        gc.collect()
+
+    flux_h2[iz]  = rho0[iz] * acc_uw_h   / n
+    flux_s2[iz]  = rho0[iz] * acc_uw_s   / n
+    dudt_h[iz]   = acc_dudt_h / n
+    dudt_s[iz]   = acc_dudt_s / n
+    pres_h[iz]   = acc_pres_h / n
+    pres_s[iz]   = acc_pres_s / n
+    ubar_h[iz]   = acc_ubar_h / n
+    ubar_s[iz]   = acc_ubar_s / n
+    # w̄ moyen de la région stocké pour wdudz (calculé après la boucle iz)
+    wdudz_h[iz]  = acc_wbar_h / n   # on stocke w̄ temporairement
+    wdudz_s[iz]  = acc_wbar_s / n
+
+    if iz % 10 == 0:
+        print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
+
+ds_u.close() ; ds_w.close() ; ds_p.close()
+del ds_u, ds_w, ds_p
+gc.collect()
+
+# ── w̄_région · dū_région/dz  (après la boucle, on a les profils complets) ──
+wbar_h = wdudz_h.copy()   # récupère w̄ stocké
+wbar_s = wdudz_s.copy()
+dudz_h = np.gradient(ubar_h, alt)
+dudz_s = np.gradient(ubar_s, alt)
+wdudz_h = wbar_h * dudz_h
+wdudz_s = wbar_s * dudz_s
+
+# ── Tendances directes ────────────────────────────────────────────────
+tend_h_direct = tendance(flux_h2)
+tend_s_direct = tendance(flux_s2)
+
+# ── Résidu = somme des termes connus ─────────────────────────────────
+residuel_h = dudt_h + wdudz_h + pres_h
+residuel_s = dudt_s + wdudz_s + pres_s
+
+print('§15 terminé.')
