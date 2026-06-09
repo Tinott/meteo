@@ -95,3 +95,23 @@ plt.suptitle('Profils de vent moyen par région — humide vs sèche',
              fontsize=13, fontweight='bold')
 plt.tight_layout()
 plt.show()
+
+
+
+
+fig, ax = plt.subplots(figsize=(7, 8))
+idx_18km = np.searchsorted(alt, 18000)
+sl = slice(None, idx_18km)
+
+ax.plot(ubar_h[sl], alt[sl], color='royalblue',   lw=2,               label=r'$\bar{u}$ humide')
+ax.plot(ubar_s[sl], alt[sl], color='royalblue',   lw=2, linestyle='--', label=r'$\bar{u}$ sèche')
+ax.plot(vbar_h[sl], alt[sl], color='saddlebrown', lw=2,               label=r'$\bar{v}$ humide')
+ax.plot(vbar_s[sl], alt[sl], color='saddlebrown', lw=2, linestyle='--', label=r'$\bar{v}$ sèche')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('Vitesse (m/s)')
+ax.set_ylabel('Altitude (m)')
+ax.set_title('Profils de vent moyen par région — humide vs sèche\n(0–18 km)', fontweight='bold')
+ax.legend(fontsize=9)
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()
