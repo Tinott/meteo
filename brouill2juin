@@ -1,29 +1,347 @@
-## §15a vs §15b — deux définitions du flux de Reynolds par région
+# ======================================================================
+# §16a — Bilan de QdM vertical <∂w/∂t> par région, anomalies intra-région
+#
+# Équation :
+#   <∂w/∂t>_R = -1/rho0 * d(rho0 <w'w'>_R)/dz
+#               - <ū ∂w̄/∂x>_R
+#               - <v̄ ∂w̄/∂y>_R
+#               - <w̄ ∂w̄/∂z>_R
+#               - 1/rho0 * <∂p̄/∂z>_R
+#               - g  (si pa = pression totale)
+#
+# §16a : w' = w - mean(w[region])  →  anomalie intra-région
+# ======================================================================
 
-Les deux sections calculent le même bilan de quantité de mouvement, avec la même équation, sur les mêmes régions humide et sèche. La seule différence est la façon dont on définit les anomalies $u'$ et $w'$ qui entrent dans le flux de Reynolds $\overline{u'w'}$.
+import gc
+import numpy as np
+import xarray as xr
+import matplotlib.pyplot as plt
 
----
+dt_sec = 6.0 * 3600.0
+g_cst  = 9.81
 
-### §15a — anomalies intra-région
+# ── Tableaux résultats ────────────────────────────────────────────────
+flux16a_h = np.zeros(n_z)   # rho0 <w'w'>_R  intra-région
+flux16a_s = np.zeros(n_z)
 
-On soustrait la moyenne propre à chaque région :
+mg16a_h   = np.zeros(n_z)   # <∂w/∂t>_R
+mg16a_s   = np.zeros(n_z)
 
-$$u' = u - \langle u \rangle_R, \qquad w' = w - \langle w \rangle_R$$
+t2_16a_h  = np.zeros(n_z)   # -<ū ∂w̄/∂x>_R
+t2_16a_s  = np.zeros(n_z)
+t3_16a_h  = np.zeros(n_z)   # -<v̄ ∂w̄/∂y>_R
+t3_16a_s  = np.zeros(n_z)
+t5_16a_h  = np.zeros(n_z)   # -1/rho0 <∂p̄/∂z>_R
+t5_16a_s  = np.zeros(n_z)
 
-Le flux $\overline{u'w'}_R$ ne capte que les fluctuations **à l'intérieur** de la région : c'est le transport turbulent local, produit par les cellules convectives internes à la zone humide (ou sèche).
+ubar_16a = np.zeros((n_z, n_y, n_x))
+vbar_16a = np.zeros((n_z, n_y, n_x))
+wbar_16a = np.zeros((n_z, n_y, n_x))
+pbar_16a = np.zeros((n_z, n_y, n_x))
 
-**But :** isoler la turbulence convective propre à chaque région, sans contamination par la différence de vent moyen entre régions. C'est la quantité qu'on cherche à paramétrer dans un modèle de climat.
+ds_u = xr.open_dataset(path3d('ua'))
+ds_v = xr.open_dataset(path3d('va'))
+ds_w = xr.open_dataset(path3d('wa'))
+ds_p = xr.open_dataset(path3d('pa'))
 
----
+for iz in range(n_z):
 
-### §15b — anomalies globales
+    acc_ww_h = 0.0 ; acc_ww_s = 0.0
+    acc_mg_h = 0.0 ; acc_mg_s = 0.0
+    acc_u2d  = np.zeros((n_y, n_x))
+    acc_v2d  = np.zeros((n_y, n_x))
+    acc_w2d  = np.zeros((n_y, n_x))
+    acc_p2d  = np.zeros((n_y, n_x))
+    n = 0
 
-On soustrait la moyenne sur le domaine entier, puis on applique le masque :
+    for it in range(t_stat, n_t - 1):
 
-$$u' = u - \langle u \rangle_{\text{domaine}}, \qquad w' = w - \langle w \rangle_{\text{domaine}}$$
+        u_2d = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values
+        w_2d = ds_w['wa'].isel({dim_t: it,     dim_z: iz}).values
+        w_nx = ds_w['wa'].isel({dim_t: it + 1, dim_z: iz}).values
+        v_2d = ds_v['va'].isel({dim_t: it,     dim_z: iz}).values
+        p_2d = ds_p['pa'].isel({dim_t: it,     dim_z: iz}).values
 
-Comme $u'_{\text{global}} = u'_{\text{intra}} + (\langle u \rangle_R - \langle u \rangle_{\text{domaine}})$, le flux §15b contient un terme supplémentaire non nul si la région humide porte un vent moyen systématiquement différent du domaine. Il capture donc la contribution de la **circulation de méso-échelle organisée** au transport de quantité de mouvement.
+        # ── Membre gauche <∂w̄/∂t>_R ──────────────────────────────────
+        dwdt_2d   = (w_nx - w_2d) / dt_sec
+        acc_mg_h += dwdt_2d[mh].mean()
+        acc_mg_s += dwdt_2d[ms].mean()
 
-**But :** mesurer le flux total vu depuis le domaine global, turbulence locale et signal de circulation organisée confondus. Si §15a et §15b divergent significativement, c'est la signature directe d'une circulation méso-échelle active entre régions.
+        # ── Flux Reynolds vertical : anomalies intra-région ───────────
+        w_h   = w_2d[mh] ; w_s   = w_2d[ms]
+        w_p_h = w_h - w_h.mean()
+        w_p_s = w_s - w_s.mean()
+        acc_ww_h += (w_p_h * w_p_h).mean()
+        acc_ww_s += (w_p_s * w_p_s).mean()
 
----
+        acc_u2d += u_2d
+        acc_v2d += v_2d
+        acc_w2d += w_2d
+        acc_p2d += p_2d
+
+        n += 1
+        del u_2d, w_2d, w_nx, v_2d, p_2d, dwdt_2d
+        del w_h, w_s, w_p_h, w_p_s
+        gc.collect()
+
+    flux16a_h[iz] = rho0[iz] * acc_ww_h / n
+    flux16a_s[iz] = rho0[iz] * acc_ww_s / n
+    mg16a_h[iz]   = acc_mg_h / n
+    mg16a_s[iz]   = acc_mg_s / n
+    ubar_16a[iz]  = acc_u2d  / n
+    vbar_16a[iz]  = acc_v2d  / n
+    wbar_16a[iz]  = acc_w2d  / n
+    pbar_16a[iz]  = acc_p2d  / n
+
+    if iz % 10 == 0:
+        print(f'  iz={iz}/{n_z-1}')
+
+ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
+del ds_u, ds_v, ds_w, ds_p
+gc.collect()
+
+# ── T2, T3, T5 depuis les champs moyens ──────────────────────────────
+t4_16a_h = np.zeros(n_z)
+t4_16a_s = np.zeros(n_z)
+
+for iz in range(n_z):
+    u2d = ubar_16a[iz]
+    v2d = vbar_16a[iz]
+    w2d = wbar_16a[iz]
+    p2d = pbar_16a[iz]
+
+    # T2 : -<ū ∂w̄/∂x>_R
+    dwdx      = np.gradient(w2d, dx, axis=1)
+    t2_16a_h[iz] = -(u2d * dwdx)[mh].mean()
+    t2_16a_s[iz] = -(u2d * dwdx)[ms].mean()
+
+    # T3 : -<v̄ ∂w̄/∂y>_R
+    dwdy      = np.gradient(w2d, dy, axis=0)
+    t3_16a_h[iz] = -(v2d * dwdy)[mh].mean()
+    t3_16a_s[iz] = -(v2d * dwdy)[ms].mean()
+
+    # T5 : -1/rho0 <∂p̄/∂z>_R  —  gradient vertical, calculé après
+    pass
+
+# T4 : -<w̄ ∂w̄/∂z>_R
+for iz in range(n_z):
+    iz_lo = max(iz - 1, 0)
+    iz_hi = min(iz + 1, n_z - 1)
+    dz    = alt[iz_hi] - alt[iz_lo]
+    if dz == 0:
+        dz = alt[1] - alt[0]
+    dwdz_2d      = (wbar_16a[iz_hi] - wbar_16a[iz_lo]) / dz
+    w2d          = wbar_16a[iz]
+    t4_16a_h[iz] = -(w2d * dwdz_2d)[mh].mean()
+    t4_16a_s[iz] = -(w2d * dwdz_2d)[ms].mean()
+
+# T5 : -1/rho0 <∂p̄/∂z>_R  —  gradient vertical de pbar
+for iz in range(n_z):
+    iz_lo = max(iz - 1, 0)
+    iz_hi = min(iz + 1, n_z - 1)
+    dz    = alt[iz_hi] - alt[iz_lo]
+    if dz == 0:
+        dz = alt[1] - alt[0]
+    dpdz_2d      = (pbar_16a[iz_hi] - pbar_16a[iz_lo]) / dz
+    t5_16a_h[iz] = (-dpdz_2d[mh] / rho0[iz]).mean()
+    t5_16a_s[iz] = (-dpdz_2d[ms] / rho0[iz]).mean()
+
+# T1 : divergence du flux <w'w'>
+t1_16a_h = tendance(flux16a_h)
+t1_16a_s = tendance(flux16a_s)
+
+# Terme de gravité (constant)
+tg_h = np.full(n_z, -g_cst)
+tg_s = np.full(n_z, -g_cst)
+
+somme_16a_h = t1_16a_h + t2_16a_h + t3_16a_h + t4_16a_h + t5_16a_h + tg_h
+somme_16a_s = t1_16a_s + t2_16a_s + t3_16a_s + t4_16a_s + t5_16a_s + tg_s
+
+print('§16a terminé.')
+
+
+
+
+
+
+
+
+
+# ======================================================================
+# §16b — Bilan de QdM vertical <∂w/∂t> par région, anomalies globales
+#
+# §16b : w' = w - mean(w)  →  anomalie sur le domaine entier
+#        masque appliqué après sur w'w'
+# ======================================================================
+
+flux16b_h = np.zeros(n_z)
+flux16b_s = np.zeros(n_z)
+
+mg16b_h   = np.zeros(n_z)
+mg16b_s   = np.zeros(n_z)
+
+t2_16b_h  = np.zeros(n_z)
+t2_16b_s  = np.zeros(n_z)
+t3_16b_h  = np.zeros(n_z)
+t3_16b_s  = np.zeros(n_z)
+t5_16b_h  = np.zeros(n_z)
+t5_16b_s  = np.zeros(n_z)
+
+ubar_16b = np.zeros((n_z, n_y, n_x))
+vbar_16b = np.zeros((n_z, n_y, n_x))
+wbar_16b = np.zeros((n_z, n_y, n_x))
+pbar_16b = np.zeros((n_z, n_y, n_x))
+
+ds_u = xr.open_dataset(path3d('ua'))
+ds_v = xr.open_dataset(path3d('va'))
+ds_w = xr.open_dataset(path3d('wa'))
+ds_p = xr.open_dataset(path3d('pa'))
+
+for iz in range(n_z):
+
+    acc_ww_h = 0.0 ; acc_ww_s = 0.0
+    acc_mg_h = 0.0 ; acc_mg_s = 0.0
+    acc_u2d  = np.zeros((n_y, n_x))
+    acc_v2d  = np.zeros((n_y, n_x))
+    acc_w2d  = np.zeros((n_y, n_x))
+    acc_p2d  = np.zeros((n_y, n_x))
+    n = 0
+
+    for it in range(t_stat, n_t - 1):
+
+        u_2d = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values
+        w_2d = ds_w['wa'].isel({dim_t: it,     dim_z: iz}).values
+        w_nx = ds_w['wa'].isel({dim_t: it + 1, dim_z: iz}).values
+        v_2d = ds_v['va'].isel({dim_t: it,     dim_z: iz}).values
+        p_2d = ds_p['pa'].isel({dim_t: it,     dim_z: iz}).values
+
+        # ── Membre gauche ─────────────────────────────────────────────
+        dwdt_2d   = (w_nx - w_2d) / dt_sec
+        acc_mg_h += dwdt_2d[mh].mean()
+        acc_mg_s += dwdt_2d[ms].mean()
+
+        # ── Flux Reynolds vertical : anomalies globales ───────────────
+        w_p = w_2d - w_2d.mean()   # anomalie sur le domaine entier
+        acc_ww_h += (w_p * w_p)[mh].mean()
+        acc_ww_s += (w_p * w_p)[ms].mean()
+
+        acc_u2d += u_2d
+        acc_v2d += v_2d
+        acc_w2d += w_2d
+        acc_p2d += p_2d
+
+        n += 1
+        del u_2d, w_2d, w_nx, v_2d, p_2d, dwdt_2d, w_p
+        gc.collect()
+
+    flux16b_h[iz] = rho0[iz] * acc_ww_h / n
+    flux16b_s[iz] = rho0[iz] * acc_ww_s / n
+    mg16b_h[iz]   = acc_mg_h / n
+    mg16b_s[iz]   = acc_mg_s / n
+    ubar_16b[iz]  = acc_u2d  / n
+    vbar_16b[iz]  = acc_v2d  / n
+    wbar_16b[iz]  = acc_w2d  / n
+    pbar_16b[iz]  = acc_p2d  / n
+
+    if iz % 10 == 0:
+        print(f'  iz={iz}/{n_z-1}')
+
+ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
+del ds_u, ds_v, ds_w, ds_p
+gc.collect()
+
+# ── T2, T3, T4, T5 ───────────────────────────────────────────────────
+t4_16b_h = np.zeros(n_z)
+t4_16b_s = np.zeros(n_z)
+
+for iz in range(n_z):
+    u2d = ubar_16b[iz]
+    v2d = vbar_16b[iz]
+    w2d = wbar_16b[iz]
+
+    dwdx         = np.gradient(w2d, dx, axis=1)
+    t2_16b_h[iz] = -(u2d * dwdx)[mh].mean()
+    t2_16b_s[iz] = -(u2d * dwdx)[ms].mean()
+
+    dwdy         = np.gradient(w2d, dy, axis=0)
+    t3_16b_h[iz] = -(v2d * dwdy)[mh].mean()
+    t3_16b_s[iz] = -(v2d * dwdy)[ms].mean()
+
+for iz in range(n_z):
+    iz_lo = max(iz - 1, 0)
+    iz_hi = min(iz + 1, n_z - 1)
+    dz    = alt[iz_hi] - alt[iz_lo]
+    if dz == 0:
+        dz = alt[1] - alt[0]
+
+    dwdz_2d      = (wbar_16b[iz_hi] - wbar_16b[iz_lo]) / dz
+    w2d          = wbar_16b[iz]
+    t4_16b_h[iz] = -(w2d * dwdz_2d)[mh].mean()
+    t4_16b_s[iz] = -(w2d * dwdz_2d)[ms].mean()
+
+    dpdz_2d      = (pbar_16b[iz_hi] - pbar_16b[iz_lo]) / dz
+    t5_16b_h[iz] = (-dpdz_2d[mh] / rho0[iz]).mean()
+    t5_16b_s[iz] = (-dpdz_2d[ms] / rho0[iz]).mean()
+
+t1_16b_h = tendance(flux16b_h)
+t1_16b_s = tendance(flux16b_s)
+
+tg_h = np.full(n_z, -g_cst)
+tg_s = np.full(n_z, -g_cst)
+
+somme_16b_h = t1_16b_h + t2_16b_h + t3_16b_h + t4_16b_h + t5_16b_h + tg_h
+somme_16b_s = t1_16b_s + t2_16b_s + t3_16b_s + t4_16b_s + t5_16b_s + tg_s
+
+print('§16b terminé.')
+
+
+
+
+
+
+
+
+
+# ======================================================================
+# §16 — Comparaison T1 intra-région vs T1 global  (la seule diff réelle)
+# ======================================================================
+
+sc = 1e5
+idx_tropo = np.searchsorted(alt, 15000)
+
+for region, t1a, t1b, mg, t2, t3, t4, t5, couleur in [
+    ('HUMIDE', t1_16a_h, t1_16b_h, mg16a_h, t2_16a_h, t3_16a_h, t4_16a_h, t5_16a_h, 'royalblue'),
+    ('SECHE',  t1_16a_s, t1_16b_s, mg16a_s, t2_16a_s, t3_16a_s, t4_16a_s, t5_16a_s, 'saddlebrown'),
+]:
+    membre_droit = mg - t2 - t3 - t4 - t5 + g_cst  # on passe -g de l'autre côté
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
+
+    for ax, sl, titre in zip(
+        axes,
+        [slice(None, idx_tropo), slice(None)],
+        ['Troposphere (0-15 km)', 'Colonne complete'],
+    ):
+        ax.plot(t1a[sl]          * sc, alt[sl],
+                color=couleur, lw=2.5, linestyle='-',
+                label='T1 w\'w\' intra-région (§16a)')
+        ax.plot(t1b[sl]          * sc, alt[sl],
+                color=couleur, lw=2,   linestyle='--',
+                label='T1 w\'w\' global    (§16b)')
+        ax.plot(membre_droit[sl] * sc, alt[sl],
+                color='black', lw=1.5, linestyle=':',
+                label='résidu = dtw - T2 - T3 - T4 - T5 + g')
+        ax.axvline(0, color='grey', alpha=0.4)
+        ax.set_xlabel('Tendance (x1e-5 m/s2)')
+        ax.set_title(titre, fontweight='bold')
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+
+    axes[0].set_ylabel('Altitude (m)')
+    plt.suptitle(
+        f'Region {region} — §16 : T1(w\'w\') intra vs global\n'
+        'Si différents : circulation méso-échelle active sur w',
+        fontsize=13, fontweight='bold'
+    )
+    plt.tight_layout()
+    plt.show()
