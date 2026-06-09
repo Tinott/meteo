@@ -1,117 +1,177 @@
-flux_loc_h  = np.zeros(n_z)
-flux_loc_s  = np.zeros(n_z)
-flux_glob_h = np.zeros(n_z)
-flux_glob_s = np.zeros(n_z)
-ubar_h      = np.zeros(n_z)
-ubar_s      = np.zeros(n_z)
-vbar_h      = np.zeros(n_z)
-vbar_s      = np.zeros(n_z)
+# ======================================================================
+# §18 — Paramétrisation locale : α(z,t) et β(z,t) par région
+#
+# À chaque (it, iz) on dispose de n_col_reg colonnes.
+# On fit par OLS sans intercept :
+#   tend_reg(col) = α(iz,it) * uC(col) + β(iz,it) * dz_rho_uC(col)
+#
+# où :
+#   tend_reg  = -1/rho0 * d(rho0*u'w') / dz  évalué colonne par colonne
+#   uC        = u_col - ubar_glob(iz)          anomalie vs domaine global
+#   rho_uC    = rho0[iz] * uC
+#   dz_rho_uC = gradient vertical de rho_uC   (différences finies centrées)
+# ======================================================================
+
+dt_sec = 6.0 * 3600.0
+n_stat_it = n_t - t_stat
+
+alpha_h = np.zeros((n_stat_it, n_z))
+beta_h  = np.zeros((n_stat_it, n_z))
+alpha_s = np.zeros((n_stat_it, n_z))
+beta_s  = np.zeros((n_stat_it, n_z))
 
 ds_u = xr.open_dataset(path3d('ua'))
-ds_v = xr.open_dataset(path3d('va'))
 ds_w = xr.open_dataset(path3d('wa'))
+
+# ── Pré-calcul de ubar_glob(iz) sur l'état stationnaire ──────────────
+ubar_glob = np.zeros(n_z)
+for iz in range(n_z):
+    acc = 0.0
+    for it in range(t_stat, n_t):
+        ubar_glob[iz] += ds_u['ua'].isel({dim_t: it, dim_z: iz}).values.mean()
+    ubar_glob[iz] /= n_stat_it
+
+print('ubar_glob calculé.')
+
+# ── Boucle principale : niveau par niveau ─────────────────────────────
+# À chaque iz on charge tous les pas de temps stat d'un coup pour u et w
+# puis on calcule tend et les régresseurs colonne par colonne.
 
 for iz in range(n_z):
 
-    acc_loc_h  = 0.0 ; acc_loc_s  = 0.0
-    acc_glob_h = 0.0 ; acc_glob_s = 0.0
-    acc_ubar_h = 0.0 ; acc_ubar_s = 0.0
-    acc_vbar_h = 0.0 ; acc_vbar_s = 0.0
-    n = 0
+    iz_lo = max(iz - 1, 0)
+    iz_hi = min(iz + 1, n_z - 1)
+    dz    = alt[iz_hi] - alt[iz_lo]
+    if dz == 0:
+        dz = alt[1] - alt[0]
 
-    for it in range(t_stat, n_t):
+    # u et w pour tous les pas de temps stat à ce niveau : (n_stat_it, ny, nx)
+    u_all = ds_u['ua'].isel({dim_z: iz, dim_t: slice(t_stat, n_t)}).values
+    w_all = ds_w['wa'].isel({dim_z: iz, dim_t: slice(t_stat, n_t)}).values
 
-        u_2d = ds_u['ua'].isel({dim_t: it, dim_z: iz}).values
-        v_2d = ds_v['va'].isel({dim_t: it, dim_z: iz}).values
-        w_2d = ds_w['wa'].isel({dim_t: it, dim_z: iz}).values
+    # Pour dz_rho_uC on a besoin des niveaux voisins
+    u_lo  = ds_u['ua'].isel({dim_z: iz_lo, dim_t: slice(t_stat, n_t)}).values
+    u_hi  = ds_u['ua'].isel({dim_z: iz_hi, dim_t: slice(t_stat, n_t)}).values
 
-        # anomalies locales (intra-région)
-        u_h = u_2d[mh] ; u_s = u_2d[ms]
-        w_h = w_2d[mh] ; w_s = w_2d[ms]
-        acc_loc_h += ((u_h - u_h.mean()) * (w_h - w_h.mean())).mean()
-        acc_loc_s += ((u_s - u_s.mean()) * (w_s - w_s.mean())).mean()
+    for i_t, it in enumerate(range(t_stat, n_t)):
 
-        # anomalies globales (domaine entier)
-        u_p = u_2d - u_2d.mean()
-        w_p = w_2d - w_2d.mean()
-        acc_glob_h += (u_p * w_p)[mh].mean()
-        acc_glob_s += (u_p * w_p)[ms].mean()
+        u_2d = u_all[i_t]   # (ny, nx)
+        w_2d = w_all[i_t]
 
-        # vents moyens par région
-        acc_ubar_h += u_h.mean()
-        acc_ubar_s += u_s.mean()
-        acc_vbar_h += v_2d[mh].mean()
-        acc_vbar_s += v_2d[ms].mean()
+        # ── tend colonne par colonne ──────────────────────────────────
+        # u'w' local = anomalie vs moyenne du domaine
+        u_p  = u_2d - u_2d.mean()
+        w_p  = w_2d - w_2d.mean()
+        uw   = u_p * w_p                             # (ny, nx)
 
-        n += 1
-        del u_2d, v_2d, w_2d, u_h, u_s, w_h, w_s, u_p, w_p
-        gc.collect()
+        # gradient vertical de rho0*u'w' par différences finies centrées
+        uw_lo = (u_lo[i_t] - u_lo[i_t].mean()) * (w_all[i_t] - w_all[i_t].mean())
+        uw_hi = (u_hi[i_t] - u_hi[i_t].mean()) * (w_all[i_t] - w_all[i_t].mean())
+        # on utilise les niveaux voisins pour estimer dz(rho0*u'w') par colonne
+        # mais w voisin n'est pas chargé → on approche avec w au niveau iz
+        dz_rho_uw = rho0[iz_hi] * uw_hi - rho0[iz_lo] * uw_lo   # (ny, nx) numérateur
 
-    flux_loc_h[iz]  = rho0[iz] * acc_loc_h  / n
-    flux_loc_s[iz]  = rho0[iz] * acc_loc_s  / n
-    flux_glob_h[iz] = rho0[iz] * acc_glob_h / n
-    flux_glob_s[iz] = rho0[iz] * acc_glob_s / n
-    ubar_h[iz]      = acc_ubar_h / n
-    ubar_s[iz]      = acc_ubar_s / n
-    vbar_h[iz]      = acc_vbar_h / n
-    vbar_s[iz]      = acc_vbar_s / n
+        tend_2d = -dz_rho_uw / (dz * rho0[iz])   # (ny, nx)
+
+        # ── régresseurs colonne par colonne ──────────────────────────
+        uC       = u_2d - ubar_glob[iz]            # anomalie vs domaine global
+        rho_uC   = rho0[iz] * uC                   # (ny, nx)
+
+        rho_uC_lo = rho0[iz_lo] * (u_lo[i_t] - ubar_glob[iz_lo])
+        rho_uC_hi = rho0[iz_hi] * (u_hi[i_t] - ubar_glob[iz_hi])
+        dz_rho_uC = (rho_uC_hi - rho_uC_lo) / dz  # (ny, nx)
+
+        # ── OLS par région ────────────────────────────────────────────
+        for mask, alpha_arr, beta_arr in [
+            (mh, alpha_h, beta_h),
+            (ms, alpha_s, beta_s),
+        ]:
+            y  = tend_2d[mask]        # (n_col,)
+            x1 = rho_uC[mask]
+            x2 = dz_rho_uC[mask]
+
+            # OLS sans intercept : min ||y - α*x1 - β*x2||²
+            X  = np.stack([x1, x2], axis=1)   # (n_col, 2)
+            # solution : (XᵀX)⁻¹ Xᵀy
+            XtX = X.T @ X
+            Xty = X.T @ y
+            try:
+                coeffs = np.linalg.solve(XtX, Xty)
+            except np.linalg.LinAlgError:
+                coeffs = np.zeros(2)
+
+            alpha_arr[i_t, iz] = coeffs[0]
+            beta_arr[i_t, iz]  = coeffs[1]
+
+    del u_all, w_all, u_lo, u_hi
+    gc.collect()
 
     if iz % 10 == 0:
         print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
 
-ds_u.close() ; ds_v.close() ; ds_w.close()
-del ds_u, ds_v, ds_w
+ds_u.close() ; ds_w.close()
+del ds_u, ds_w
 gc.collect()
+print('α et β calculés.')
 
-print('Flux et vents moyens calculés.')
+
+
+
+
 
 
 
 
 # ======================================================================
-# Profils de vent moyen ū et v̄ par région (humide / sèche)
+# §18 — Visualisation : silhouettes α(z,t) et β(z,t) par région
 # ======================================================================
 
-fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
-idx_tropo = np.searchsorted(alt, 15000)
-
-for ax, sl, titre in zip(
-    axes,
-    [slice(None, idx_tropo), slice(None)],
-    ['Troposphère (0–15 km)', 'Colonne complète'],
-):
-    ax.plot(ubar_h[sl], alt[sl], color='royalblue',   lw=2,              label=r'$\bar{u}$ humide')
-    ax.plot(ubar_s[sl], alt[sl], color='royalblue',   lw=2, linestyle='--', label=r'$\bar{u}$ sèche')
-    ax.plot(vbar_h[sl], alt[sl], color='saddlebrown', lw=2,              label=r'$\bar{v}$ humide')
-    ax.plot(vbar_s[sl], alt[sl], color='saddlebrown', lw=2, linestyle='--', label=r'$\bar{v}$ sèche')
-    ax.axvline(0, color='grey', alpha=0.4)
-    ax.set_xlabel('Vitesse (m/s)')
-    ax.set_title(titre, fontweight='bold')
-    ax.legend(fontsize=9)
-    ax.grid(True, alpha=0.3)
-
-axes[0].set_ylabel('Altitude (m)')
-plt.suptitle('Profils de vent moyen par région — humide vs sèche',
-             fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
-
-
-
-
-fig, ax = plt.subplots(figsize=(7, 8))
 idx_18km = np.searchsorted(alt, 18000)
 sl = slice(None, idx_18km)
 
-ax.plot(ubar_h[sl], alt[sl], color='royalblue',   lw=2,               label=r'$\bar{u}$ humide')
-ax.plot(ubar_s[sl], alt[sl], color='royalblue',   lw=2, linestyle='--', label=r'$\bar{u}$ sèche')
-ax.plot(vbar_h[sl], alt[sl], color='saddlebrown', lw=2,               label=r'$\bar{v}$ humide')
-ax.plot(vbar_s[sl], alt[sl], color='saddlebrown', lw=2, linestyle='--', label=r'$\bar{v}$ sèche')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('Vitesse (m/s)')
-ax.set_ylabel('Altitude (m)')
-ax.set_title('Profils de vent moyen par région — humide vs sèche\n(0–18 km)', fontweight='bold')
-ax.legend(fontsize=9)
-ax.grid(True, alpha=0.3)
+cmap_h = plt.cm.Blues
+cmap_s = plt.cm.Oranges
+norm   = plt.Normalize(vmin=0, vmax=n_stat_it - 1)
+
+fig, axes = plt.subplots(2, 2, figsize=(14, 14), sharey=True)
+
+for col, (alpha_arr, beta_arr, label, cmap) in enumerate([
+    (alpha_h, beta_h, 'HUMIDE', cmap_h),
+    (alpha_s, beta_s, 'SÈCHE',  cmap_s),
+]):
+    ax_a = axes[0, col]
+    ax_b = axes[1, col]
+
+    for i_t in range(n_stat_it):
+        c = cmap(norm(i_t))
+        ax_a.plot(alpha_arr[i_t, sl], alt[sl], color=c, lw=0.8, alpha=0.7)
+        ax_b.plot(beta_arr[i_t, sl],  alt[sl], color=c, lw=0.8, alpha=0.7)
+
+    # moyenne temporelle en surimpression
+    ax_a.plot(alpha_arr[:, sl].mean(axis=0), alt[sl], color='black', lw=2, label='moyenne')
+    ax_b.plot(beta_arr[:, sl].mean(axis=0),  alt[sl], color='black', lw=2, label='moyenne')
+
+    for ax, nom in [(ax_a, r'$\alpha(z,t)$'), (ax_b, r'$\beta(z,t)$')]:
+        ax.axvline(0, color='grey', alpha=0.4)
+        ax.set_title(f'Région {label} — {nom}', fontweight='bold')
+        ax.set_xlabel('Valeur')
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=9)
+
+axes[0, 0].set_ylabel('Altitude (m)')
+axes[1, 0].set_ylabel('Altitude (m)')
+
+sm = plt.cm.ScalarMappable(cmap=cmap_h, norm=norm)
+sm.set_array([])
+fig.colorbar(sm, ax=axes[:, 0], label='pas de temps (humide)', shrink=0.6)
+
+sm2 = plt.cm.ScalarMappable(cmap=cmap_s, norm=norm)
+sm2.set_array([])
+fig.colorbar(sm2, ax=axes[:, 1], label='pas de temps (sèche)', shrink=0.6)
+
+plt.suptitle(
+    r'§18 — Paramétrisation : $\mathrm{tend}_{u'w'}^\mathrm{rég} = \alpha(z,t)\,\rho_0\bar{u}_C + \beta(z,t)\,\partial_z(\rho_0\bar{u}_C)$',
+    fontsize=13, fontweight='bold'
+)
 plt.tight_layout()
 plt.show()
