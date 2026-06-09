@@ -1,157 +1,29 @@
-# ======================================================================
-# §15b — Fermeture conditionnelle : anomalies sur le DOMAINE ENTIER
-#
-# Différence avec §15a :
-#   §15a : u' = u - mean(u[region])   →  anomalie intra-région
-#   §15b : u' = u - mean(u)           →  anomalie globale, masque
-#                                        appliqué seulement sur u'w'
-#
-# Toutes les variables portent le suffixe _glob pour éviter tout écrasement.
-# ======================================================================
+## §15a vs §15b — deux définitions du flux de Reynolds par région
 
-dt_sec = 6.0 * 3600.0
+Les deux sections calculent le même bilan de quantité de mouvement, avec la même équation, sur les mêmes régions humide et sèche. La seule différence est la façon dont on définit les anomalies $u'$ et $w'$ qui entrent dans le flux de Reynolds $\overline{u'w'}$.
 
-# ── Tableaux résultats ────────────────────────────────────────────────
-flux_glob_h  = np.zeros(n_z)   # ρ₀⟨u′w′⟩_R  avec anomalies globales
-flux_glob_s  = np.zeros(n_z)
+---
 
-dudt_glob_h  = np.zeros(n_z)   # ⟨∂ū/∂t⟩_R
-dudt_glob_s  = np.zeros(n_z)
+### §15a — anomalies intra-région
 
-pres_glob_h  = np.zeros(n_z)   # ⟨-1/ρ₀ ∂p̄/∂x⟩_R
-pres_glob_s  = np.zeros(n_z)
+On soustrait la moyenne propre à chaque région :
 
-ubar_glob_h  = np.zeros(n_z)   # ū_région  (profil moyen temporel)
-ubar_glob_s  = np.zeros(n_z)
+$$u' = u - \langle u \rangle_R, \qquad w' = w - \langle w \rangle_R$$
 
-wbar_tmp_h   = np.zeros(n_z)   # w̄_région  (temporaire, pour w̄ dū/dz)
-wbar_tmp_s   = np.zeros(n_z)
+Le flux $\overline{u'w'}_R$ ne capte que les fluctuations **à l'intérieur** de la région : c'est le transport turbulent local, produit par les cellules convectives internes à la zone humide (ou sèche).
 
-ds_u = xr.open_dataset(path3d('ua'))
-ds_w = xr.open_dataset(path3d('wa'))
-ds_p = xr.open_dataset(path3d('pa'))
+**But :** isoler la turbulence convective propre à chaque région, sans contamination par la différence de vent moyen entre régions. C'est la quantité qu'on cherche à paramétrer dans un modèle de climat.
 
-for iz in range(n_z):
+---
 
-    acc_uw_h   = 0.0 ; acc_uw_s   = 0.0
-    acc_dudt_h = 0.0 ; acc_dudt_s = 0.0
-    acc_pres_h = 0.0 ; acc_pres_s = 0.0
-    acc_wbar_h = 0.0 ; acc_wbar_s = 0.0
-    acc_ubar_h = 0.0 ; acc_ubar_s = 0.0
-    n = 0
+### §15b — anomalies globales
 
-    for it in range(t_stat, n_t - 1):
+On soustrait la moyenne sur le domaine entier, puis on applique le masque :
 
-        u_2d = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values  # (ny, nx)
-        u_nx = ds_u['ua'].isel({dim_t: it + 1, dim_z: iz}).values
-        w_2d = ds_w['wa'].isel({dim_t: it,     dim_z: iz}).values
-        p_2d = ds_p['pa'].isel({dim_t: it,     dim_z: iz}).values
+$$u' = u - \langle u \rangle_{\text{domaine}}, \qquad w' = w - \langle w \rangle_{\text{domaine}}$$
 
-        # ── Anomalies sur le DOMAINE ENTIER ──────────────────────────
-        u_p = u_2d - u_2d.mean()   # (ny, nx)
-        w_p = w_2d - w_2d.mean()   # (ny, nx)
+Comme $u'_{\text{global}} = u'_{\text{intra}} + (\langle u \rangle_R - \langle u \rangle_{\text{domaine}})$, le flux §15b contient un terme supplémentaire non nul si la région humide porte un vent moyen systématiquement différent du domaine. Il capture donc la contribution de la **circulation de méso-échelle organisée** au transport de quantité de mouvement.
 
-        # ── Flux Reynolds : masque appliqué sur le produit ───────────
-        acc_uw_h += (u_p * w_p)[mh].mean()
-        acc_uw_s += (u_p * w_p)[ms].mean()
+**But :** mesurer le flux total vu depuis le domaine global, turbulence locale et signal de circulation organisée confondus. Si §15a et §15b divergent significativement, c'est la signature directe d'une circulation méso-échelle active entre régions.
 
-        # ── ∂ū/∂t conditionné ────────────────────────────────────────
-        acc_dudt_h += (u_nx[mh] - u_2d[mh]).mean() / dt_sec
-        acc_dudt_s += (u_nx[ms] - u_2d[ms]).mean() / dt_sec
-
-        # ── Pression ─────────────────────────────────────────────────
-        dpdx = np.gradient(p_2d, dx, axis=1)
-        acc_pres_h += (-dpdx[mh] / rho0[iz]).mean()
-        acc_pres_s += (-dpdx[ms] / rho0[iz]).mean()
-
-        # ── Vent moyen de la région ───────────────────────────────────
-        acc_wbar_h += w_2d[mh].mean()
-        acc_wbar_s += w_2d[ms].mean()
-        acc_ubar_h += u_2d[mh].mean()
-        acc_ubar_s += u_2d[ms].mean()
-
-        n += 1
-        del u_2d, u_nx, w_2d, p_2d, u_p, w_p, dpdx
-        gc.collect()
-
-    flux_glob_h[iz]  = rho0[iz] * acc_uw_h  / n
-    flux_glob_s[iz]  = rho0[iz] * acc_uw_s  / n
-    dudt_glob_h[iz]  = acc_dudt_h / n
-    dudt_glob_s[iz]  = acc_dudt_s / n
-    pres_glob_h[iz]  = acc_pres_h / n
-    pres_glob_s[iz]  = acc_pres_s / n
-    ubar_glob_h[iz]  = acc_ubar_h / n
-    ubar_glob_s[iz]  = acc_ubar_s / n
-    wbar_tmp_h[iz]   = acc_wbar_h / n
-    wbar_tmp_s[iz]   = acc_wbar_s / n
-
-    if iz % 10 == 0:
-        print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
-
-ds_u.close() ; ds_w.close() ; ds_p.close()
-del ds_u, ds_w, ds_p
-gc.collect()
-
-# ── w̄_région · dū_région/dz ──────────────────────────────────────────
-wdudz_glob_h = wbar_tmp_h * np.gradient(ubar_glob_h, alt)
-wdudz_glob_s = wbar_tmp_s * np.gradient(ubar_glob_s, alt)
-
-# ── Tendance Reynolds directe ─────────────────────────────────────────
-t1_glob_h = tendance(flux_glob_h)
-t1_glob_s = tendance(flux_glob_s)
-
-# ── Résidu = tout sauf Reynolds ───────────────────────────────────────
-residu_glob_h = dudt_glob_h + wdudz_glob_h + pres_glob_h
-residu_glob_s = dudt_glob_s + wdudz_glob_s + pres_glob_s
-
-print('§15b terminé.')
-
-
-
-# ======================================================================
-# §15b — Visualisation : Reynolds direct (anomalies globales) vs résidu
-# ======================================================================
-
-idx_tropo = np.searchsorted(alt, 15000)
-sc = 1e5
-
-for region, t1_glob, residu_glob, dudt_glob, wdudz_glob, pres_glob, couleur in [
-    ('HUMIDE', t1_glob_h, residu_glob_h, dudt_glob_h, wdudz_glob_h, pres_glob_h, 'royalblue'),
-    ('SECHE',  t1_glob_s, residu_glob_s, dudt_glob_s, wdudz_glob_s, pres_glob_s, 'saddlebrown'),
-]:
-    fig, axes = plt.subplots(1, 2, figsize=(14, 9), sharey=True)
-
-    for ax, sl, titre in zip(
-        axes,
-        [slice(None, idx_tropo), slice(None)],
-        ['Troposphère (0–15 km)', 'Colonne complète'],
-    ):
-        ax.plot(t1_glob[sl]   * sc, alt[sl],
-                color=couleur, lw=2.5,
-                label="Reynolds direct  $-\\frac{1}{\\rho_0}\\partial_z(\\rho_0\\overline{u'w'})$")
-        ax.plot(residu_glob[sl] * sc, alt[sl],
-                color='black', lw=2, linestyle='--',
-                label=r'Résidu  $\partial_t\bar{u} + \bar{w}\partial_z\bar{u} - \frac{1}{\rho_0}\partial_x\bar{p}$')
-        ax.plot(dudt_glob[sl]  * sc, alt[sl],
-                color='grey', lw=1.2, linestyle=':',
-                label=r'$\partial_t\bar{u}$')
-        ax.plot(wdudz_glob[sl] * sc, alt[sl],
-                color='purple', lw=1.2, linestyle=':',
-                label=r'$\bar{w}\partial_z\bar{u}$')
-        ax.plot(pres_glob[sl]  * sc, alt[sl],
-                color='seagreen', lw=1.2, linestyle=':',
-                label=r'$-\frac{1}{\rho_0}\partial_x\bar{p}$')
-        ax.axvline(0, color='grey', alpha=0.4)
-        ax.set_xlabel('Tendance (×10⁻⁵ m s⁻²)')
-        ax.set_title(titre, fontweight='bold')
-        ax.legend(fontsize=8)
-        ax.grid(True, alpha=0.3)
-
-    axes[0].set_ylabel('Altitude (m)')
-    plt.suptitle(
-        f'§15b — Région {region} — anomalies globales\n'
-        "Reynolds direct vs résidu  ($\\partial_t\\bar{{u}} + \\bar{{w}}\\partial_z\\bar{{u}} - \\frac{{1}}{{\\rho_0}}\\partial_x\\bar{{p}}$)",
-        fontsize=12, fontweight='bold',
-    )
-    plt.tight_layout()
-    plt.show()
+---
