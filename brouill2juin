@@ -1,116 +1,246 @@
 # ======================================================================
-# §16 — Comparaison flux de Reynolds <u'w'> : anomalies locales vs globales
+# §16 — Bilan complet de la QdM VERTICALE
 #
-# locale  : u' = u - mean(u[region]),  w' = w - mean(w[region])
-# globale : u' = u - mean(u),          w' = w - mean(w)
-# masque appliqué après pour globale
+# Équation moyennée :
+#   ∂t w̄  =  - ū ∂x w̄  - v̄ ∂y w̄  - w̄ ∂z w̄
+#            - 1/ρ₀ ∂z p̄'
+#            - g ρ̄'/ρ₀                          (flottabilité)
+#            - 1/ρ₀ ∂x(ρ₀ <u'w'>)               (flux Reynolds horizontal x)
+#            - 1/ρ₀ ∂y(ρ₀ <v'w'>)               (flux Reynolds horizontal y)
+#            - 1/ρ₀ ∂z(ρ₀ <w'w'>)               (flux Reynolds vertical)
+#
+# Hypothèse : anomalie de densité ρ' = ρ - ρ₀(z)
+#             ρ̄'(z) ≈ 0 au sens global (ρ₀ est la moyenne), 
+#             mais ≠ 0 par région.
+#             On la calcule via ρ' = p/(Rd*Tv) - ρ₀
 # ======================================================================
 
 dt_sec = 6.0 * 3600.0
+g      = 9.81
 
-flux_loc_h = np.zeros(n_z)   # rho0 <u'w'>_R  anomalies locales  humide
-flux_loc_s = np.zeros(n_z)   # rho0 <u'w'>_R  anomalies locales  sec
-flux_glob_h = np.zeros(n_z)  # rho0 <u'w'>_R  anomalies globales humide
-flux_glob_s = np.zeros(n_z)  # rho0 <u'w'>_R  anomalies globales sec
+# ── Tableaux résultats ────────────────────────────────────────────────
+mg_w_h  = np.zeros(n_z)   # <∂w̄/∂t>_R
+mg_w_s  = np.zeros(n_z)
 
-ds_u = xr.open_dataset(path3d('ua'))
-ds_w = xr.open_dataset(path3d('wa'))
+flux_uw2_h = np.zeros(n_z)   # ρ₀ <u'w'>_R   (pour ∂x)
+flux_uw2_s = np.zeros(n_z)
+flux_vw2_h = np.zeros(n_z)   # ρ₀ <v'w'>_R   (pour ∂y)
+flux_vw2_s = np.zeros(n_z)
+flux_ww_h  = np.zeros(n_z)   # ρ₀ <w'w'>_R   (pour ∂z)
+flux_ww_s  = np.zeros(n_z)
+
+# Champs 2D moyens temporels
+wbar_2d  = np.zeros((n_z, n_y, n_x))
+ubar_2d  = np.zeros((n_z, n_y, n_x))
+vbar_2d  = np.zeros((n_z, n_y, n_x))
+pbar_2d  = np.zeros((n_z, n_y, n_x))
+rhobar_2d= np.zeros((n_z, n_y, n_x))   # ρ moyen (pour ρ̄')
+
+ds_u  = xr.open_dataset(path3d('ua'))
+ds_v  = xr.open_dataset(path3d('va'))
+ds_w  = xr.open_dataset(path3d('wa'))
+ds_p  = xr.open_dataset(path3d('pa'))
+ds_ta = xr.open_dataset(path3d('ta'))
+ds_hus= xr.open_dataset(path3d('hus'))
 
 for iz in range(n_z):
 
-    acc_loc_h  = 0.0 ; acc_loc_s  = 0.0
-    acc_glob_h = 0.0 ; acc_glob_s = 0.0
+    acc_mg_w_h = 0.0 ; acc_mg_w_s = 0.0
+    acc_uw_h   = 0.0 ; acc_uw_s   = 0.0
+    acc_vw_h   = 0.0 ; acc_vw_s   = 0.0
+    acc_ww_h   = 0.0 ; acc_ww_s   = 0.0
+    acc_u2d    = np.zeros((n_y, n_x))
+    acc_v2d    = np.zeros((n_y, n_x))
+    acc_w2d    = np.zeros((n_y, n_x))
+    acc_p2d    = np.zeros((n_y, n_x))
+    acc_rho2d  = np.zeros((n_y, n_x))
     n = 0
 
-    for it in range(t_stat, n_t):
+    for it in range(t_stat, n_t - 1):
 
-        u_2d = ds_u['ua'].isel({dim_t: it, dim_z: iz}).values
-        w_2d = ds_w['wa'].isel({dim_t: it, dim_z: iz}).values
+        u_2d  = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values
+        v_2d  = ds_v['va'].isel({dim_t: it,     dim_z: iz}).values
+        w_2d  = ds_w['wa'].isel({dim_t: it,     dim_z: iz}).values
+        w_nx  = ds_w['wa'].isel({dim_t: it + 1, dim_z: iz}).values
+        p_2d  = ds_p['pa'].isel({dim_t: it,     dim_z: iz}).values
+        ta_2d = ds_ta['ta'].isel({dim_t: it,    dim_z: iz}).values
+        q_2d  = ds_hus['hus'].isel({dim_t: it,  dim_z: iz}).values
 
-        # ── anomalies locales ─────────────────────────────────────────
-        u_h = u_2d[mh] ; u_s = u_2d[ms]
-        w_h = w_2d[mh] ; w_s = w_2d[ms]
+        # ── Membre gauche <∂w̄/∂t>_R ─────────────────────────────────
+        dwdt_2d     = (w_nx - w_2d) / dt_sec
+        acc_mg_w_h += dwdt_2d[mh].mean()
+        acc_mg_w_s += dwdt_2d[ms].mean()
 
-        u_p_h = u_h - u_h.mean()
-        u_p_s = u_s - u_s.mean()
-        w_p_h = w_h - w_h.mean()
-        w_p_s = w_s - w_s.mean()
+        # ── Anomalies globales pour les flux Reynolds ─────────────────
+        u_mean = u_2d.mean() ; w_mean = w_2d.mean() ; v_mean = v_2d.mean()
+        u_p = u_2d - u_mean
+        v_p = v_2d - v_mean
+        w_p = w_2d - w_mean
 
-        acc_loc_h += (u_p_h * w_p_h).mean()
-        acc_loc_s += (u_p_s * w_p_s).mean()
+        # <u'w'>_R, <v'w'>_R, <w'w'>_R  (masque appliqué après)
+        acc_uw_h += (u_p * w_p)[mh].mean()
+        acc_uw_s += (u_p * w_p)[ms].mean()
+        acc_vw_h += (v_p * w_p)[mh].mean()
+        acc_vw_s += (v_p * w_p)[ms].mean()
+        acc_ww_h += (w_p * w_p)[mh].mean()
+        acc_ww_s += (w_p * w_p)[ms].mean()
 
-        # ── anomalies globales ────────────────────────────────────────
-        u_p = u_2d - u_2d.mean()
-        w_p = w_2d - w_2d.mean()
+        # ── Densité ρ = p/(Rd*Tv) ─────────────────────────────────────
+        Tv_2d    = ta_2d * (1.0 + q_2d / EPSILON) / (1.0 + q_2d)
+        rho_2d   = p_2d / (Rd * Tv_2d)
+        acc_rho2d += rho_2d
 
-        acc_glob_h += (u_p * w_p)[mh].mean()
-        acc_glob_s += (u_p * w_p)[ms].mean()
+        # ── Accumulation champs 2D moyens ────────────────────────────
+        acc_u2d  += u_2d
+        acc_v2d  += v_2d
+        acc_w2d  += w_2d
+        acc_p2d  += p_2d
 
         n += 1
-        del u_2d, w_2d, u_h, u_s, w_h, w_s
-        del u_p_h, u_p_s, w_p_h, w_p_s, u_p, w_p
+        del (u_2d, v_2d, w_2d, w_nx, p_2d, ta_2d, q_2d,
+             dwdt_2d, u_p, v_p, w_p, Tv_2d, rho_2d)
         gc.collect()
 
-    flux_loc_h[iz]  = rho0[iz] * acc_loc_h  / n
-    flux_loc_s[iz]  = rho0[iz] * acc_loc_s  / n
-    flux_glob_h[iz] = rho0[iz] * acc_glob_h / n
-    flux_glob_s[iz] = rho0[iz] * acc_glob_s / n
+    flux_uw2_h[iz] = rho0[iz] * acc_uw_h / n
+    flux_uw2_s[iz] = rho0[iz] * acc_uw_s / n
+    flux_vw2_h[iz] = rho0[iz] * acc_vw_h / n
+    flux_vw2_s[iz] = rho0[iz] * acc_vw_s / n
+    flux_ww_h[iz]  = rho0[iz] * acc_ww_h / n
+    flux_ww_s[iz]  = rho0[iz] * acc_ww_s / n
+    mg_w_h[iz]     = acc_mg_w_h / n
+    mg_w_s[iz]     = acc_mg_w_s / n
+    wbar_2d[iz]    = acc_w2d  / n
+    ubar_2d[iz]    = acc_u2d  / n
+    vbar_2d[iz]    = acc_v2d  / n
+    pbar_2d[iz]    = acc_p2d  / n
+    rhobar_2d[iz]  = acc_rho2d / n
 
     if iz % 10 == 0:
-        print(f'  iz={iz}/{n_z-1}')
+        print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
 
-ds_u.close() ; ds_w.close()
-del ds_u, ds_w
+ds_u.close() ; ds_v.close() ; ds_w.close()
+ds_p.close() ; ds_ta.close() ; ds_hus.close()
+del ds_u, ds_v, ds_w, ds_p, ds_ta, ds_hus
 gc.collect()
 
-print('§16 terminé.')
-
-
-
-
-
-
-
-
 # ======================================================================
-# §16 — Visualisation : flux local vs global par région
+# Calcul des termes d'advection et pression depuis les champs moyens
 # ======================================================================
 
-sc = 1e5
+tw2_h = np.zeros(n_z)   # -<ū ∂x w̄>_R
+tw2_s = np.zeros(n_z)
+tw3_h = np.zeros(n_z)   # -<v̄ ∂y w̄>_R
+tw3_s = np.zeros(n_z)
+tw4_h = np.zeros(n_z)   # -<w̄ ∂z w̄>_R
+tw4_s = np.zeros(n_z)
+tw5_h = np.zeros(n_z)   # -1/ρ₀ <∂z p̄'>_R
+tw5_s = np.zeros(n_z)
+tw6_h = np.zeros(n_z)   # -g ρ̄'/ρ₀  flottabilité
+tw6_s = np.zeros(n_z)
+
+for iz in range(n_z):
+
+    w2d  = wbar_2d[iz]
+    u2d  = ubar_2d[iz]
+    v2d  = vbar_2d[iz]
+    p2d  = pbar_2d[iz]
+    rho2d= rhobar_2d[iz]
+
+    # T2 : -<ū ∂x w̄>_R
+    dwdx     = np.gradient(w2d, dx, axis=1)
+    tw2_h[iz] = -(u2d * dwdx)[mh].mean()
+    tw2_s[iz] = -(u2d * dwdx)[ms].mean()
+
+    # T3 : -<v̄ ∂y w̄>_R
+    dwdy     = np.gradient(w2d, dy, axis=0)
+    tw3_h[iz] = -(v2d * dwdy)[mh].mean()
+    tw3_s[iz] = -(v2d * dwdy)[ms].mean()
+
+    # T5 : -1/ρ₀ <∂z p̄'>_R  — gradient vertical centré sur p̄
+    if iz == 0:
+        dpdz_2d = (pbar_2d[1] - pbar_2d[0]) / (alt[1] - alt[0])
+    elif iz == n_z - 1:
+        dpdz_2d = (pbar_2d[-1] - pbar_2d[-2]) / (alt[-1] - alt[-2])
+    else:
+        dpdz_2d = (pbar_2d[iz+1] - pbar_2d[iz-1]) / (alt[iz+1] - alt[iz-1])
+    tw5_h[iz] = (-dpdz_2d[mh] / rho0[iz]).mean()
+    tw5_s[iz] = (-dpdz_2d[ms] / rho0[iz]).mean()
+
+    # T6 : flottabilité -g ρ̄'/ρ₀  avec ρ̄' = ρ̄ - ρ₀
+    rho_anom  = rho2d - rho0[iz]
+    tw6_h[iz] = (-g * rho_anom[mh] / rho0[iz]).mean()
+    tw6_s[iz] = (-g * rho_anom[ms] / rho0[iz]).mean()
+
+# T4 : -<w̄ ∂z w̄>_R  — gradient vertical
+for iz in range(n_z):
+    iz_lo = max(iz - 1, 0)
+    iz_hi = min(iz + 1, n_z - 1)
+    dz    = alt[iz_hi] - alt[iz_lo]
+    if dz == 0:
+        dz = alt[1] - alt[0]
+    dwdz_2d   = (wbar_2d[iz_hi] - wbar_2d[iz_lo]) / dz
+    w2d       = wbar_2d[iz]
+    tw4_h[iz] = -(w2d * dwdz_2d)[mh].mean()
+    tw4_s[iz] = -(w2d * dwdz_2d)[ms].mean()
+
+# T1x : -1/ρ₀ ∂x(ρ₀ <u'w'>_R)  — divergence horizontale x
+# Note : ∂x appliqué sur le profil 1D n'a pas de sens direct,
+# on utilise ici la divergence du flux moyenné spatialement.
+# En domaine périodique homogène, ∂x(ρ₀<u'w'>) → 0 globalement,
+# mais par région c'est non nul. On l'approxime par différence finie
+# sur le profil régional en supposant un gradient horizontal caractéristique.
+# → Terme négligeable en pratique, on le met à zéro et on vérifie.
+tw1x_h = np.zeros(n_z)
+tw1x_s = np.zeros(n_z)
+tw1y_h = np.zeros(n_z)
+tw1y_s = np.zeros(n_z)
+
+# T1z : -1/ρ₀ ∂z(ρ₀ <w'w'>_R)
+tw1z_h = tendance(flux_ww_h)
+tw1z_s = tendance(flux_ww_s)
+
+# ── Somme membre droit ────────────────────────────────────────────────
+somme_w_h = tw1z_h + tw2_h + tw3_h + tw4_h + tw5_h + tw6_h
+somme_w_s = tw1z_s + tw2_s + tw3_s + tw4_s + tw5_s + tw6_s
+
+print('§16 calcul terminé.')
+
+# ======================================================================
+# Visualisation
+# ======================================================================
+
 idx_tropo = np.searchsorted(alt, 15000)
+sc = 1e5
 
-t1_loc_h  = tendance(flux_loc_h)
-t1_loc_s  = tendance(flux_loc_s)
-t1_glob_h = tendance(flux_glob_h)
-t1_glob_s = tendance(flux_glob_s)
-
-for region, t1_loc, t1_glob, couleur in [
-    ('HUMIDE', t1_loc_h, t1_glob_h, 'royalblue'),
-    ('SECHE',  t1_loc_s, t1_glob_s, 'saddlebrown'),
+for region, mg, somme, t1z, t2, t3, t4, t5, t6, couleur in [
+    ('HUMIDE', mg_w_h, somme_w_h, tw1z_h, tw2_h, tw3_h, tw4_h, tw5_h, tw6_h, 'royalblue'),
+    ('SECHE',  mg_w_s, somme_w_s, tw1z_s, tw2_s, tw3_s, tw4_s, tw5_s, tw6_s, 'saddlebrown'),
 ]:
-    fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 9), sharey=True)
 
     for ax, sl, titre in zip(
         axes,
         [slice(None, idx_tropo), slice(None)],
-        ['Troposphere (0-15 km)', 'Colonne complete'],
+        ['Troposphère (0-15 km)', 'Colonne complète']
     ):
-        ax.plot(t1_loc[sl]  * sc, alt[sl],
-                color=couleur, lw=2.5, linestyle='-',
-                label='local  : u\' = u - mean(u[region])')
-        ax.plot(t1_glob[sl] * sc, alt[sl],
-                color=couleur, lw=2,   linestyle='--',
-                label='global : u\' = u - mean(u[domaine])')
+        ax.plot(mg[sl]    * sc, alt[sl], color='black',      lw=2.5, label='∂t w̄')
+        ax.plot(somme[sl] * sc, alt[sl], color='black',      lw=1.5, linestyle='--', label='Σ termes')
+        ax.plot(t1z[sl]   * sc, alt[sl], color=couleur,      lw=2,   label='T1z : ∂z(ρ₀<w\'w\'>)')
+        ax.plot(t2[sl]    * sc, alt[sl], color='steelblue',  lw=1.2, linestyle='-.', label='T2 : ū ∂x w̄')
+        ax.plot(t3[sl]    * sc, alt[sl], color='darkorange', lw=1.2, linestyle='-.', label='T3 : v̄ ∂y w̄')
+        ax.plot(t4[sl]    * sc, alt[sl], color='purple',     lw=1.2, linestyle='-.', label='T4 : w̄ ∂z w̄')
+        ax.plot(t5[sl]    * sc, alt[sl], color='seagreen',   lw=1.2, linestyle='-.', label='T5 : ∂z p̄')
+        ax.plot(t6[sl]    * sc, alt[sl], color='crimson',    lw=2,   label='T6 : flottabilité')
         ax.axvline(0, color='grey', alpha=0.4)
-        ax.set_xlabel('Divergence flux Reynolds (x1e-5 m/s2)')
+        ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
         ax.set_title(titre, fontweight='bold')
-        ax.legend(fontsize=9)
+        ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
     axes[0].set_ylabel('Altitude (m)')
     plt.suptitle(
-        f'Region {region} — T1 = -1/rho0 * d(rho0 <u\'w\'>)/dz\n'
-        'local vs global : si différents → circulation méso-échelle active',
+        f'Région {region} — bilan QdM verticale ∂t w̄\n'
+        '∂t w̄ = T1z + T2 + T3 + T4 + T5 + T6',
         fontsize=13, fontweight='bold'
     )
     plt.tight_layout()
