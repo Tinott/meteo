@@ -1,298 +1,66 @@
-# ======================================================================
-# §14-v — Diagnostic terme par terme (QdM méridionale)
-# ======================================================================
-
-dt_sec = 6.0 * 3600.0
-
-ds_u = xr.open_dataset(path3d('ua'))
-ds_v = xr.open_dataset(path3d('va'))
-ds_w = xr.open_dataset(path3d('wa'))
-ds_p = xr.open_dataset(path3d('pa'))
-
-for iz in [0, 10, 30, 50, 60, 70]:
-    acc_dvdt = 0.0
-    acc_adv  = 0.0
-    acc_pres = 0.0
-    n = 0
-
-    iz_lo = max(iz - 1, 0)
-    iz_hi = min(iz + 1, n_z - 1)
-    dz    = alt[iz_hi] - alt[iz_lo]
-    if dz == 0:
-        dz = alt[1] - alt[0]
-
-    for it in range(t_stat, n_t - 1):
-        u_2d = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values
-        v_2d = ds_v['va'].isel({dim_t: it,     dim_z: iz}).values
-        p_2d = ds_p['pa'].isel({dim_t: it,     dim_z: iz}).values
-
-        v_next      = ds_v['va'].isel({dim_t: it + 1, dim_z: iz}).values
-        dvdt        = (v_next - v_2d) / dt_sec
-        del v_next
-
-        adv  = -(u_2d * np.gradient(v_2d, dx, axis=1)
-               + v_2d * np.gradient(v_2d, dy, axis=0))
-
-        pres = -np.gradient(p_2d, dy, axis=0) / rho0[iz]
-
-        acc_dvdt += dvdt.mean()
-        acc_adv  += adv.mean()
-        acc_pres += pres.mean()
-        n += 1
-
-        del u_2d, v_2d, p_2d, dvdt, adv, pres
-        gc.collect()
-
-    print(f'iz={iz:2d}  z={alt[iz]:6.0f}m  '
-          f'dvdt={acc_dvdt/n:.3e}  '
-          f'adv={acc_adv/n:.3e}  '
-          f'pres={acc_pres/n:.3e}  '
-          f'total={(acc_dvdt+acc_adv+acc_pres)/n:.3e}')
-
-ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
-del ds_u, ds_v, ds_w, ds_p
-gc.collect()
-
-
-
-
-
-
-
-
-
-
-# ======================================================================
-# §14-v — Test de fermeture : ∂v̄/∂t  vs  Reynolds direct
-# ======================================================================
-
-dt_sec = 6.0 * 3600.0
-
-dvdt_prof = np.zeros(n_z)
-
-ds_v = xr.open_dataset(path3d('va'))
-
-for iz in range(n_z):
-    acc = 0.0
-    n   = 0
-
-    for it in range(t_stat, n_t - 1):
-        v_2d   = ds_v['va'].isel({dim_t: it,     dim_z: iz}).values
-        v_next = ds_v['va'].isel({dim_t: it + 1, dim_z: iz}).values
-        acc   += ((v_next - v_2d) / dt_sec).mean()
-        n     += 1
-        del v_2d, v_next
-        gc.collect()
-
-    dvdt_prof[iz] = acc / n if n > 0 else 0.0
-
-    if iz % 10 == 0:
-        print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
-
-ds_v.close()
-del ds_v
-gc.collect()
-print('∂v̄/∂t calculé.')
-
-# ── Visualisation ─────────────────────────────────────────────────────
-fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
-
-idx_tropo = np.searchsorted(alt, 15000)
-
-ax = axes[0]
-ax.plot(tend_v_glob[:idx_tropo] * 1e5, alt[:idx_tropo], color='seagreen', lw=2,
-        label=r"Reynolds direct $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{v'w'})$")
-ax.plot(dvdt_prof[:idx_tropo]   * 1e5, alt[:idx_tropo], color='crimson', lw=2, linestyle='--',
-        label=r'$\partial \bar{v}/\partial t$')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
-ax.set_ylabel('Altitude (m)')
-ax.set_title('Troposphère (0–15 km)', fontweight='bold')
-ax.legend()
-ax.grid(True, alpha=0.3)
-
-ax = axes[1]
-ax.plot(tend_v_glob * 1e5, alt, color='seagreen', lw=2,
-        label=r"Reynolds direct $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{v'w'})$")
-ax.plot(dvdt_prof   * 1e5, alt, color='crimson', lw=2, linestyle='--',
-        label=r'$\partial \bar{v}/\partial t$')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
-ax.set_title('Colonne complète', fontweight='bold')
-ax.legend()
-ax.grid(True, alpha=0.3)
-
-plt.suptitle('Test de fermeture du bilan de QdM méridionale', fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
-
-
-
-
-
-# ======================================================================
-# §15-v — Fermeture conditionnelle : humide vs sèche (QdM méridionale)
-# ======================================================================
-
-dt_sec = 6.0 * 3600.0
-print(f'dt = {dt_sec:.0f} s = {dt_sec/3600:.1f} h')
-
-flux_h2_v  = np.zeros(n_z)
-flux_s2_v  = np.zeros(n_z)
-
-dvdt_h   = np.zeros(n_z)
-dvdt_s   = np.zeros(n_z)
-wdvdz_h  = np.zeros(n_z)
-wdvdz_s  = np.zeros(n_z)
-pres_v_h = np.zeros(n_z)
-pres_v_s = np.zeros(n_z)
-
-vbar_h   = np.zeros(n_z)
-vbar_s   = np.zeros(n_z)
+flux_loc_h  = np.zeros(n_z)
+flux_loc_s  = np.zeros(n_z)
+flux_glob_h = np.zeros(n_z)
+flux_glob_s = np.zeros(n_z)
+ubar_h      = np.zeros(n_z)
+ubar_s      = np.zeros(n_z)
+vbar_h      = np.zeros(n_z)
+vbar_s      = np.zeros(n_z)
 
 ds_u = xr.open_dataset(path3d('ua'))
 ds_v = xr.open_dataset(path3d('va'))
 ds_w = xr.open_dataset(path3d('wa'))
-ds_p = xr.open_dataset(path3d('pa'))
 
 for iz in range(n_z):
 
-    acc_vw_h   = 0.0 ; acc_vw_s   = 0.0
-    acc_dvdt_h = 0.0 ; acc_dvdt_s = 0.0
-    acc_pres_h = 0.0 ; acc_pres_s = 0.0
-    acc_wbar_h = 0.0 ; acc_wbar_s = 0.0
+    acc_loc_h  = 0.0 ; acc_loc_s  = 0.0
+    acc_glob_h = 0.0 ; acc_glob_s = 0.0
+    acc_ubar_h = 0.0 ; acc_ubar_s = 0.0
     acc_vbar_h = 0.0 ; acc_vbar_s = 0.0
     n = 0
 
-    for it in range(t_stat, n_t - 1):
+    for it in range(t_stat, n_t):
 
-        u_2d = ds_u['ua'].isel({dim_t: it,     dim_z: iz}).values
-        v_2d = ds_v['va'].isel({dim_t: it,     dim_z: iz}).values
-        v_nx = ds_v['va'].isel({dim_t: it + 1, dim_z: iz}).values
-        w_2d = ds_w['wa'].isel({dim_t: it,     dim_z: iz}).values
-        p_2d = ds_p['pa'].isel({dim_t: it,     dim_z: iz}).values
+        u_2d = ds_u['ua'].isel({dim_t: it, dim_z: iz}).values
+        v_2d = ds_v['va'].isel({dim_t: it, dim_z: iz}).values
+        w_2d = ds_w['wa'].isel({dim_t: it, dim_z: iz}).values
 
-        v_h = v_2d[mh] ; v_s = v_2d[ms]
+        # anomalies locales (intra-région)
+        u_h = u_2d[mh] ; u_s = u_2d[ms]
         w_h = w_2d[mh] ; w_s = w_2d[ms]
-        p_h = p_2d[mh] ; p_s = p_2d[ms]
+        acc_loc_h += ((u_h - u_h.mean()) * (w_h - w_h.mean())).mean()
+        acc_loc_s += ((u_s - u_s.mean()) * (w_s - w_s.mean())).mean()
 
-        # ── Flux direct : anomalies intra-région ─────────────────────
-        v_p_h = v_h - v_h.mean()
-        v_p_s = v_s - v_s.mean()
-        w_p_h = w_h - w_h.mean()
-        w_p_s = w_s - w_s.mean()
+        # anomalies globales (domaine entier)
+        u_p = u_2d - u_2d.mean()
+        w_p = w_2d - w_2d.mean()
+        acc_glob_h += (u_p * w_p)[mh].mean()
+        acc_glob_s += (u_p * w_p)[ms].mean()
 
-        acc_vw_h += (v_p_h * w_p_h).mean()
-        acc_vw_s += (v_p_s * w_p_s).mean()
-
-        # ── ∂v̄/∂t conditionné ────────────────────────────────────────
-        v_nx_h = v_nx[mh] ; v_nx_s = v_nx[ms]
-        acc_dvdt_h += (v_nx_h - v_h).mean() / dt_sec
-        acc_dvdt_s += (v_nx_s - v_s).mean() / dt_sec
-
-        # ── Pression : gradient méridional moyenné sur la région ─────
-        dpdy = np.gradient(p_2d, dy, axis=0)   # (ny, nx)
-        acc_pres_h += (-dpdy[mh] / rho0[iz]).mean()
-        acc_pres_s += (-dpdy[ms] / rho0[iz]).mean()
-
-        # ── Vent moyen de la région ───────────────────────────────────
-        acc_wbar_h += w_h.mean()
-        acc_wbar_s += w_s.mean()
-        acc_vbar_h += v_h.mean()
-        acc_vbar_s += v_s.mean()
+        # vents moyens par région
+        acc_ubar_h += u_h.mean()
+        acc_ubar_s += u_s.mean()
+        acc_vbar_h += v_2d[mh].mean()
+        acc_vbar_s += v_2d[ms].mean()
 
         n += 1
-        del u_2d, v_2d, v_nx, w_2d, p_2d
-        del v_h, v_s, w_h, w_s, p_h, p_s
-        del v_p_h, v_p_s, w_p_h, w_p_s
-        del v_nx_h, v_nx_s, dpdy
+        del u_2d, v_2d, w_2d, u_h, u_s, w_h, w_s, u_p, w_p
         gc.collect()
 
-    flux_h2_v[iz]  = rho0[iz] * acc_vw_h   / n
-    flux_s2_v[iz]  = rho0[iz] * acc_vw_s   / n
-    dvdt_h[iz]     = acc_dvdt_h / n
-    dvdt_s[iz]     = acc_dvdt_s / n
-    pres_v_h[iz]   = acc_pres_h / n
-    pres_v_s[iz]   = acc_pres_s / n
-    vbar_h[iz]     = acc_vbar_h / n
-    vbar_s[iz]     = acc_vbar_s / n
-    wdvdz_h[iz]    = acc_wbar_h / n   # stocke w̄ temporairement
-    wdvdz_s[iz]    = acc_wbar_s / n
+    flux_loc_h[iz]  = rho0[iz] * acc_loc_h  / n
+    flux_loc_s[iz]  = rho0[iz] * acc_loc_s  / n
+    flux_glob_h[iz] = rho0[iz] * acc_glob_h / n
+    flux_glob_s[iz] = rho0[iz] * acc_glob_s / n
+    ubar_h[iz]      = acc_ubar_h / n
+    ubar_s[iz]      = acc_ubar_s / n
+    vbar_h[iz]      = acc_vbar_h / n
+    vbar_s[iz]      = acc_vbar_s / n
 
     if iz % 10 == 0:
         print(f'  iz={iz}/{n_z-1}  ({alt[iz]:.0f} m)')
 
-ds_u.close() ; ds_v.close() ; ds_w.close() ; ds_p.close()
-del ds_u, ds_v, ds_w, ds_p
+ds_u.close() ; ds_v.close() ; ds_w.close()
+del ds_u, ds_v, ds_w
 gc.collect()
 
-# ── w̄_région · dv̄_région/dz ──────────────────────────────────────────
-wbar_v_h = wdvdz_h.copy()
-wbar_v_s = wdvdz_s.copy()
-dvdz_h = np.gradient(vbar_h, alt)
-dvdz_s = np.gradient(vbar_s, alt)
-wdvdz_h = wbar_v_h * dvdz_h
-wdvdz_s = wbar_v_s * dvdz_s
-
-# ── Tendances directes ────────────────────────────────────────────────
-tend_h_v_direct = tendance(flux_h2_v)
-tend_s_v_direct = tendance(flux_s2_v)
-
-# ── Résidu ────────────────────────────────────────────────────────────
-residuel_v_h = dvdt_h + wdvdz_h + pres_v_h
-residuel_v_s = dvdt_s + wdvdz_s + pres_v_s
-
-print('§15-v terminé.')
-
-
-
-
-
-# ======================================================================
-# §15-v — Visualisation (QdM méridionale)
-# ======================================================================
-
-idx_tropo = np.searchsorted(alt, 15000)
-sc = 1e5
-
-for region, direct, resid, dvd, wdz, pres, couleur in [
-    ('HUMIDE', tend_h_v_direct, residuel_v_h, dvdt_h, wdvdz_h, pres_v_h, 'royalblue'),
-    ('SÈCHE',  tend_s_v_direct, residuel_v_s, dvdt_s, wdvdz_s, pres_v_s, 'saddlebrown'),
-]:
-    fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
-
-    for ax, sl, titre in zip(
-        axes,
-        [slice(None, idx_tropo), slice(None)],
-        ['Troposphère (0–15 km)', 'Colonne complète']
-    ):
-        ax.plot(direct[sl] * sc, alt[sl],
-                color=couleur, lw=2.5,
-                label=r"Directe $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{v'w'})$")
-        ax.plot(resid[sl]  * sc, alt[sl],
-                color='black', lw=2, linestyle='--',
-                label=r'Résidu $\partial_t\bar{v} + \bar{w}\partial_z\bar{v} + \frac{1}{\rho_0}\partial_y\bar{p}$')
-        ax.plot(dvd[sl]    * sc, alt[sl],
-                color='grey',       lw=1.2, linestyle=':',
-                label=r'$\partial_t\bar{v}$')
-        ax.plot(wdz[sl]    * sc, alt[sl],
-                color='darkorange', lw=1.2, linestyle='-.',
-                label=r'$\bar{w}\partial_z\bar{v}$')
-        ax.plot(pres[sl]   * sc, alt[sl],
-                color='seagreen',   lw=1.2, linestyle='-.',
-                label=r'$\frac{1}{\rho_0}\partial_y\bar{p}$')
-        ax.axvline(0, color='grey', alpha=0.4)
-        ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
-        ax.set_title(titre, fontweight='bold')
-        ax.legend(fontsize=9)
-        ax.grid(True, alpha=0.3)
-
-    axes[0].set_ylabel('Altitude (m)')
-    plt.suptitle(
-        f'Région {region} — fermeture du bilan de QdM méridionale\n'
-        r"Directe $= -\frac{1}{\rho_0}\partial_z(\rho_0\overline{v'w'}_\mathrm{rég})$"
-        r"   Résidu $= \partial_t\bar{v} + \bar{w}\partial_z\bar{v} + \frac{1}{\rho_0}\partial_y\bar{p}$",
-        fontsize=13, fontweight='bold'
-    )
-    plt.tight_layout()
-    plt.show()
+print('Flux et vents moyens calculés.')
