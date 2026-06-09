@@ -1,167 +1,114 @@
 # ======================================================================
-# §17 — Paramétrisation down-gradient : K(z) = -<u'w'> / (dū/dz)
+# §17 — Paramétrisation down-gradient par région : K(z) = -<u'w'> / (dū/dz)
 #
-# Hypothèse : flux de Reynolds ≈ -K(z) * dū/dz  (fermeture Fickienne)
-#
-# On diagnostique K(z) depuis les champs simulés, puis on reconstruit
-# le flux prédit et on le compare au flux direct §12.
-#
-# Entrées réutilisées :
-#   flux      = rho0 * <u'w'>  (§12, domaine entier)
-#   ubar_2d   (n_z, n_y, n_x)  (§15/§16, champ moyen)
-#   rho0      (n_z,)
-#   alt       (n_z,)           niveaux en mètres
+# Entrées :
+#   flux_loc_h, flux_loc_s  = rho0 * <u'w'>  anomalies locales (§16)
+#   ubar_b_2d   (n_z, n_y, n_x)  champ moyen (§15b — même que §15a)
+#   mh, ms      masques humide / sec
+#   rho0, alt
 # ======================================================================
 
-# ── 1. ū(z) moyen sur le domaine ──────────────────────────────────────
-ubar_z = np.array([ubar_2d[iz].mean() for iz in range(n_z)])   # (n_z,)
+SEUIL_GRAD = 1e-5   # s⁻¹
 
-# ── 2. dū/dz  (différence centrée, bords en différence unilatérale) ──
-dubar_dz = np.gradient(ubar_z, alt)   # (n_z,)  unité : s⁻¹
+# ── 1. ū(z) moyen par région ──────────────────────────────────────────
+ubar_z_h = np.array([ubar_b_2d[iz][mh].mean() for iz in range(n_z)])
+ubar_z_s = np.array([ubar_b_2d[iz][ms].mean() for iz in range(n_z)])
 
-# ── 3. ⟨u'w'⟩(z) depuis §12 ──────────────────────────────────────────
-uw = flux / rho0   # (n_z,)  m²/s²   (flux = rho0 * <u'w'>)
+# ── 2. dū/dz par région ───────────────────────────────────────────────
+dubar_dz_h = np.gradient(ubar_z_h, alt)
+dubar_dz_s = np.gradient(ubar_z_s, alt)
 
-# ── 4. K(z) = -⟨u'w'⟩ / (dū/dz) ─────────────────────────────────────
-#    On masque les niveaux où le gradient est trop faible (bruit)
-SEUIL_GRAD = 1e-5   # s⁻¹  — ajuster si nécessaire
+# ── 3. K(z) diagnostiqué + interpolé par région ───────────────────────
+def diagnostiquer_K(flux_reg, dubar_dz_reg):
+    uw = flux_reg / rho0
+    K  = np.full(n_z, np.nan)
+    masque = np.abs(dubar_dz_reg) > SEUIL_GRAD
+    K[masque] = -uw[masque] / dubar_dz_reg[masque]
+    K_interp  = K.copy()
+    idx_val   = np.where(masque)[0]
+    if len(idx_val) > 1:
+        K_interp = np.interp(np.arange(n_z), idx_val, K[idx_val])
+    return K, K_interp, masque
 
-K = np.full(n_z, np.nan)
-masque_grad = np.abs(dubar_dz) > SEUIL_GRAD
-K[masque_grad] = -uw[masque_grad] / dubar_dz[masque_grad]   # m²/s
+K_h, K_interp_h, masque_h = diagnostiquer_K(flux_loc_h, dubar_dz_h)
+K_s, K_interp_s, masque_s = diagnostiquer_K(flux_loc_s, dubar_dz_s)
 
-# ── 5. Flux reconstruit : flux_pred = -rho0 * K * dū/dz ─────────────
-#    On interpole K sur les niveaux masqués (NaN) par interpolation linéaire
-K_interp = K.copy()
-idx_valides = np.where(masque_grad)[0]
-idx_tous    = np.arange(n_z)
-if len(idx_valides) > 1:
-    K_interp = np.interp(idx_tous, idx_valides, K[idx_valides])
-
-flux_pred = -rho0 * K_interp * dubar_dz   # (n_z,)  kg/(m² s)
+# ── 4. Flux reconstruit ───────────────────────────────────────────────
+flux_pred_h = -rho0 * K_interp_h * dubar_dz_h
+flux_pred_s = -rho0 * K_interp_s * dubar_dz_s
 
 print('§17 calcul terminé.')
-print(f'  K  min={np.nanmin(K):.1f}  max={np.nanmax(K):.1f}  m²/s')
-print(f'  Niveaux masqués (gradient faible) : {(~masque_grad).sum()}/{n_z}')
+print(f'  K humide  min={np.nanmin(K_h):.1f}  max={np.nanmax(K_h):.1f}  m²/s')
+print(f'  K sec     min={np.nanmin(K_s):.1f}  max={np.nanmax(K_s):.1f}  m²/s')
+
 
 
 
 
 # ======================================================================
-# §17 — Visualisation 1 : ū(z) et dū/dz
+# §17 — Visualisation : flux simulé vs prédit par région
 # ======================================================================
 
-fig, axes = plt.subplots(1, 2, figsize=(12, 8), sharey=True)
+sc     = 1.0
+sc_div = 1e5
 idx_tropo = np.searchsorted(alt, 15000)
 
-for ax, sl, titre in zip(
-    axes,
-    [slice(None, idx_tropo), slice(None)],
-    ['Troposphere (0-15 km)', 'Colonne complète'],
-):
-    ax2 = ax.twiny()
-    ax.plot(ubar_z[sl],      alt[sl], color='steelblue', lw=2,   label='ū  (m/s)')
-    ax2.plot(dubar_dz[sl]*1e4, alt[sl], color='darkorange', lw=1.5, linestyle='--',
-             label='dū/dz  (×10⁻⁴ s⁻¹)')
-    ax.axvline(0,  color='grey', alpha=0.4)
-    ax2.axvline(0, color='grey', alpha=0.4, linestyle='--')
-    ax.set_xlabel('ū  (m/s)',             color='steelblue')
-    ax2.set_xlabel('dū/dz  (×10⁻⁴ s⁻¹)', color='darkorange')
-    ax.set_title(titre, fontweight='bold')
-    ax.grid(True, alpha=0.3)
+t1_sim_h  = tendance(flux_loc_h)
+t1_sim_s  = tendance(flux_loc_s)
+t1_pred_h = tendance(flux_pred_h)
+t1_pred_s = tendance(flux_pred_s)
 
-axes[0].set_ylabel('Altitude (m)')
-plt.suptitle('§17 — Profil moyen ū(z) et son gradient vertical',
-             fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
+for region, flux_sim, flux_pred, t1_sim, t1_pred, ubar_z, dubar_dz, K, couleur in [
+    ('HUMIDE', flux_loc_h, flux_pred_h, t1_sim_h, t1_pred_h, ubar_z_h, dubar_dz_h, K_h, 'royalblue'),
+    ('SECHE',  flux_loc_s, flux_pred_s, t1_sim_s, t1_pred_s, ubar_z_s, dubar_dz_s, K_s, 'saddlebrown'),
+]:
+    fig, axes = plt.subplots(1, 4, figsize=(20, 9), sharey=True)
 
+    for ax, sl in zip(axes, [slice(None, idx_tropo)]*2 + [slice(None, idx_tropo)]*2):
+        ax.grid(True, alpha=0.3)
+        ax.axvline(0, color='grey', alpha=0.4)
 
-# ======================================================================
-# §17 — Visualisation 2 : K(z)  coefficient de diffusion turbulente
-# ======================================================================
+    # ── ax0 : ū et dū/dz ─────────────────────────────────────────────
+    axes[0].plot(ubar_z[:idx_tropo],          alt[:idx_tropo],
+                 color=couleur, lw=2, label='ū (m/s)')
+    ax0b = axes[0].twiny()
+    ax0b.plot(dubar_dz[:idx_tropo]*1e4, alt[:idx_tropo],
+              color=couleur, lw=1.5, linestyle='--', label='dū/dz ×10⁻⁴')
+    axes[0].set_xlabel('ū  (m/s)',            color=couleur)
+    ax0b.set_xlabel('dū/dz  (×10⁻⁴ s⁻¹)',   color=couleur)
+    axes[0].set_title('ū et dū/dz', fontweight='bold')
 
-fig, axes = plt.subplots(1, 2, figsize=(12, 8), sharey=True)
+    # ── ax1 : K(z) ───────────────────────────────────────────────────
+    axes[1].plot(K[:idx_tropo],         alt[:idx_tropo],
+                 color=couleur, lw=0, marker='.', markersize=3, label='K diagnostiqué')
+    axes[1].plot(K_interp_h[:idx_tropo] if region == 'HUMIDE' else K_interp_s[:idx_tropo],
+                 alt[:idx_tropo],
+                 color=couleur, lw=2, label='K interpolé')
+    axes[1].set_xlabel('K  (m²/s)')
+    axes[1].set_title('K(z)', fontweight='bold')
+    axes[1].legend(fontsize=8)
 
-for ax, sl, titre in zip(
-    axes,
-    [slice(None, idx_tropo), slice(None)],
-    ['Troposphere (0-15 km)', 'Colonne complète'],
-):
-    ax.plot(K_interp[sl], alt[sl], color='seagreen', lw=2,   label='K interpolé')
-    ax.plot(K[sl],        alt[sl], color='seagreen', lw=2.5, linestyle='none',
-            marker='.', markersize=3, label='K diagnostiqué')
-    ax.axvline(0, color='grey', alpha=0.4)
-    ax.set_xlabel('K  (m²/s)')
-    ax.set_title(titre, fontweight='bold')
-    ax.legend(fontsize=9)
-    ax.grid(True, alpha=0.3)
+    # ── ax2 : flux simulé vs prédit ──────────────────────────────────
+    axes[2].plot(flux_sim[:idx_tropo],  alt[:idx_tropo],
+                 color=couleur, lw=2.5, label='simulé')
+    axes[2].plot(flux_pred[:idx_tropo], alt[:idx_tropo],
+                 color='black', lw=2, linestyle='--', label='prédit')
+    axes[2].set_xlabel('ρ₀⟨u\'w\'⟩  (kg m⁻¹ s⁻²)')
+    axes[2].set_title('Flux simulé vs prédit', fontweight='bold')
+    axes[2].legend(fontsize=8)
 
-axes[0].set_ylabel('Altitude (m)')
-plt.suptitle('§17 — Coefficient de diffusion turbulente K(z) = -⟨u\'w\'⟩ / (dū/dz)',
-             fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
+    # ── ax3 : divergence simulée vs prédite ──────────────────────────
+    axes[3].plot(t1_sim[:idx_tropo]  * sc_div, alt[:idx_tropo],
+                 color=couleur, lw=2.5, label='simulée')
+    axes[3].plot(t1_pred[:idx_tropo] * sc_div, alt[:idx_tropo],
+                 color='black', lw=2, linestyle='--', label='prédite')
+    axes[3].set_xlabel('−1/ρ₀ ∂(ρ₀⟨u\'w\'⟩)/∂z  (×10⁻⁵ m/s²)')
+    axes[3].set_title('Divergence simulée vs prédite', fontweight='bold')
+    axes[3].legend(fontsize=8)
 
-
-# ======================================================================
-# §17 — Visualisation 3 : flux simulé vs flux prédit
-# ======================================================================
-
-sc = 1.0   # kg/(m² s)  — pas de mise à l'échelle ici
-
-fig, axes = plt.subplots(1, 2, figsize=(12, 8), sharey=True)
-
-for ax, sl, titre in zip(
-    axes,
-    [slice(None, idx_tropo), slice(None)],
-    ['Troposphere (0-15 km)', 'Colonne complète'],
-):
-    ax.plot(flux[sl],      alt[sl], color='steelblue', lw=2.5,
-            label='simulé  ρ₀⟨u\'w\'⟩')
-    ax.plot(flux_pred[sl], alt[sl], color='crimson',   lw=2,   linestyle='--',
-            label='prédit  −ρ₀ K dū/dz')
-    ax.axvline(0, color='grey', alpha=0.4)
-    ax.set_xlabel('Flux de Reynolds  (kg m⁻¹ s⁻²)')
-    ax.set_title(titre, fontweight='bold')
-    ax.legend(fontsize=9)
-    ax.grid(True, alpha=0.3)
-
-axes[0].set_ylabel('Altitude (m)')
-plt.suptitle('§17 — Fermeture down-gradient\nFlux simulé vs flux reconstruit −ρ₀ K dū/dz',
-             fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
-
-
-
-# ======================================================================
-# §17 — Visualisation 4 : divergence simulée vs prédite  (tendance sur ū)
-# ======================================================================
-
-t1_sim  = tendance(flux)       # −1/ρ₀ * d(ρ₀⟨u'w'⟩)/dz  simulé
-t1_pred = tendance(flux_pred)  # −1/ρ₀ * d(−ρ₀ K dū/dz)/dz  prédit
-sc_div  = 1e5                  # ×10⁻⁵ m/s²
-
-fig, axes = plt.subplots(1, 2, figsize=(12, 8), sharey=True)
-
-for ax, sl, titre in zip(
-    axes,
-    [slice(None, idx_tropo), slice(None)],
-    ['Troposphere (0-15 km)', 'Colonne complète'],
-):
-    ax.plot(t1_sim[sl]  * sc_div, alt[sl], color='steelblue', lw=2.5,
-            label='simulée')
-    ax.plot(t1_pred[sl] * sc_div, alt[sl], color='crimson',   lw=2,   linestyle='--',
-            label='prédite  (K down-gradient)')
-    ax.axvline(0, color='grey', alpha=0.4)
-    ax.set_xlabel('−1/ρ₀ ∂(ρ₀⟨u\'w\'⟩)/∂z  (×10⁻⁵ m/s²)')
-    ax.set_title(titre, fontweight='bold')
-    ax.legend(fontsize=9)
-    ax.grid(True, alpha=0.3)
-
-axes[0].set_ylabel('Altitude (m)')
-plt.suptitle('§17 — Divergence du flux : tendance simulée vs prédite',
-             fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
+    axes[0].set_ylabel('Altitude (m)')
+    plt.suptitle(f'§17 — Région {region} — Fermeture down-gradient (anomalies locales)\n'
+                 'Troposphère 0–15 km',
+                 fontsize=13, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
