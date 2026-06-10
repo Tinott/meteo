@@ -1,146 +1,23 @@
-iz_lo_glob = np.searchsorted(alt, 2000)
-iz_hi_glob = np.searchsorted(alt, 18000)
-n_z_fit    = iz_hi_glob - iz_lo_glob
-z_fit_ab   = alt[iz_lo_glob:iz_hi_glob]
-
-alpha_h = np.zeros(n_z_fit)
-beta_h  = np.zeros(n_z_fit)
-alpha_s = np.zeros(n_z_fit)
-beta_s  = np.zeros(n_z_fit)
-
-y_mean_h  = np.zeros(n_z_fit)
-y_mean_s  = np.zeros(n_z_fit)
-yhat_mean_h = np.zeros(n_z_fit)
-yhat_mean_s = np.zeros(n_z_fit)
-
-ds_u = xr.open_dataset(path3d('ua'))
-ds_w = xr.open_dataset(path3d('wa'))
-
-# ── ubar_glob(iz) : moyenne domaine entier sur l'état stationnaire ────
-ubar_glob = np.zeros(n_z_fit)
-for i_iz, iz in enumerate(range(iz_lo_glob, iz_hi_glob)):
-    for it in range(t_stat, n_t):
-        ubar_glob[i_iz] += ds_u['ua'].isel({dim_t: it, dim_z: iz}).values.mean()
-    ubar_glob[i_iz] /= n_stat_it
-print('ubar_glob calculé.')
-
-# ── Boucle principale : un niveau à la fois ───────────────────────────
-for i_iz, iz in enumerate(range(iz_lo_glob, iz_hi_glob)):
-
-    iz_lo = iz - 1
-    iz_hi = iz + 1
-    dz    = alt[iz_hi] - alt[iz_lo]
-
-    u_all = ds_u['ua'].isel({dim_z: iz,    dim_t: slice(t_stat, n_t)}).values
-    u_lo  = ds_u['ua'].isel({dim_z: iz_lo, dim_t: slice(t_stat, n_t)}).values
-    u_hi  = ds_u['ua'].isel({dim_z: iz_hi, dim_t: slice(t_stat, n_t)}).values
-    w_lo  = ds_w['wa'].isel({dim_z: iz_lo, dim_t: slice(t_stat, n_t)}).values
-    w_hi  = ds_w['wa'].isel({dim_z: iz_hi, dim_t: slice(t_stat, n_t)}).values
-
-    # ── scalaires y(t), x1(t), x2(t) pour chaque région ─────────────
-    y_t_h  = np.zeros(n_stat_it) ; y_t_s  = np.zeros(n_stat_it)
-    x1_t_h = np.zeros(n_stat_it) ; x1_t_s = np.zeros(n_stat_it)
-    x2_t_h = np.zeros(n_stat_it) ; x2_t_s = np.zeros(n_stat_it)
-
-    for i_t in range(n_stat_it):
-
-        # y : divergence du flux Reynolds moyen sur la région
-        u_p_lo = u_lo[i_t] - u_lo[i_t].mean()
-        w_p_lo = w_lo[i_t] - w_lo[i_t].mean()
-        u_p_hi = u_hi[i_t] - u_hi[i_t].mean()
-        w_p_hi = w_hi[i_t] - w_hi[i_t].mean()
-
-        flux_lo_h = (rho0[iz_lo] * u_p_lo * w_p_lo)[mh].mean()
-        flux_hi_h = (rho0[iz_hi] * u_p_hi * w_p_hi)[mh].mean()
-        flux_lo_s = (rho0[iz_lo] * u_p_lo * w_p_lo)[ms].mean()
-        flux_hi_s = (rho0[iz_hi] * u_p_hi * w_p_hi)[ms].mean()
-
-        y_t_h[i_t] = -(flux_hi_h - flux_lo_h) / (dz * rho0[iz])
-        y_t_s[i_t] = -(flux_hi_s - flux_lo_s) / (dz * rho0[iz])
-
-        # x1 : rho0 * ubar_reg
-        x1_t_h[i_t] = rho0[iz] * u_all[i_t][mh].mean()
-        x1_t_s[i_t] = rho0[iz] * u_all[i_t][ms].mean()
-
-        # x2 : dz(rho0 * ubar_reg) par différences finies centrées
-        x2_t_h[i_t] = (rho0[iz_hi] * u_hi[i_t][mh].mean()
-                      - rho0[iz_lo] * u_lo[i_t][mh].mean()) / dz
-        x2_t_s[i_t] = (rho0[iz_hi] * u_hi[i_t][ms].mean()
-                      - rho0[iz_lo] * u_lo[i_t][ms].mean()) / dz
-
-    # ── OLS sur t par région ──────────────────────────────────────────
-    for y_t, x1_t, x2_t, alpha_arr, beta_arr, tag in [
-        (y_t_h, x1_t_h, x2_t_h, alpha_h, beta_h, 'h'),
-        (y_t_s, x1_t_s, x2_t_s, alpha_s, beta_s, 's'),
-    ]:
-        S11 = x1_t @ x1_t
-        S12 = x1_t @ x2_t
-        S22 = x2_t @ x2_t
-        b1  = x1_t @ y_t
-        b2  = x2_t @ y_t
-
-        det = S11 * S22 - S12 * S12
-        a   = ( S22 * b1 - S12 * b2) / det
-        b   = (-S12 * b1 + S11 * b2) / det
-
-        if tag == 'h':
-            alpha_h[i_iz] = a ; beta_h[i_iz] = b
-            y_mean_h[i_iz]    = y_t.mean()
-            yhat_mean_h[i_iz] = (a * x1_t + b * x2_t).mean()
-        else:
-            alpha_s[i_iz] = a ; beta_s[i_iz] = b
-            y_mean_s[i_iz]    = y_t.mean()
-            yhat_mean_s[i_iz] = (a * x1_t + b * x2_t).mean()
-
-    del u_all, u_lo, u_hi, w_lo, w_hi
-    gc.collect()
-
-    if i_iz % 10 == 0:
-        print(f'  i_iz={i_iz}/{n_z_fit-1}  ({alt[iz]:.0f} m)')
-
-ds_u.close() ; ds_w.close()
-del ds_u, ds_w
-gc.collect()
-print('α(z), β(z) calculés.')
-
-
-
-
-
-
-# ── Visualisation α(z) et β(z) + comparaison y vs ŷ ──────────────────
-fig, axes = plt.subplots(1, 4, figsize=(20, 8), sharey=True)
+fig, axes = plt.subplots(1, 2, figsize=(12, 8), sharey=True)
 
 axes[0].plot(alpha_h, z_fit_ab, color='royalblue',   lw=2, label='humide')
 axes[0].plot(alpha_s, z_fit_ab, color='saddlebrown', lw=2, label='sèche')
 axes[0].axvline(0, color='grey', alpha=0.4)
-axes[0].set_xlabel('α(z)')
-axes[0].set_title('α(z)', fontweight='bold')
-axes[0].legend() ; axes[0].grid(True, alpha=0.3)
+axes[0].set_xlabel(r'$\alpha(z)$')
+axes[0].set_ylabel('Altitude (m)')
+axes[0].set_title(r'$\alpha(z)$', fontweight='bold')
+axes[0].legend()
+axes[0].grid(True, alpha=0.3)
 
 axes[1].plot(beta_h, z_fit_ab, color='royalblue',   lw=2, label='humide')
 axes[1].plot(beta_s, z_fit_ab, color='saddlebrown', lw=2, label='sèche')
 axes[1].axvline(0, color='grey', alpha=0.4)
-axes[1].set_xlabel('β(z)')
-axes[1].set_title('β(z)', fontweight='bold')
-axes[1].legend() ; axes[1].grid(True, alpha=0.3)
+axes[1].set_xlabel(r'$\beta(z)$')
+axes[1].set_title(r'$\beta(z)$', fontweight='bold')
+axes[1].legend()
+axes[1].grid(True, alpha=0.3)
 
-axes[2].plot(y_mean_h    * 1e5, z_fit_ab, color='royalblue', lw=2.5, label=r'$\bar{y}$')
-axes[2].plot(yhat_mean_h * 1e5, z_fit_ab, color='black',     lw=2, linestyle='--', label=r'$\hat{y}$')
-axes[2].axvline(0, color='grey', alpha=0.4)
-axes[2].set_xlabel('Tendance (×10⁻⁵ m/s²)')
-axes[2].set_title('HUMIDE — y vs ŷ', fontweight='bold')
-axes[2].legend() ; axes[2].grid(True, alpha=0.3)
-
-axes[3].plot(y_mean_s    * 1e5, z_fit_ab, color='saddlebrown', lw=2.5, label=r'$\bar{y}$')
-axes[3].plot(yhat_mean_s * 1e5, z_fit_ab, color='black',       lw=2, linestyle='--', label=r'$\hat{y}$')
-axes[3].axvline(0, color='grey', alpha=0.4)
-axes[3].set_xlabel('Tendance (×10⁻⁵ m/s²)')
-axes[3].set_title('SÈCHE — y vs ŷ', fontweight='bold')
-axes[3].legend() ; axes[3].grid(True, alpha=0.3)
-
-axes[0].set_ylabel('Altitude (m)')
-plt.suptitle(r'§18u — OLS sur $t$ : $\alpha(z)$, $\beta(z)$ et reconstruction',
+plt.suptitle(r'§18u — Profils $\alpha(z)$ et $\beta(z)$ par région (OLS sur $t$)',
              fontsize=13, fontweight='bold')
 plt.tight_layout()
 plt.show()
