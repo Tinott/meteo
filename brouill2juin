@@ -1,23 +1,346 @@
-fig, axes = plt.subplots(1, 2, figsize=(12, 8), sharey=True)
+# =============================================================================
+# §19 — Paramétrisation de A(t) : projection + régression large-échelle
+# =============================================================================
+# Dépendances : variables issues de §17 supposées présentes dans le namespace
+#   popt_h, popt_s          : (A, zc, n) fits humide / sèche
+#   flux_glob_h, flux_glob_s: profils moyens ρ₀⟨u'w'⟩(z)  shape (n_z,)
+#   rho0                    : profil densité              shape (n_z,)
+#   alt                     : altitudes                   shape (n_z,)
+#   mh, ms                  : masques humide/sèche        shape (n_y, n_x)
+#   t_stat, n_t, n_stat_it
+#   dim_t, dim_z, dim_y, dim_x
+#   path3d, BLOC
+# =============================================================================
 
-axes[0].plot(alpha_h, z_fit_ab, color='royalblue',   lw=2, label='humide')
-axes[0].plot(alpha_s, z_fit_ab, color='saddlebrown', lw=2, label='sèche')
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import pearsonr
+
+# ── helpers déjà définis en §17 ──────────────────────────────────────────────
+def profil_cmt(z, A, zc, n):
+    xi  = z / zc
+    val = A * xi * (1.0 - xi)**n
+    val = np.where(z > zc, 0.0, val)
+    return val
+
+def r2_score(y_true, y_pred):
+    ss_res = np.sum((y_true - y_pred)**2)
+    ss_tot = np.sum((y_true - y_true.mean())**2)
+    return 1.0 - ss_res / ss_tot
+
+
+# =============================================================================
+# ÉTAPE 1 — Forme spatiale fixée f(z) depuis §17, divergence analytique g(z)
+# =============================================================================
+
+idx_tropo = np.searchsorted(alt, 15000)
+z_fit     = alt[:idx_tropo].astype(float)
+
+# f(z) normalisée : profil unitaire (A=1) pour chaque région
+_, zc_h, n_h = popt_h
+_, zc_s, n_s = popt_s
+
+f_h = profil_cmt(z_fit, 1.0, zc_h, n_h)   # shape (idx_tropo,)
+f_s = profil_cmt(z_fit, 1.0, zc_s, n_s)
+
+# Divergence analytique g(z) = -d/dz[ρ₀·f(z)] / ρ₀(z)
+#   = -f'(z) - f(z)·dlnρ₀/dz
+rho_fit   = rho0[:idx_tropo]
+dlnrho_dz = np.gradient(np.log(rho_fit), z_fit)
+
+def deriv_profil(z, zc, n):
+    """Dérivée analytique de f(z) = (z/zc)(1 - z/zc)^n"""
+    xi   = z / zc
+    mask = xi < 1.0
+    d    = np.where(
+        mask,
+        (1.0 - xi)**n / zc - n * xi * (1.0 - xi)**(n - 1) / zc,
+        0.0
+    )
+    return d
+
+df_h = deriv_profil(z_fit, zc_h, n_h)
+df_s = deriv_profil(z_fit, zc_s, n_s)
+
+g_h = -(df_h + f_h * dlnrho_dz)   # tendance unitaire humide   [m⁻¹]
+g_s = -(df_s + f_s * dlnrho_dz)
+
+print('Étape 1 OK — f(z) et g(z) calculés.')
+print(f'  f_h max à z = {z_fit[np.argmax(f_h)]/1e3:.1f} km')
+print(f'  f_s max à z = {z_fit[np.argmax(f_s)]/1e3:.1f} km')
+
+# Visu rapide
+fig, axes = plt.subplots(1, 2, figsize=(10, 6), sharey=True)
+axes[0].plot(f_h, z_fit, color='royalblue',   lw=2, label='humide')
+axes[0].plot(f_s, z_fit, color='saddlebrown', lw=2, label='sèche')
 axes[0].axvline(0, color='grey', alpha=0.4)
-axes[0].set_xlabel(r'$\alpha(z)$')
-axes[0].set_ylabel('Altitude (m)')
-axes[0].set_title(r'$\alpha(z)$', fontweight='bold')
-axes[0].legend()
-axes[0].grid(True, alpha=0.3)
+axes[0].set_xlabel('f(z)  [normalisé, A=1]')
+axes[0].set_title('Forme spatiale f(z)', fontweight='bold')
+axes[0].legend(); axes[0].grid(True, alpha=0.3)
 
-axes[1].plot(beta_h, z_fit_ab, color='royalblue',   lw=2, label='humide')
-axes[1].plot(beta_s, z_fit_ab, color='saddlebrown', lw=2, label='sèche')
+axes[1].plot(g_h * 1e5, z_fit, color='royalblue',   lw=2, label='humide')
+axes[1].plot(g_s * 1e5, z_fit, color='saddlebrown', lw=2, label='sèche')
 axes[1].axvline(0, color='grey', alpha=0.4)
-axes[1].set_xlabel(r'$\beta(z)$')
-axes[1].set_title(r'$\beta(z)$', fontweight='bold')
-axes[1].legend()
-axes[1].grid(True, alpha=0.3)
+axes[1].set_xlabel('g(z)  (×10⁻⁵ m⁻¹)')
+axes[1].set_title('Divergence unitaire g(z) = −∂z[ρ₀f]/ρ₀', fontweight='bold')
+axes[1].legend(); axes[1].grid(True, alpha=0.3)
 
-plt.suptitle(r'§18u — Profils $\alpha(z)$ et $\beta(z)$ par région (OLS sur $t$)',
-             fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
+axes[0].set_ylabel('Altitude (m)')
+plt.suptitle('§19 — Étape 1 : forme spatiale et divergence analytique',
+             fontsize=12, fontweight='bold')
+plt.tight_layout(); plt.show()
+
+
+# =============================================================================
+# ÉTAPE 2 — Extraction de A(t) par projection sur f(z)
+#   A(t) = Σ_z Φ(z,t)·f(z) / Σ_z f(z)²
+# =============================================================================
+
+A_h_t = np.zeros(n_stat_it)
+A_s_t = np.zeros(n_stat_it)
+
+ds_u = xr.open_dataset(path3d('ua'))
+ds_w = xr.open_dataset(path3d('wa'))
+
+for i_t, it in enumerate(range(t_stat, n_t)):
+
+    flux_h = np.zeros(idx_tropo)
+    flux_s = np.zeros(idx_tropo)
+
+    for iz in range(idx_tropo):
+        u_2d = ds_u['ua'].isel({dim_t: it, dim_z: iz}).values
+        w_2d = ds_w['wa'].isel({dim_t: it, dim_z: iz}).values
+        u_p  = u_2d - u_2d.mean()
+        w_p  = w_2d - w_2d.mean()
+        uw   = rho0[iz] * u_p * w_p
+        flux_h[iz] = uw[mh].mean()
+        flux_s[iz] = uw[ms].mean()
+
+    # projection scalaire
+    A_h_t[i_t] = np.dot(flux_h, f_h) / np.dot(f_h, f_h)
+    A_s_t[i_t] = np.dot(flux_s, f_s) / np.dot(f_s, f_s)
+
+    if i_t % 5 == 0:
+        print(f'  i_t={i_t}/{n_stat_it-1}')
+
+ds_u.close(); ds_w.close()
+del ds_u, ds_w
+gc.collect()
+
+print(f'\nA_h : mean={A_h_t.mean():.4e}  std={A_h_t.std():.4e}')
+print(f'A_s : mean={A_s_t.mean():.4e}  std={A_s_t.std():.4e}')
+print(f'A_h §17 (référence) : {popt_h[0]:.4e}')
+print(f'A_s §17 (référence) : {popt_s[0]:.4e}')
+
+# Test : A(t).mean() doit être proche de A du fit §17
+assert abs(A_h_t.mean() / popt_h[0] - 1) < 0.20, \
+    f'A_h moyen ({A_h_t.mean():.3e}) diverge trop du fit §17 ({popt_h[0]:.3e})'
+print('TEST OK — A(t).mean() cohérent avec §17 (écart < 20%)')
+
+
+# =============================================================================
+# ÉTAPE 3 — Test de reconstruction : Φ̂(z,t) = A(t)·f(z)
+# =============================================================================
+
+# Reconstruction du profil moyen
+Phi_hat_h = A_h_t.mean() * f_h
+Phi_hat_s = A_s_t.mean() * f_s
+
+R2_rec_h = r2_score(flux_glob_h[:idx_tropo], Phi_hat_h)
+R2_rec_s = r2_score(flux_glob_s[:idx_tropo], Phi_hat_s)
+
+print(f'\nR² reconstruction humide : {R2_rec_h:.4f}')
+print(f'R² reconstruction sèche  : {R2_rec_s:.4f}')
+
+sc = 1e3
+fig, axes = plt.subplots(1, 2, figsize=(11, 7), sharey=True)
+for ax, flux, Phi_hat, A_t, col, label, R2 in [
+    (axes[0], flux_glob_h, Phi_hat_h, A_h_t, 'royalblue',   'humide', R2_rec_h),
+    (axes[1], flux_glob_s, Phi_hat_s, A_s_t, 'saddlebrown', 'sèche',  R2_rec_s),
+]:
+    ax.plot(flux[:idx_tropo] * sc, z_fit, color=col, lw=2.5, label='simulation')
+    ax.plot(Phi_hat * sc, z_fit, color=col, lw=2, linestyle='--',
+            label=f'A(t).mean()·f(z)  R²={R2:.3f}')
+    ax.plot(profil_cmt(z_fit, *popt_h if col=='royalblue' else popt_s) * sc,
+            z_fit, color='grey', lw=1.5, linestyle=':', label='fit §17')
+    ax.axvline(0, color='grey', alpha=0.4)
+    ax.set_xlabel('ρ₀⟨u\'w\'⟩  (×10⁻³ kg/m²/s²)')
+    ax.set_title(f'Région {label}', fontweight='bold')
+    ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+
+axes[0].set_ylabel('Altitude (m)')
+plt.suptitle('§19 — Étape 3 : reconstruction Φ̂(z) = ⟨A(t)⟩·f(z)',
+             fontsize=12, fontweight='bold')
+plt.tight_layout(); plt.show()
+
+# Série temporelle de A(t)
+fig, ax = plt.subplots(figsize=(9, 4))
+t_idx = np.arange(n_stat_it)
+ax.plot(t_idx, A_h_t, color='royalblue',   lw=2, label='humide')
+ax.plot(t_idx, A_s_t, color='saddlebrown', lw=2, label='sèche')
+ax.axhline(popt_h[0], color='royalblue',   lw=1, linestyle='--', alpha=0.6, label='A_h §17')
+ax.axhline(popt_s[0], color='saddlebrown', lw=1, linestyle='--', alpha=0.6, label='A_s §17')
+ax.set_xlabel('Pas de temps (état stationnaire)')
+ax.set_ylabel('A(t)  (kg/m²/s²)')
+ax.set_title('§19 — Amplitude A(t) extraite par projection', fontweight='bold')
+ax.legend(); ax.grid(True, alpha=0.3)
+plt.tight_layout(); plt.show()
+
+
+# =============================================================================
+# ÉTAPE 4 — Calcul des régresseurs large-échelle X(t)
+# =============================================================================
+# On calcule sur les mêmes 34 pas de temps :
+#   X1(t) = précipitation moyenne région  (proxy intensité convective)
+#   X2(t) = cisaillement vertical moyen   ∂z ū  (proxy organisation)
+#   X3(t) = variance w'²                  (proxy énergie turbulente)
+
+X1_h = np.zeros(n_stat_it)   # précip humide
+X1_s = np.zeros(n_stat_it)
+X2_h = np.zeros(n_stat_it)   # shear  ū entre 2 et 10 km
+X2_s = np.zeros(n_stat_it)
+X3_h = np.zeros(n_stat_it)   # ⟨w'²⟩ moyen colonne humide
+X3_s = np.zeros(n_stat_it)
+
+iz_2km  = np.searchsorted(alt, 2000)
+iz_10km = np.searchsorted(alt, 10000)
+
+# ── précipitations ────────────────────────────────────────────────────────────
+ds_pr = xr.open_dataset(path2d('pr'))
+pr_all = ds_pr['pr'].isel({dim_t: slice(t_stat, n_t)}).values
+ds_pr.close()
+for i_t in range(n_stat_it):
+    X1_h[i_t] = pr_all[i_t][mh].mean()
+    X1_s[i_t] = pr_all[i_t][ms].mean()
+del pr_all; gc.collect()
+
+# ── cisaillement vertical ū(10km) - ū(2km) ───────────────────────────────────
+ds_u = xr.open_dataset(path3d('ua'))
+u_2km  = ds_u['ua'].isel({dim_z: iz_2km,  dim_t: slice(t_stat, n_t)}).values
+u_10km = ds_u['ua'].isel({dim_z: iz_10km, dim_t: slice(t_stat, n_t)}).values
+ds_u.close()
+for i_t in range(n_stat_it):
+    X2_h[i_t] = u_10km[i_t][mh].mean() - u_2km[i_t][mh].mean()
+    X2_s[i_t] = u_10km[i_t][ms].mean() - u_2km[i_t][ms].mean()
+del u_2km, u_10km; gc.collect()
+
+# ── variance w'² moyennée sur la colonne (2–15 km) ───────────────────────────
+ds_w  = xr.open_dataset(path3d('wa'))
+w2_h  = np.zeros(n_stat_it)
+w2_s  = np.zeros(n_stat_it)
+for iz in range(iz_2km, idx_tropo):
+    w_2d = ds_w['wa'].isel({dim_z: iz, dim_t: slice(t_stat, n_t)}).values
+    for i_t in range(n_stat_it):
+        wp = w_2d[i_t] - w_2d[i_t].mean()
+        w2_h[i_t] += (wp**2)[mh].mean()
+        w2_s[i_t] += (wp**2)[ms].mean()
+w2_h /= (idx_tropo - iz_2km)
+w2_s /= (idx_tropo - iz_2km)
+X3_h = w2_h
+X3_s = w2_s
+ds_w.close(); del ds_w; gc.collect()
+
+print('Étape 4 OK — régresseurs large-échelle calculés.')
+
+
+# =============================================================================
+# ÉTAPE 5 — Régression OLS : A(t) ~ γ0 + γ1·X1 + γ2·X2 + γ3·X3
+# =============================================================================
+
+def ols_fit(y, *Xs):
+    """OLS avec intercept. Retourne coeffs, R², résidus."""
+    X = np.column_stack([np.ones(len(y))] + list(Xs))
+    coeffs, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+    y_hat = X @ coeffs
+    R2    = r2_score(y, y_hat)
+    resid = y - y_hat
+    return coeffs, R2, y_hat, resid
+
+for label, A_t, X1, X2, X3 in [
+    ('HUMIDE', A_h_t, X1_h, X2_h, X3_h),
+    ('SÈCHE',  A_s_t, X1_s, X2_s, X3_s),
+]:
+    print(f'\n── Région {label} ──')
+
+    # modèles emboîtés
+    c1, R2_1, _, _ = ols_fit(A_t, X1)
+    c2, R2_2, _, _ = ols_fit(A_t, X1, X2)
+    c3, R2_3, yh3, res3 = ols_fit(A_t, X1, X2, X3)
+
+    print(f'  R²(X1 seul)        = {R2_1:.4f}')
+    print(f'  R²(X1+X2)          = {R2_2:.4f}')
+    print(f'  R²(X1+X2+X3)       = {R2_3:.4f}')
+    print(f'  γ0={c3[0]:.3e}  γ1(pr)={c3[1]:.3e}  γ2(shear)={c3[2]:.3e}  γ3(w²)={c3[3]:.3e}')
+
+    # corrélations individuelles
+    for nom, X in [('précip', X1), ('shear', X2), ('w\'²', X3)]:
+        r, p = pearsonr(A_t, X)
+        print(f'  corr(A, {nom:6s}) = {r:+.3f}  (p={p:.3f})')
+
+
+# =============================================================================
+# ÉTAPE 6 — Visualisation régression + tests
+# =============================================================================
+
+fig, axes = plt.subplots(2, 4, figsize=(18, 9))
+
+for row, (label, A_t, X1, X2, X3, col) in enumerate([
+    ('HUMIDE', A_h_t, X1_h, X2_h, X3_h, 'royalblue'),
+    ('SÈCHE',  A_s_t, X1_s, X2_s, X3_s, 'saddlebrown'),
+]):
+    t_idx = np.arange(n_stat_it)
+    coeffs, R2, yh, res = ols_fit(A_t, X1, X2, X3)
+
+    # A(t) série temporelle + fit
+    axes[row, 0].plot(t_idx, A_t, color=col, lw=2, label='A(t)')
+    axes[row, 0].plot(t_idx, yh,  color='black', lw=1.5, linestyle='--',
+                      label=f'Â(t)  R²={R2:.3f}')
+    axes[row, 0].set_title(f'{label} — A(t) vs Â(t)', fontweight='bold')
+    axes[row, 0].set_xlabel('Pas de temps')
+    axes[row, 0].set_ylabel('A  (kg/m²/s²)')
+    axes[row, 0].legend(fontsize=8); axes[row, 0].grid(True, alpha=0.3)
+
+    # scatter A vs chaque régresseur
+    for col_ax, (nom, X) in enumerate([('précip', X1), ('shear', X2), ("w'²", X3)], 1):
+        r, _ = pearsonr(A_t, X)
+        axes[row, col_ax].scatter(X, A_t, color=col, s=30, alpha=0.7)
+        axes[row, col_ax].set_xlabel(nom)
+        axes[row, col_ax].set_ylabel('A(t)')
+        axes[row, col_ax].set_title(f'{label} — r={r:+.3f}', fontweight='bold')
+        axes[row, col_ax].grid(True, alpha=0.3)
+
+plt.suptitle('§19 — Régression A(t) sur variables large-échelle', fontsize=13, fontweight='bold')
+plt.tight_layout(); plt.show()
+
+
+# =============================================================================
+# ÉTAPE 7 — Tendance reconstruite finale et comparaison avec §15/§16
+# =============================================================================
+# tend_param(z) = A_best * g(z)
+# avec A_best = moyenne temporelle de Â(t) (ou A(t).mean())
+
+A_h_best = A_h_t.mean()
+A_s_best = A_s_t.mean()
+
+tend_h = A_h_best * g_h   # [m/s²]
+tend_s = A_s_best * g_s
+
+print(f'\nTendance max humide : {np.abs(tend_h).max():.3e} m/s²')
+print(f'Tendance max sèche  : {np.abs(tend_s).max():.3e} m/s²')
+
+fig, axes = plt.subplots(1, 2, figsize=(11, 7), sharey=True)
+sc_tend = 1e5
+for ax, tend, col, label in [
+    (axes[0], tend_h, 'royalblue',   'humide'),
+    (axes[1], tend_s, 'saddlebrown', 'sèche'),
+]:
+    ax.plot(tend * sc_tend, z_fit, color=col, lw=2.5, label='tendance paramétrisée')
+    ax.axvline(0, color='grey', alpha=0.4)
+    ax.set_xlabel('−∂z(ρ₀Φ)/ρ₀  (×10⁻⁵ m/s²)')
+    ax.set_title(f'Région {label}', fontweight='bold')
+    ax.legend(); ax.grid(True, alpha=0.3)
+
+axes[0].set_ylabel('Altitude (m)')
+plt.suptitle('§19 — Tendance paramétrisée finale : A·g(z)',
+             fontsize=12, fontweight='bold')
+plt.tight_layout(); plt.show()
