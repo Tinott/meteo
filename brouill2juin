@@ -240,3 +240,95 @@ plt.suptitle(
 )
 plt.tight_layout()
 plt.show()
+
+
+
+
+
+
+
+z = alt[:idx_18km]
+
+# ── Reconstruction moyenne temporelle ────────────────────────────────
+# tend direct : déjà calculé via tendance(flux_glob_h/s) dans §17
+tend_direct_h = tendance(flux_glob_h)[:idx_18km]
+tend_direct_s = tendance(flux_glob_s)[:idx_18km]
+
+# régresseurs moyens en temps : ᾱ(z) et β̄(z)
+alpha_h_mean = alpha_h.mean(axis=0)   # (idx_18km,)
+beta_h_mean  = beta_h.mean(axis=0)
+alpha_s_mean = alpha_s.mean(axis=0)
+beta_s_mean  = beta_s.mean(axis=0)
+
+# ubar_glob et vbar_glob déjà disponibles
+rho_uC_glob    = rho0[:idx_18km] * (ubar_h[:idx_18km] - ubar_glob)
+rho_uC_glob_s  = rho0[:idx_18km] * (ubar_s[:idx_18km] - ubar_glob)
+dz_rho_uC_h    = np.gradient(rho_uC_glob,   alt[:idx_18km])
+dz_rho_uC_s    = np.gradient(rho_uC_glob_s, alt[:idx_18km])
+
+tend_recon_h = alpha_h_mean * rho_uC_glob   + beta_h_mean * dz_rho_uC_h
+tend_recon_s = alpha_s_mean * rho_uC_glob_s + beta_s_mean * dz_rho_uC_s
+
+# ── Visualisation ─────────────────────────────────────────────────────
+fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
+
+for ax, direct, recon, label, couleur in [
+    (axes[0], tend_direct_h, tend_recon_h, 'HUMIDE', 'royalblue'),
+    (axes[1], tend_direct_s, tend_recon_s, 'SÈCHE',  'saddlebrown'),
+]:
+    ax.plot(direct * 1e5, z, color=couleur, lw=2.5,
+            label=r'Direct $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u\'w\'})$')
+    ax.plot(recon  * 1e5, z, color='black', lw=2, linestyle='--',
+            label=r'Reconstruit $\bar{\alpha}\,\rho_0\bar{u}_C + \bar{\beta}\,\partial_z(\rho_0\bar{u}_C)$')
+    ax.axvline(0, color='grey', alpha=0.4)
+    ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
+    ax.set_title(f'Région {label}', fontweight='bold')
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+axes[0].set_ylabel('Altitude (m)')
+plt.suptitle(r'§18u — Direct vs reconstruit ($\bar{\alpha}/\bar{\beta}$ moyennés en temps)',
+             fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
+
+
+# ── Reconstruction ────────────────────────────────────────────────────
+tend_direct_v_h = tendance(flux_glob_v_h)[:idx_18km]   # à adapter selon ton nom de variable
+tend_direct_v_s = tendance(flux_glob_v_s)[:idx_18km]
+
+alpha_v_h_mean = alpha_v_h.mean(axis=0)
+beta_v_h_mean  = beta_v_h.mean(axis=0)
+alpha_v_s_mean = alpha_v_s.mean(axis=0)
+beta_v_s_mean  = beta_v_s.mean(axis=0)
+
+rho_vC_glob   = rho0[:idx_18km] * (vbar_h[:idx_18km] - vbar_glob)
+rho_vC_glob_s = rho0[:idx_18km] * (vbar_s[:idx_18km] - vbar_glob)
+dz_rho_vC_h   = np.gradient(rho_vC_glob,   alt[:idx_18km])
+dz_rho_vC_s   = np.gradient(rho_vC_glob_s, alt[:idx_18km])
+
+tend_recon_v_h = alpha_v_h_mean * rho_vC_glob   + beta_v_h_mean * dz_rho_vC_h
+tend_recon_v_s = alpha_v_s_mean * rho_vC_glob_s + beta_v_s_mean * dz_rho_vC_s
+
+# ── Visualisation ─────────────────────────────────────────────────────
+fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
+
+for ax, direct, recon, label, couleur in [
+    (axes[0], tend_direct_v_h, tend_recon_v_h, 'HUMIDE', 'royalblue'),
+    (axes[1], tend_direct_v_s, tend_recon_v_s, 'SÈCHE',  'saddlebrown'),
+]:
+    ax.plot(direct * 1e5, z, color=couleur, lw=2.5,
+            label=r'Direct $-\frac{1}{\rho_0}\partial_z(\rho_0\overline{v\'w\'})$')
+    ax.plot(recon  * 1e5, z, color='black', lw=2, linestyle='--',
+            label=r'Reconstruit $\bar{\alpha}\,\rho_0\bar{v}_C + \bar{\beta}\,\partial_z(\rho_0\bar{v}_C)$')
+    ax.axvline(0, color='grey', alpha=0.4)
+    ax.set_xlabel('Tendance (×10⁻⁵ m/s²)')
+    ax.set_title(f'Région {label}', fontweight='bold')
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+axes[0].set_ylabel('Altitude (m)')
+plt.suptitle(r'§18v — Direct vs reconstruit ($\bar{\alpha}/\bar{\beta}$ moyennés en temps)',
+             fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
