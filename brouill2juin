@@ -5,8 +5,6 @@ alpha_h = np.zeros((n_stat_it, idx_18km))
 beta_h  = np.zeros((n_stat_it, idx_18km))
 alpha_s = np.zeros((n_stat_it, idx_18km))
 beta_s  = np.zeros((n_stat_it, idx_18km))
-r2_h    = np.full((n_stat_it, idx_18km), np.nan)
-r2_s    = np.full((n_stat_it, idx_18km), np.nan)
 
 ds_u = xr.open_dataset(path3d('ua'))
 ds_w = xr.open_dataset(path3d('wa'))
@@ -47,9 +45,9 @@ for iz in range(idx_18km):
         rho_uC_hi = rho0[iz_hi] * (u_hi[i_t] - ubar_glob[iz_hi])
         dz_rho_uC = (rho_uC_hi - rho_uC_lo) / dz
 
-        for mask, alpha_arr, beta_arr, r2_arr in [
-            (mh, alpha_h, beta_h, r2_h),
-            (ms, alpha_s, beta_s, r2_s),
+        for mask, alpha_arr, beta_arr in [
+            (mh, alpha_h, beta_h),
+            (ms, alpha_s, beta_s),
         ]:
             y  = tend_2d[mask]
             x1 = rho_uC[mask]
@@ -60,10 +58,6 @@ for iz in range(idx_18km):
             Xty = X.T @ y
             try:
                 coeffs = np.linalg.solve(XtX, Xty)
-                y_pred = coeffs[0] * x1 + coeffs[1] * x2
-                ss_res = np.sum((y - y_pred)**2)
-                ss_tot = np.sum((y - y.mean())**2)
-                r2_arr[i_t, iz] = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
             except np.linalg.LinAlgError:
                 coeffs = np.zeros(2)
 
@@ -79,11 +73,7 @@ for iz in range(idx_18km):
 ds_u.close() ; ds_w.close()
 del ds_u, ds_w
 gc.collect()
-print('α, β, R² (u) calculés.')
-
-
-
-
+print('α, β (u) calculés.')
 
 
 cmap_h = plt.cm.Blues
@@ -91,7 +81,6 @@ cmap_s = plt.cm.Oranges
 norm   = plt.Normalize(vmin=0, vmax=n_stat_it - 1)
 z      = alt[:idx_18km]
 
-# ── α et β ────────────────────────────────────────────────────────────
 fig, axes = plt.subplots(2, 2, figsize=(14, 14), sharey=True)
 
 for col, (alpha_arr, beta_arr, label, cmap) in enumerate([
@@ -119,12 +108,12 @@ for col, (alpha_arr, beta_arr, label, cmap) in enumerate([
 axes[0, 0].set_ylabel('Altitude (m)')
 axes[1, 0].set_ylabel('Altitude (m)')
 
-sm  = plt.cm.ScalarMappable(cmap=cmap_h, norm=norm)
+sm = plt.cm.ScalarMappable(cmap=cmap_h, norm=norm)
 sm.set_array([])
-fig.colorbar(sm,  ax=axes[:, 0], label='pas de temps (humide)', shrink=0.6)
+fig.colorbar(sm, ax=axes[:, 0], label='pas de temps (humide)', shrink=0.6)
 sm2 = plt.cm.ScalarMappable(cmap=cmap_s, norm=norm)
 sm2.set_array([])
-fig.colorbar(sm2, ax=axes[:, 1], label='pas de temps (sèche)',  shrink=0.6)
+fig.colorbar(sm2, ax=axes[:, 1], label='pas de temps (sèche)', shrink=0.6)
 
 plt.suptitle(
     r'§18u — $\mathrm{tend}_{u\'w\'}^\mathrm{rég} = \alpha\,\rho_0\bar{u}_C + \beta\,\partial_z(\rho_0\bar{u}_C)$',
@@ -133,43 +122,12 @@ plt.suptitle(
 plt.tight_layout()
 plt.show()
 
-# ── R² en Hovmöller (temps × altitude) ───────────────────────────────
-fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
 
-for ax, r2_arr, label in [
-    (axes[0], r2_h, 'HUMIDE'),
-    (axes[1], r2_s, 'SÈCHE'),
-]:
-    im = ax.pcolormesh(
-        np.arange(n_stat_it), z, r2_arr.T,
-        cmap='RdYlGn', vmin=0, vmax=1, shading='auto'
-    )
-    ax.set_xlabel('Pas de temps (état stationnaire)')
-    ax.set_title(f'R²(z,t) — région {label}', fontweight='bold')
-    ax.grid(True, alpha=0.2)
-    fig.colorbar(im, ax=ax, label='R²')
-
-axes[0].set_ylabel('Altitude (m)')
-plt.suptitle(r'§18u — Qualité du fit $\alpha/\beta$ (composante $u$)',
-             fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
-
-
-
-
-
-
-
-n_stat_it = n_t - t_stat
-idx_18km  = np.searchsorted(alt, 18000)
 
 alpha_v_h = np.zeros((n_stat_it, idx_18km))
 beta_v_h  = np.zeros((n_stat_it, idx_18km))
 alpha_v_s = np.zeros((n_stat_it, idx_18km))
 beta_v_s  = np.zeros((n_stat_it, idx_18km))
-r2_v_h    = np.full((n_stat_it, idx_18km), np.nan)
-r2_v_s    = np.full((n_stat_it, idx_18km), np.nan)
 
 ds_v = xr.open_dataset(path3d('va'))
 ds_w = xr.open_dataset(path3d('wa'))
@@ -210,9 +168,9 @@ for iz in range(idx_18km):
         rho_vC_hi = rho0[iz_hi] * (v_hi[i_t] - vbar_glob[iz_hi])
         dz_rho_vC = (rho_vC_hi - rho_vC_lo) / dz
 
-        for mask, alpha_arr, beta_arr, r2_arr in [
-            (mh, alpha_v_h, beta_v_h, r2_v_h),
-            (ms, alpha_v_s, beta_v_s, r2_v_s),
+        for mask, alpha_arr, beta_arr in [
+            (mh, alpha_v_h, beta_v_h),
+            (ms, alpha_v_s, beta_v_s),
         ]:
             y  = tend_2d[mask]
             x1 = rho_vC[mask]
@@ -223,10 +181,6 @@ for iz in range(idx_18km):
             Xty = X.T @ y
             try:
                 coeffs = np.linalg.solve(XtX, Xty)
-                y_pred = coeffs[0] * x1 + coeffs[1] * x2
-                ss_res = np.sum((y - y_pred)**2)
-                ss_tot = np.sum((y - y.mean())**2)
-                r2_arr[i_t, iz] = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
             except np.linalg.LinAlgError:
                 coeffs = np.zeros(2)
 
@@ -242,20 +196,10 @@ for iz in range(idx_18km):
 ds_v.close() ; ds_w.close()
 del ds_v, ds_w
 gc.collect()
-print('α, β, R² (v) calculés.')
+print('α, β (v) calculés.')
 
 
 
-
-
-
-
-cmap_h = plt.cm.Blues
-cmap_s = plt.cm.Oranges
-norm   = plt.Normalize(vmin=0, vmax=n_stat_it - 1)
-z      = alt[:idx_18km]
-
-# ── α et β ────────────────────────────────────────────────────────────
 fig, axes = plt.subplots(2, 2, figsize=(14, 14), sharey=True)
 
 for col, (alpha_arr, beta_arr, label, cmap) in enumerate([
@@ -283,38 +227,16 @@ for col, (alpha_arr, beta_arr, label, cmap) in enumerate([
 axes[0, 0].set_ylabel('Altitude (m)')
 axes[1, 0].set_ylabel('Altitude (m)')
 
-sm  = plt.cm.ScalarMappable(cmap=cmap_h, norm=norm)
+sm = plt.cm.ScalarMappable(cmap=cmap_h, norm=norm)
 sm.set_array([])
-fig.colorbar(sm,  ax=axes[:, 0], label='pas de temps (humide)', shrink=0.6)
+fig.colorbar(sm, ax=axes[:, 0], label='pas de temps (humide)', shrink=0.6)
 sm2 = plt.cm.ScalarMappable(cmap=cmap_s, norm=norm)
 sm2.set_array([])
-fig.colorbar(sm2, ax=axes[:, 1], label='pas de temps (sèche)',  shrink=0.6)
+fig.colorbar(sm2, ax=axes[:, 1], label='pas de temps (sèche)', shrink=0.6)
 
 plt.suptitle(
     r'§18v — $\mathrm{tend}_{v\'w\'}^\mathrm{rég} = \alpha\,\rho_0\bar{v}_C + \beta\,\partial_z(\rho_0\bar{v}_C)$',
     fontsize=13, fontweight='bold'
 )
-plt.tight_layout()
-plt.show()
-
-# ── R² en Hovmöller (temps × altitude) ───────────────────────────────
-fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
-
-for ax, r2_arr, label in [
-    (axes[0], r2_v_h, 'HUMIDE'),
-    (axes[1], r2_v_s, 'SÈCHE'),
-]:
-    im = ax.pcolormesh(
-        np.arange(n_stat_it), z, r2_arr.T,
-        cmap='RdYlGn', vmin=0, vmax=1, shading='auto'
-    )
-    ax.set_xlabel('Pas de temps (état stationnaire)')
-    ax.set_title(f'R²(z,t) — région {label}', fontweight='bold')
-    ax.grid(True, alpha=0.2)
-    fig.colorbar(im, ax=ax, label='R²')
-
-axes[0].set_ylabel('Altitude (m)')
-plt.suptitle(r'§18v — Qualité du fit $\alpha/\beta$ (composante $v$)',
-             fontsize=13, fontweight='bold')
 plt.tight_layout()
 plt.show()
