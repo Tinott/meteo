@@ -29,10 +29,12 @@ for iz in range(idx_18km):
     if dz == 0:
         dz = alt[1] - alt[0]
 
-    u_all = ds_u['ua'].isel({dim_z: iz,    dim_t: slice(t_stat, n_t)}).values
-    w_all = ds_w['wa'].isel({dim_z: iz,    dim_t: slice(t_stat, n_t)}).values
-    u_lo  = ds_u['ua'].isel({dim_z: iz_lo, dim_t: slice(t_stat, n_t)}).values
-    u_hi  = ds_u['ua'].isel({dim_z: iz_hi, dim_t: slice(t_stat, n_t)}).values
+    u_all  = ds_u['ua'].isel({dim_z: iz,    dim_t: slice(t_stat, n_t)}).values
+    w_all  = ds_w['wa'].isel({dim_z: iz,    dim_t: slice(t_stat, n_t)}).values
+    u_lo   = ds_u['ua'].isel({dim_z: iz_lo, dim_t: slice(t_stat, n_t)}).values
+    u_hi   = ds_u['ua'].isel({dim_z: iz_hi, dim_t: slice(t_stat, n_t)}).values
+    w_lo   = ds_w['wa'].isel({dim_z: iz_lo, dim_t: slice(t_stat, n_t)}).values  # CORRIGÉ
+    w_hi   = ds_w['wa'].isel({dim_z: iz_hi, dim_t: slice(t_stat, n_t)}).values  # CORRIGÉ
 
     acc_tend_h  = 0.0 ; acc_tend_s  = 0.0
     acc_recon_h = 0.0 ; acc_recon_s = 0.0
@@ -40,19 +42,29 @@ for iz in range(idx_18km):
     for i_t in range(n_stat_it):
 
         u_2d = u_all[i_t]
-        w_2d = w_all[i_t]
 
-        uw_lo     = (u_lo[i_t] - u_lo[i_t].mean()) * (w_all[i_t] - w_all[i_t].mean())
-        uw_hi     = (u_hi[i_t] - u_hi[i_t].mean()) * (w_all[i_t] - w_all[i_t].mean())
-        dz_rho_uw = rho0[iz_hi] * uw_hi - rho0[iz_lo] * uw_lo
-        tend_2d   = -dz_rho_uw / (dz * rho0[iz])
+        # ── tend colonne par colonne (CORRIGÉ : w aux bons niveaux) ──
+        # u'w' colonne par colonne à iz_lo et iz_hi
+        u_p_lo = u_lo[i_t] - u_lo[i_t].mean()
+        w_p_lo = w_lo[i_t] - w_lo[i_t].mean()
+        u_p_hi = u_hi[i_t] - u_hi[i_t].mean()
+        w_p_hi = w_hi[i_t] - w_hi[i_t].mean()
 
+        # rho0 * u'w' colonne par colonne à chaque niveau voisin : (ny, nx)
+        flux_lo_2d = rho0[iz_lo] * (u_p_lo * w_p_lo)
+        flux_hi_2d = rho0[iz_hi] * (u_p_hi * w_p_hi)
+
+        # divergence colonne par colonne
+        tend_2d = -(flux_hi_2d - flux_lo_2d) / (dz * rho0[iz])   # (ny, nx)
+
+        # ── régresseurs colonne par colonne ──────────────────────────
         uC        = u_2d - ubar_glob[iz]
         rho_uC    = rho0[iz] * uC
         rho_uC_lo = rho0[iz_lo] * (u_lo[i_t] - ubar_glob[iz_lo])
         rho_uC_hi = rho0[iz_hi] * (u_hi[i_t] - ubar_glob[iz_hi])
         dz_rho_uC = (rho_uC_hi - rho_uC_lo) / dz
 
+        # ── OLS par région ────────────────────────────────────────────
         for mask, alpha_arr, beta_arr, tag in [
             (mh, alpha_h, beta_h, 'h'),
             (ms, alpha_s, beta_s, 's'),
@@ -86,7 +98,7 @@ for iz in range(idx_18km):
     recon_mean_h[iz] = acc_recon_h / n_stat_it
     recon_mean_s[iz] = acc_recon_s / n_stat_it
 
-    del u_all, w_all, u_lo, u_hi
+    del u_all, w_all, u_lo, u_hi, w_lo, w_hi
     gc.collect()
 
     if iz % 10 == 0:
@@ -100,6 +112,8 @@ print('α, β (u) calculés.')
 
 
 
+
+# ── Visualisation y vs ŷ ──────────────────────────────────────────────
 z = alt[:idx_18km]
 
 fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
@@ -119,7 +133,108 @@ for ax, direct, recon, label, couleur in [
     ax.grid(True, alpha=0.3)
 
 axes[0].set_ylabel('Altitude (m)')
-plt.suptitle(r'§18u — $y$ vs $\hat{y}$ (moyenne temporelle sur l\'état stationnaire)',
+plt.suptitle(r'§18u — $y$ vs $\hat{y}$ (moyenne temporelle)',
+             fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+# ======================================================================
+# Diagnostic scatter y vs ŷ à quelques niveaux clés
+# ======================================================================
+
+iz_diag = [
+    np.argmin(np.abs(alt - 1000)),    # 1 km
+    np.argmin(np.abs(alt - 3000)),    # 3 km
+    np.argmin(np.abs(alt - 6000)),    # 6 km
+    np.argmin(np.abs(alt - 10000)),   # 10 km
+]
+
+ds_u = xr.open_dataset(path3d('ua'))
+ds_w = xr.open_dataset(path3d('wa'))
+
+fig, axes = plt.subplots(len(iz_diag), 2, figsize=(12, 5 * len(iz_diag)))
+
+for row, iz in enumerate(iz_diag):
+
+    iz_lo = max(iz - 1, 0)
+    iz_hi = min(iz + 1, idx_18km - 1)
+    dz    = alt[iz_hi] - alt[iz_lo]
+    if dz == 0:
+        dz = alt[1] - alt[0]
+
+    u_all = ds_u['ua'].isel({dim_z: iz,    dim_t: slice(t_stat, n_t)}).values
+    w_lo  = ds_w['wa'].isel({dim_z: iz_lo, dim_t: slice(t_stat, n_t)}).values
+    w_hi  = ds_w['wa'].isel({dim_z: iz_hi, dim_t: slice(t_stat, n_t)}).values
+    u_lo  = ds_u['ua'].isel({dim_z: iz_lo, dim_t: slice(t_stat, n_t)}).values
+    u_hi  = ds_u['ua'].isel({dim_z: iz_hi, dim_t: slice(t_stat, n_t)}).values
+
+    y_all_h = [] ; yhat_all_h = []
+    y_all_s = [] ; yhat_all_s = []
+
+    for i_t in range(n_stat_it):
+
+        u_p_lo = u_lo[i_t] - u_lo[i_t].mean()
+        w_p_lo = w_lo[i_t] - w_lo[i_t].mean()
+        u_p_hi = u_hi[i_t] - u_hi[i_t].mean()
+        w_p_hi = w_hi[i_t] - w_hi[i_t].mean()
+
+        flux_lo_2d = rho0[iz_lo] * (u_p_lo * w_p_lo)
+        flux_hi_2d = rho0[iz_hi] * (u_p_hi * w_p_hi)
+        tend_2d    = -(flux_hi_2d - flux_lo_2d) / (dz * rho0[iz])
+
+        uC        = u_all[i_t] - ubar_glob[iz]
+        rho_uC    = rho0[iz] * uC
+        rho_uC_lo = rho0[iz_lo] * (u_lo[i_t] - ubar_glob[iz_lo])
+        rho_uC_hi = rho0[iz_hi] * (u_hi[i_t] - ubar_glob[iz_hi])
+        dz_rho_uC = (rho_uC_hi - rho_uC_lo) / dz
+
+        for mask, y_list, yhat_list, a_arr, b_arr in [
+            (mh, y_all_h, yhat_all_h, alpha_h, beta_h),
+            (ms, y_all_s, yhat_all_s, alpha_s, beta_s),
+        ]:
+            y     = tend_2d[mask]
+            x1    = rho_uC[mask]
+            x2    = dz_rho_uC[mask]
+            y_hat = a_arr[i_t, iz] * x1 + b_arr[i_t, iz] * x2
+
+            y_list.extend(y.tolist())
+            yhat_list.extend(y_hat.tolist())
+
+    del u_all, u_lo, u_hi, w_lo, w_hi
+    gc.collect()
+
+    for col, (y_list, yhat_list, label, couleur) in enumerate([
+        (y_all_h, yhat_all_h, 'HUMIDE', 'royalblue'),
+        (y_all_s, yhat_all_s, 'SÈCHE',  'saddlebrown'),
+    ]):
+        ax  = axes[row, col]
+        y_a = np.array(y_list)
+        yh_a = np.array(yhat_list)
+
+        ss_res = np.sum((y_a - yh_a)**2)
+        ss_tot = np.sum((y_a - y_a.mean())**2)
+        r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
+
+        lim = np.max(np.abs(y_a)) * 1.1
+        ax.scatter(y_a * 1e5, yh_a * 1e5, s=1, alpha=0.2, color=couleur)
+        ax.plot([-lim * 1e5, lim * 1e5], [-lim * 1e5, lim * 1e5],
+                color='black', lw=1.5, linestyle='--', label='y = ŷ')
+        ax.set_xlabel(r'$y$ direct (×10⁻⁵ m/s²)')
+        ax.set_ylabel(r'$\hat{y}$ reconstruit (×10⁻⁵ m/s²)')
+        ax.set_title(f'z = {alt[iz]/1000:.0f} km — {label}   R²={r2:.3f}',
+                     fontweight='bold')
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+
+ds_u.close()
+del ds_u, ds_w
+gc.collect()
+
+plt.suptitle(r'Scatter $y$ vs $\hat{y}$ — paramétrisation $\alpha/\beta$ (composante $u$)',
              fontsize=13, fontweight='bold')
 plt.tight_layout()
 plt.show()
