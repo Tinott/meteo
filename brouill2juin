@@ -1,436 +1,145 @@
-# ============================================================
-# §20 — Lien entre A et variables grandes échelles
-#        large300 vs small300
-# ============================================================
+# ══════════════════════════════════════════════════════════════════════
+# §18v — α(z,t) et β(z,t) via système 2×2 (éq. u + éq. v)
+# ══════════════════════════════════════════════════════════════════════
 
-import numpy as np
-import matplotlib.pyplot as plt
-import xarray as xr
-import gc
-import os
-from scipy.optimize import curve_fit
+iz_lo_glob = np.searchsorted(alt, 2000)
+iz_hi_glob = np.searchsorted(alt, 18000)
+n_z_fit    = iz_hi_glob - iz_lo_glob
+z_fit_ab   = alt[iz_lo_glob:iz_hi_glob]
+n_stat_it  = n_t - t_stat
 
-# ── Paramètres communs ────────────────────────────────────────
-Rd      = 287.05
-Rv      = 461.5
-EPSILON = Rd / Rv
-g       = 9.81
-cp      = 1004.0
-BLOC    = 2
+# résultats : shape (n_z_fit, n_stat_it)
+alpha_zt_h = np.full((n_z_fit, n_stat_it), np.nan)
+beta_zt_h  = np.full((n_z_fit, n_stat_it), np.nan)
+alpha_zt_s = np.full((n_z_fit, n_stat_it), np.nan)
+beta_zt_s  = np.full((n_z_fit, n_stat_it), np.nan)
 
-sims = {
-    'large300': '3D/MESONH_RCE_large300_3D_{var}.nc',
-    'small300': '3D/MESONH_RCE_small300_3D_{var}.nc',
-}
+ds_u = xr.open_dataset(path3d('ua'))
+ds_v = xr.open_dataset(path3d('va'))
+ds_w = xr.open_dataset(path3d('wa'))
 
-def path(sim, var):
-    return sims[sim].format(var=var)
+for i_iz, iz in enumerate(range(iz_lo_glob, iz_hi_glob)):
 
-# ── Résultats §17/§18 déjà calculés (à renseigner) ───────────
-# Si tu as déjà les fits, colle-les ici directement.
-# Sinon le bloc §17/§18 ci-dessous les recalcule.
-A_fits = {}   # sera rempli : {'large300': {'h': A, 's': A}, ...}
+    iz_lo = iz - 1
+    iz_hi = iz + 1
+    dz    = alt[iz_hi] - alt[iz_lo]
 
-# ============================================================
-# BLOC 1 — Recalcul rapide de A (région humide) si besoin
-# ============================================================
+    # charger les 3 niveaux nécessaires, tous les pas de temps stat
+    u_all = ds_u['ua'].isel({dim_z: iz,    dim_t: slice(t_stat, n_t)}).values  # (nt, ny, nx)
+    u_lo  = ds_u['ua'].isel({dim_z: iz_lo, dim_t: slice(t_stat, n_t)}).values
+    u_hi  = ds_u['ua'].isel({dim_z: iz_hi, dim_t: slice(t_stat, n_t)}).values
+    v_all = ds_v['va'].isel({dim_z: iz,    dim_t: slice(t_stat, n_t)}).values
+    v_lo  = ds_v['va'].isel({dim_z: iz_lo, dim_t: slice(t_stat, n_t)}).values
+    v_hi  = ds_v['va'].isel({dim_z: iz_hi, dim_t: slice(t_stat, n_t)}).values
+    w_lo  = ds_w['wa'].isel({dim_z: iz_lo, dim_t: slice(t_stat, n_t)}).values
+    w_hi  = ds_w['wa'].isel({dim_z: iz_hi, dim_t: slice(t_stat, n_t)}).values
 
-def profil_cmt(z, A, zc, n):
-    xi  = z / zc
-    val = A * xi * (1.0 - xi)**n
-    val = np.where(z > zc, 0.0, val)
-    return val
+    for i_t in range(n_stat_it):
 
-def compute_A(sim):
-    """Retourne A_h, A_s (kg/m²/s²) pour une simulation."""
+        # ── anomalies de vent vertical aux niveaux voisins ──
+        u_p_lo = u_lo[i_t] - u_lo[i_t].mean()
+        u_p_hi = u_hi[i_t] - u_hi[i_t].mean()
+        w_p_lo = w_lo[i_t] - w_lo[i_t].mean()
+        w_p_hi = w_hi[i_t] - w_hi[i_t].mean()
 
-    # ── dimensions ──
-    _ds  = xr.open_dataset(path(sim, 'ua'))
-    _da  = _ds['ua']
-    dim_t, dim_z, dim_y, dim_x = _da.dims
-    n_t  = _da.sizes[dim_t]
-    n_z  = _da.sizes[dim_z]
-    _ds.close(); del _ds, _da; gc.collect()
+        # ── membres droits : dz(rho0 * u'w') / rho0 par région ──
+        y_u_h = (  (rho0[iz_hi] * u_p_hi * w_p_hi)[mh].mean()
+                 - (rho0[iz_lo] * u_p_lo * w_p_lo)[mh].mean() ) / dz
+        y_u_s = (  (rho0[iz_hi] * u_p_hi * w_p_hi)[ms].mean()
+                 - (rho0[iz_lo] * u_p_lo * w_p_lo)[ms].mean() ) / dz
 
-    # ── altitude ──
-    p1d = f"1D/MESONH_RCE_{sim}_1D_ua_avg.nc"
-    ds1 = xr.open_dataset(p1d)
-    alt = ds1.altitude.values.copy()
-    ds1.close()
+        # idem pour v
+        v_p_lo = v_lo[i_t] - v_lo[i_t].mean()
+        v_p_hi = v_hi[i_t] - v_hi[i_t].mean()
 
-    t_stat   = int(2 * n_t / 3)
-    idx_stat = slice(t_stat, None)
+        y_v_h = (  (rho0[iz_hi] * v_p_hi * w_p_hi)[mh].mean()
+                 - (rho0[iz_lo] * v_p_lo * w_p_lo)[mh].mean() ) / dz
+        y_v_s = (  (rho0[iz_hi] * v_p_hi * w_p_hi)[ms].mean()
+                 - (rho0[iz_lo] * v_p_lo * w_p_lo)[ms].mean() ) / dz
 
-    # ── rho0 ──
-    rho0 = np.zeros(n_z)
-    n_r  = 0
-    ds_ta  = xr.open_dataset(path(sim, 'ta'))
-    ds_pa  = xr.open_dataset(path(sim, 'pa'))
-    ds_hus = xr.open_dataset(path(sim, 'hus'))
-    for t0 in range(t_stat, n_t, BLOC):
-        t1 = min(t0 + BLOC, n_t)
-        sl = {dim_t: slice(t0, t1)}
-        T  = ds_ta['ta'].isel(sl).values
-        p  = ds_pa['pa'].isel(sl).values
-        qv = ds_hus['hus'].isel(sl).values
-        Tv = T * (1.0 + qv / EPSILON) / (1.0 + qv)
-        rho0 += (p / (Rd * Tv)).mean(axis=(0, 2, 3)) * (t1 - t0)
-        n_r  += (t1 - t0)
-        del T, p, qv, Tv; gc.collect()
-    ds_ta.close(); ds_pa.close(); ds_hus.close()
-    rho0 /= n_r
+        # ── membres gauche : rho0*ubar_c et dz(rho0*ubar_c) par région ──
+        for mask, tag in [(mh, 'h'), (ms, 's')]:
 
-    # ── masque humide/sec ──
-    p2d = f"2D/MESONH_RCE_{sim}_2D_prw.nc"
-    ds_prw = xr.open_dataset(p2d)
-    prw    = ds_prw['prw'].load()
-    ds_prw.close()
-    prw_stat = prw.isel({dim_t: idx_stat}).mean(dim=dim_t).values
-    seuil    = float(np.median(prw.values.ravel()))
-    mh = prw_stat > seuil
-    ms = ~mh
-    del prw; gc.collect()
+            # ligne 1 du système (éq. u)
+            A11 = rho0[iz] * u_all[i_t][mask].mean()
+            A12 = (rho0[iz_hi] * u_hi[i_t][mask].mean()
+                 - rho0[iz_lo] * u_lo[i_t][mask].mean()) / dz
 
-    # ── flux Reynolds ──
-    idx_tropo = np.searchsorted(alt, 15000)
-    flux_h    = np.zeros(n_z)
-    flux_s    = np.zeros(n_z)
-    ds_u = xr.open_dataset(path(sim, 'ua'))
-    ds_w = xr.open_dataset(path(sim, 'wa'))
-    for iz in range(n_z):
-        acc_h = 0.0; acc_s = 0.0; n = 0
-        for it in range(t_stat, n_t):
-            u2 = ds_u['ua'].isel({dim_t: it, dim_z: iz}).values
-            w2 = ds_w['wa'].isel({dim_t: it, dim_z: iz}).values
-            up = u2 - u2.mean(); wp = w2 - w2.mean()
-            acc_h += (up * wp)[mh].mean()
-            acc_s += (up * wp)[ms].mean()
-            n += 1
-            del u2, w2, up, wp; gc.collect()
-        flux_h[iz] = rho0[iz] * acc_h / n
-        flux_s[iz] = rho0[iz] * acc_s / n
-        if iz % 10 == 0:
-            print(f'  [{sim}] flux iz={iz}/{n_z-1}')
-    ds_u.close(); ds_w.close()
+            # ligne 2 du système (éq. v)
+            A21 = rho0[iz] * v_all[i_t][mask].mean()
+            A22 = (rho0[iz_hi] * v_hi[i_t][mask].mean()
+                 - rho0[iz_lo] * v_lo[i_t][mask].mean()) / dz
 
-    # ── fit ──
-    z_fit = alt[:idx_tropo].astype(float)
-    p0    = [flux_h[:idx_tropo].min(), 12000.0, 1.5]
-    popt_h, _ = curve_fit(profil_cmt, z_fit, flux_h[:idx_tropo], p0=p0, maxfev=20000)
-    p0s   = [flux_s[:idx_tropo].min(), 12000.0, 1.5]
-    popt_s, _ = curve_fit(profil_cmt, z_fit, flux_s[:idx_tropo], p0=p0s, maxfev=20000)
+            y1 = y_u_h if tag == 'h' else y_u_s
+            y2 = y_v_h if tag == 'h' else y_v_s
 
-    print(f'[{sim}] A_h={popt_h[0]:.4e}  A_s={popt_s[0]:.4e}')
-    return {
-        'h': popt_h[0], 's': popt_s[0],
-        'popt_h': popt_h, 'popt_s': popt_s,
-        'alt': alt, 'rho0': rho0,
-        'flux_h': flux_h, 'flux_s': flux_s,
-        'mh': mh, 'ms': ms,
-        'n_t': n_t, 't_stat': t_stat,
-        'dim_t': dim_t, 'dim_z': dim_z,
-    }
+            M  = np.array([[A11, A12],
+                           [A21, A22]])
+            rhs = np.array([y1, y2])
 
-# Lance les deux (long — commenter si A déjà connu)
-for sim in ['large300', 'small300']:
-    print(f'\n=== {sim} ===')
-    A_fits[sim] = compute_A(sim)
+            det = A11 * A22 - A12 * A21
+            if np.abs(det) < 1e-30:   # système singulier → NaN
+                continue
+
+            sol = np.linalg.solve(M, rhs)
+
+            if tag == 'h':
+                alpha_zt_h[i_iz, i_t] = sol[0]
+                beta_zt_h [i_iz, i_t] = sol[1]
+            else:
+                alpha_zt_s[i_iz, i_t] = sol[0]
+                beta_zt_s [i_iz, i_t] = sol[1]
+
+    del u_all, u_lo, u_hi, v_all, v_lo, v_hi, w_lo, w_hi
+    gc.collect()
+
+    if i_iz % 10 == 0:
+        print(f'  i_iz={i_iz}/{n_z_fit-1}  ({alt[iz]:.0f} m)')
+
+ds_u.close() ; ds_v.close() ; ds_w.close()
+del ds_u, ds_v, ds_w
+gc.collect()
+print('α(z,t) et β(z,t) calculés.')
 
 
 
-# ============================================================
-# BLOC 2 — Flux de masse convectif M(z) — lien direct Romps
-# ============================================================
-# Définition : updraft nuageux = w > 1 m/s ET (clw+cli) > 1e-5 kg/kg
-# M(z) = rho0(z) * <w>_updraft * sigma_updraft   [kg/m²/s]
-
-def compute_M(sim, meta):
-    """Profil M(z) = rho0 * w_updraft * fraction_updraft."""
-    alt   = meta['alt']
-    rho0  = meta['rho0']
-    n_z   = len(alt)
-    n_t   = meta['n_t']
-    t_stat = meta['t_stat']
-    dim_t = meta['dim_t']
-    dim_z = meta['dim_z']
-
-    M_sum    = np.zeros(n_z)
-    n_frames = 0
-
-    ds_w   = xr.open_dataset(path(sim, 'wa'))
-    ds_clw = xr.open_dataset(path(sim, 'clw'))
-    ds_cli = xr.open_dataset(path(sim, 'cli'))
-
-    for it in range(t_stat, n_t):
-        w   = ds_w['wa'].isel({dim_t: it}).values    # (z, y, x)
-        clw = ds_clw['clw'].isel({dim_t: it}).values
-        cli = ds_cli['cli'].isel({dim_t: it}).values
-        mask_up = (w > 1.0) & ((clw + cli) > 1e-5)   # updraft nuageux
-        n_pts   = w.shape[1] * w.shape[2]
-        for iz in range(n_z):
-            m2 = mask_up[iz]
-            if m2.any():
-                M_sum[iz] += rho0[iz] * w[iz][m2].mean() * m2.mean()
-            # m2.mean() = fraction de surface = sigma
-        n_frames += 1
-        del w, clw, cli, mask_up; gc.collect()
-        if it % 20 == 0:
-            print(f'  [{sim}] M it={it}/{n_t-1}')
-
-    ds_w.close(); ds_clw.close(); ds_cli.close()
-    M = M_sum / n_frames
-    print(f'[{sim}] M/rho0 surface ~ {(M/rho0)[0]*100:.2f} cm/s')
-    return M
-
-M = {}
-for sim in ['large300', 'small300']:
-    M[sim] = compute_M(sim, A_fits[sim])
 
 
 
-# ============================================================
-# BLOC 3 — CAPE
-# ============================================================
-# CAPE = intégrale sur la colonne de g*(Tv_parcel - Tv_env)/Tv_env dz
-# On soulève une particule sèche depuis la surface (approx. simple).
-# Pour une CAPE plus précise on peut utiliser les colonnes moyennes.
 
-def compute_CAPE(sim, meta):
-    """CAPE moyen sur le domaine, moyenné sur l'état stationnaire."""
-    alt   = meta['alt']
-    rho0  = meta['rho0']
-    n_z   = len(alt)
-    n_t   = meta['n_t']
-    t_stat = meta['t_stat']
-    dim_t = meta['dim_t']
-    dim_z = meta['dim_z']
+# ── moyenne et écart-type temporels ──
+alpha_h_mean = np.nanmean(alpha_zt_h, axis=1)
+beta_h_mean  = np.nanmean(beta_zt_h,  axis=1)
+alpha_s_mean = np.nanmean(alpha_zt_s, axis=1)
+beta_s_mean  = np.nanmean(beta_zt_s,  axis=1)
 
-    CAPE_sum = 0.0
-    n_frames = 0
+alpha_h_std  = np.nanstd(alpha_zt_h, axis=1)
+beta_h_std   = np.nanstd(beta_zt_h,  axis=1)
 
-    ds_ta  = xr.open_dataset(path(sim, 'ta'))
-    ds_pa  = xr.open_dataset(path(sim, 'pa'))
-    ds_hus = xr.open_dataset(path(sim, 'hus'))
+fig, axes = plt.subplots(1, 2, figsize=(12, 8), sharey=True)
 
-    for it in range(t_stat, n_t, BLOC):
-        t1 = min(it + BLOC, n_t)
-        sl = {dim_t: slice(it, t1)}
+for ax, mean_h, std_h, mean_s, lbl in zip(
+    axes,
+    [alpha_h_mean, beta_h_mean],
+    [alpha_h_std,  beta_h_std],
+    [alpha_s_mean, beta_s_mean],
+    [r'$\alpha(z,t)$', r'$\beta(z,t)$'],
+):
+    ax.plot(mean_h, z_fit_ab, color='royalblue',   lw=2, label='humide (moy. t)')
+    ax.fill_betweenx(z_fit_ab, mean_h - std_h, mean_h + std_h,
+                     color='royalblue', alpha=0.2, label='±1σ')
+    ax.plot(mean_s, z_fit_ab, color='saddlebrown', lw=2, label='sèche (moy. t)')
+    ax.axvline(0, color='grey', alpha=0.4)
+    ax.set_xlabel(lbl)
+    ax.set_title(lbl, fontweight='bold')
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
 
-        T  = ds_ta['ta'].isel(sl).values   # (t, z, y, x)
-        p  = ds_pa['pa'].isel(sl).values
-        qv = ds_hus['hus'].isel(sl).values
-
-        # profils moyens domaine pour chaque t dans le bloc
-        T_bar  = T.mean(axis=(2, 3))   # (t, z)
-        p_bar  = p.mean(axis=(2, 3))
-        qv_bar = qv.mean(axis=(2, 3))
-        Tv_bar = T_bar * (1.0 + qv_bar / EPSILON) / (1.0 + qv_bar)
-
-        for i_t in range(T_bar.shape[0]):
-            Tv_env = Tv_bar[i_t]   # (z,)
-            p_col  = p_bar[i_t]
-
-            # Température virtuelle de la particule soulevée adiabatiquement
-            # depuis la surface — ascension sèche jusqu'au LCL (approx.)
-            # On utilise le gradient adiabatique sec Γd = g/cp
-            Tv_parcel = np.zeros(n_z)
-            Tv_parcel[0] = Tv_env[0]   # ancrage surface
-            for iz in range(1, n_z):
-                dz = alt[iz] - alt[iz - 1]
-                Tv_parcel[iz] = Tv_parcel[iz - 1] - (g / cp) * dz
-
-            # CAPE = somme des couches où la particule est plus chaude
-            buoy = g * (Tv_parcel - Tv_env) / Tv_env
-            cape_col = 0.0
-            for iz in range(n_z - 1):
-                if buoy[iz] > 0:
-                    cape_col += buoy[iz] * (alt[iz + 1] - alt[iz])
-            CAPE_sum += cape_col
-            n_frames += 1
-
-        del T, p, qv, T_bar, p_bar, qv_bar, Tv_bar; gc.collect()
-
-    ds_ta.close(); ds_pa.close(); ds_hus.close()
-    CAPE_mean = CAPE_sum / n_frames
-    print(f'[{sim}] CAPE moyen = {CAPE_mean:.1f} J/kg')
-    return CAPE_mean
-
-CAPE = {}
-for sim in ['large300', 'small300']:
-    CAPE[sim] = compute_CAPE(sim, A_fits[sim])
-
-
-
-# ============================================================
-# BLOC 4 — Cisaillement de vent vertical
-# ============================================================
-# Delta_U = max(ubar) - min(ubar) sur 0–15 km (troposphère)
-# En RCE le vent moyen est quasi nul, donc Delta_U mesure
-# la variabilité verticale résiduelle.
-
-def compute_shear(sim, meta):
-    alt    = meta['alt']
-    n_z    = len(alt)
-    n_t    = meta['n_t']
-    t_stat = meta['t_stat']
-    dim_t  = meta['dim_t']
-    dim_z  = meta['dim_z']
-
-    idx_tropo = np.searchsorted(alt, 15000)
-    ubar = np.zeros(n_z)
-    n_frames = 0
-
-    ds_u = xr.open_dataset(path(sim, 'ua'))
-    for it in range(t_stat, n_t):
-        u2 = ds_u['ua'].isel({dim_t: it}).values   # (z, y, x)
-        ubar += u2.mean(axis=(1, 2))
-        n_frames += 1
-        del u2; gc.collect()
-    ds_u.close()
-    ubar /= n_frames
-
-    ubar_tropo = ubar[:idx_tropo]
-    shear = float(ubar_tropo.max() - ubar_tropo.min())
-    print(f'[{sim}] cisaillement Delta_U = {shear:.3f} m/s')
-    return shear, ubar
-
-shear = {}
-ubar_profiles = {}
-for sim in ['large300', 'small300']:
-    shear[sim], ubar_profiles[sim] = compute_shear(sim, A_fits[sim])
-
-
-
-# ============================================================
-# BLOC 5 — Synthèse : tableau et figures
-# ============================================================
-
-# ── Valeur scalaire de M : moyenne sur 2–12 km (zone convective active)
-def M_scalar(sim, meta):
-    alt  = meta['alt']
-    rho0 = meta['rho0']
-    iz_lo = np.searchsorted(alt, 2000)
-    iz_hi = np.searchsorted(alt, 12000)
-    M_prof = M[sim][iz_lo:iz_hi]
-    r_prof = rho0[iz_lo:iz_hi]
-    # M/rho moyenné = vitesse convective représentative
-    return float(np.mean(M_prof / r_prof))   # m/s
-
-M_scal = {sim: M_scalar(sim, A_fits[sim]) for sim in ['large300', 'small300']}
-
-# ── Tableau récapitulatif ─────────────────────────────────────
-print(f"\n{'':12} {'A_h (kg/m²/s²)':>18} {'A_s':>14} {'CAPE (J/kg)':>14} {'ΔU (m/s)':>12} {'M/ρ (cm/s)':>12}")
-print('-' * 85)
-for sim in ['large300', 'small300']:
-    print(f"{sim:<12} "
-          f"{A_fits[sim]['h']:>18.4e} "
-          f"{A_fits[sim]['s']:>14.4e} "
-          f"{CAPE[sim]:>14.1f} "
-          f"{shear[sim]:>12.3f} "
-          f"{M_scal[sim]*100:>12.3f}")
-
-
-
-# ── Figure 1 : profils M(z)/rho0 comparés ────────────────────
-fig, axes = plt.subplots(1, 3, figsize=(15, 8), sharey=True)
-colors = {'large300': 'royalblue', 'small300': 'tomato'}
-
-for sim in ['large300', 'small300']:
-    alt  = A_fits[sim]['alt']
-    rho0 = A_fits[sim]['rho0']
-    idx  = np.searchsorted(alt, 15000)
-    sl   = slice(None, idx)
-    axes[0].plot(M[sim][sl] / rho0[sl] * 100,
-                 alt[sl], color=colors[sim], lw=2, label=sim)
-
-axes[0].axvline(0, color='grey', alpha=0.4)
-axes[0].set_xlabel('M/ρ₀  (cm/s)')
-axes[0].set_title('Flux de masse convectif', fontweight='bold')
-axes[0].legend(); axes[0].grid(True, alpha=0.3)
 axes[0].set_ylabel('Altitude (m)')
-
-# ── Figure 2 : profils flux Reynolds + fit ───────────────────
-sc = 1e3
-for sim in ['large300', 'small300']:
-    alt  = A_fits[sim]['alt']
-    idx  = np.searchsorted(alt, 15000)
-    z_f  = alt[:idx].astype(float)
-    axes[1].plot(A_fits[sim]['flux_h'][:idx] * sc,
-                 z_f, color=colors[sim], lw=2.5, label=f'{sim} simulation')
-    axes[1].plot(profil_cmt(z_f, *A_fits[sim]['popt_h']) * sc,
-                 z_f, color=colors[sim], lw=1.5, ls='--',
-                 label=f'{sim} fit  A={A_fits[sim]["h"]:.2e}')
-
-axes[1].axvline(0, color='grey', alpha=0.4)
-axes[1].set_xlabel("ρ₀⟨u'w'⟩  (×10⁻³ kg/m²/s²)")
-axes[1].set_title('Flux Reynolds humide + fit', fontweight='bold')
-axes[1].legend(fontsize=8); axes[1].grid(True, alpha=0.3)
-
-# ── Figure 3 : A vs M/ρ (test A ∝ M/ρ à la Romps) ───────────
-sims_list  = ['large300', 'small300']
-A_vals     = np.array([abs(A_fits[s]['h']) for s in sims_list])
-Mrho_vals  = np.array([M_scal[s] for s in sims_list])
-CAPE_vals  = np.array([CAPE[s]   for s in sims_list])
-
-# régression linéaire A ~ k * M/rho (sans constante, à la Romps)
-k_romps = float(np.dot(A_vals, Mrho_vals) / np.dot(Mrho_vals, Mrho_vals))
-x_line  = np.linspace(0, Mrho_vals.max() * 1.3, 100)
-
-ax3 = axes[2]
-for i, sim in enumerate(sims_list):
-    ax3.scatter(Mrho_vals[i] * 100, A_vals[i] * sc,
-                color=colors[sim], s=120, zorder=5, label=sim)
-    ax3.annotate(sim, (Mrho_vals[i]*100, A_vals[i]*sc),
-                 textcoords='offset points', xytext=(6, 4), fontsize=9)
-
-ax3.plot(x_line * 100, k_romps * x_line * sc,
-         'k--', lw=1.5, label=f'A = {k_romps:.3f} · M/ρ')
-ax3.set_xlabel('M/ρ₀  moyen 2–12 km  (cm/s)')
-ax3.set_ylabel('|A|  (×10⁻³ kg/m²/s²)')
-ax3.set_title('Test A ∝ M/ρ  (Romps 2014)', fontweight='bold')
-ax3.legend(fontsize=9); ax3.grid(True, alpha=0.3)
-
-plt.suptitle('§20 — A vs variables grandes échelles\nlarge300 vs small300',
+plt.suptitle(r'§18v — $\alpha(z,t)$, $\beta(z,t)$ via système 2×2 (éq. $u$ + éq. $v$)',
              fontsize=13, fontweight='bold')
 plt.tight_layout()
-plt.savefig('fig_§20_A_grandes_echelles.png', dpi=150, bbox_inches='tight')
 plt.show()
-
-
-# ── Figure 4 : résumé CAPE et cisaillement ───────────────────
-fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-
-labels = ['large300', 'small300']
-x      = np.arange(len(labels))
-
-axes[0].bar(x, [CAPE[s] for s in labels],
-            color=[colors[s] for s in labels], width=0.4)
-axes[0].set_xticks(x); axes[0].set_xticklabels(labels)
-axes[0].set_ylabel('CAPE (J/kg)')
-axes[0].set_title('CAPE moyen', fontweight='bold')
-axes[0].grid(True, alpha=0.3, axis='y')
-
-axes[1].bar(x, [shear[s] for s in labels],
-            color=[colors[s] for s in labels], width=0.4)
-axes[1].set_xticks(x); axes[1].set_xticklabels(labels)
-axes[1].set_ylabel('ΔU (m/s)')
-axes[1].set_title('Cisaillement vertical ΔU', fontweight='bold')
-axes[1].grid(True, alpha=0.3, axis='y')
-
-plt.suptitle('§20 — Variables grandes échelles', fontweight='bold')
-plt.tight_layout()
-plt.savefig('fig_§20_CAPE_shear.png', dpi=150, bbox_inches='tight')
-plt.show()
-
-# ── Interprétation rapide ─────────────────────────────────────
-print('\n── Interprétation ──')
-print(f'Ratio A_large/A_small   = {abs(A_fits["large300"]["h"]) / abs(A_fits["small300"]["h"]):.3f}')
-print(f'Ratio (M/ρ)_large/small = {M_scal["large300"] / M_scal["small300"]:.3f}')
-print(f'Ratio CAPE_large/small  = {CAPE["large300"] / CAPE["small300"]:.3f}')
-print()
-print('Si Ratio_A ≈ Ratio_M/ρ → loi A ∝ M/ρ confirmée (Romps 2014)')
-print('Si Ratio_A ≈ Ratio_CAPE^0.5 → loi A ∝ sqrt(CAPE) plausible')
-
 
 
 
