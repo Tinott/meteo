@@ -143,3 +143,62 @@ plt.show()
 
 
 
+
+
+
+
+# ── Vérification reconstruction §18v ──────────────────────────────────
+# Prendre un niveau et un pas de temps arbitraires
+i_iz_test = 20
+i_t_test  = 5
+iz        = iz_lo_glob + i_iz_test
+iz_lo     = iz - 1
+iz_hi     = iz + 1
+dz        = alt[iz_hi] - alt[iz_lo]
+
+ds_u = xr.open_dataset(path3d('ua'))
+ds_v = xr.open_dataset(path3d('va'))
+ds_w = xr.open_dataset(path3d('wa'))
+
+it = t_stat + i_t_test
+
+u_2d  = ds_u['ua'].isel({dim_t: it, dim_z: iz   }).values
+u_lo_ = ds_u['ua'].isel({dim_t: it, dim_z: iz_lo}).values
+u_hi_ = ds_u['ua'].isel({dim_t: it, dim_z: iz_hi}).values
+v_2d  = ds_v['va'].isel({dim_t: it, dim_z: iz   }).values
+v_lo_ = ds_v['va'].isel({dim_t: it, dim_z: iz_lo}).values
+v_hi_ = ds_v['va'].isel({dim_t: it, dim_z: iz_hi}).values
+w_lo_ = ds_w['wa'].isel({dim_t: it, dim_z: iz_lo}).values
+w_hi_ = ds_w['wa'].isel({dim_t: it, dim_z: iz_hi}).values
+
+ds_u.close(); ds_v.close(); ds_w.close()
+
+# ── recalcul y_u et y_v (membres droits) ──
+u_p_lo = u_lo_ - u_lo_.mean(); u_p_hi = u_hi_ - u_hi_.mean()
+v_p_lo = v_lo_ - v_lo_.mean(); v_p_hi = v_hi_ - v_hi_.mean()
+w_p_lo = w_lo_ - w_lo_.mean(); w_p_hi = w_hi_ - w_hi_.mean()
+
+y_u_h = ((rho0[iz_hi]*u_p_hi*w_p_hi)[mh].mean()
+        - (rho0[iz_lo]*u_p_lo*w_p_lo)[mh].mean()) / dz
+y_v_h = ((rho0[iz_hi]*v_p_hi*w_p_hi)[mh].mean()
+        - (rho0[iz_lo]*v_p_lo*w_p_lo)[mh].mean()) / dz
+
+# ── recalcul x1, x2 pour u et v (membres gauches) ──
+x1_u = rho0[iz] * u_2d[mh].mean()
+x2_u = (rho0[iz_hi]*u_hi_[mh].mean() - rho0[iz_lo]*u_lo_[mh].mean()) / dz
+x1_v = rho0[iz] * v_2d[mh].mean()
+x2_v = (rho0[iz_hi]*v_hi_[mh].mean() - rho0[iz_lo]*v_lo_[mh].mean()) / dz
+
+# ── reconstruction ──
+a = alpha_zt_h[i_iz_test, i_t_test]
+b = beta_zt_h [i_iz_test, i_t_test]
+
+yhat_u = a * x1_u + b * x2_u
+yhat_v = a * x1_v + b * x2_v
+
+print(f'Niveau z = {alt[iz]:.0f} m,  pas de temps i_t = {i_t_test}')
+print(f'  α = {a:.6e},  β = {b:.6e}')
+print()
+print(f'  y_u  = {y_u_h:.6e}   ŷ_u  = {yhat_u:.6e}   Δ = {abs(y_u_h - yhat_u):.2e}')
+print(f'  y_v  = {y_v_h:.6e}   ŷ_v  = {yhat_v:.6e}   Δ = {abs(y_v_h - yhat_v):.2e}')
+
