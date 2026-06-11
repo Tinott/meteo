@@ -240,3 +240,90 @@ ax.legend(fontsize=10)
 ax.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.show()
+
+
+
+
+
+
+
+# ── Moyennes temporelles de dz(rho0 u'w') et dz(rho0 v'w') par région ─
+dz_flux_u_h = np.zeros(n_z_fit)
+dz_flux_u_s = np.zeros(n_z_fit)
+dz_flux_v_h = np.zeros(n_z_fit)
+dz_flux_v_s = np.zeros(n_z_fit)
+
+ds_u = xr.open_dataset(path3d('ua'))
+ds_v = xr.open_dataset(path3d('va'))
+ds_w = xr.open_dataset(path3d('wa'))
+
+for i_iz, iz in enumerate(range(iz_lo_glob, iz_hi_glob)):
+
+    iz_lo = iz - 1
+    iz_hi = iz + 1
+    dz    = alt[iz_hi] - alt[iz_lo]
+
+    acc_u_h = 0.0 ; acc_u_s = 0.0
+    acc_v_h = 0.0 ; acc_v_s = 0.0
+    n = 0
+
+    for it in range(t_stat, n_t):
+        u_lo_ = ds_u['ua'].isel({dim_t: it, dim_z: iz_lo}).values
+        u_hi_ = ds_u['ua'].isel({dim_t: it, dim_z: iz_hi}).values
+        v_lo_ = ds_v['va'].isel({dim_t: it, dim_z: iz_lo}).values
+        v_hi_ = ds_v['va'].isel({dim_t: it, dim_z: iz_hi}).values
+        w_lo_ = ds_w['wa'].isel({dim_t: it, dim_z: iz_lo}).values
+        w_hi_ = ds_w['wa'].isel({dim_t: it, dim_z: iz_hi}).values
+
+        u_p_lo = u_lo_ - u_lo_.mean() ; u_p_hi = u_hi_ - u_hi_.mean()
+        v_p_lo = v_lo_ - v_lo_.mean() ; v_p_hi = v_hi_ - v_hi_.mean()
+        w_p_lo = w_lo_ - w_lo_.mean() ; w_p_hi = w_hi_ - w_hi_.mean()
+
+        acc_u_h += ((rho0[iz_hi]*u_p_hi*w_p_hi)[mh].mean()
+                  - (rho0[iz_lo]*u_p_lo*w_p_lo)[mh].mean()) / dz
+        acc_u_s += ((rho0[iz_hi]*u_p_hi*w_p_hi)[ms].mean()
+                  - (rho0[iz_lo]*u_p_lo*w_p_lo)[ms].mean()) / dz
+        acc_v_h += ((rho0[iz_hi]*v_p_hi*w_p_hi)[mh].mean()
+                  - (rho0[iz_lo]*v_p_lo*w_p_lo)[mh].mean()) / dz
+        acc_v_s += ((rho0[iz_hi]*v_p_hi*w_p_hi)[ms].mean()
+                  - (rho0[iz_lo]*v_p_lo*w_p_lo)[ms].mean()) / dz
+        n += 1
+        del u_lo_, u_hi_, v_lo_, v_hi_, w_lo_, w_hi_
+        del u_p_lo, u_p_hi, v_p_lo, v_p_hi, w_p_lo, w_p_hi
+        gc.collect()
+
+    dz_flux_u_h[i_iz] = acc_u_h / n
+    dz_flux_u_s[i_iz] = acc_u_s / n
+    dz_flux_v_h[i_iz] = acc_v_h / n
+    dz_flux_v_s[i_iz] = acc_v_s / n
+
+    if i_iz % 10 == 0:
+        print(f'  i_iz={i_iz}/{n_z_fit-1}  ({alt[iz]:.0f} m)')
+
+ds_u.close() ; ds_v.close() ; ds_w.close()
+del ds_u, ds_v, ds_w
+gc.collect()
+print('dz_flux calculés.')
+
+# ── Visualisation ──────────────────────────────────────────────────────
+fig, axes = plt.subplots(1, 2, figsize=(13, 9), sharey=True)
+
+axes[0].plot(dz_flux_u_h * 1e5, z_fit_ab, color='royalblue',   lw=2.5, label='humide')
+axes[0].plot(dz_flux_u_s * 1e5, z_fit_ab, color='saddlebrown', lw=2.5, label='sèche')
+axes[0].axvline(0, color='grey', alpha=0.4)
+axes[0].set_xlabel(r"$\partial_z(\rho_0\,\overline{u'w'})$  (×10⁻⁵ kg/m³/s²)")
+axes[0].set_title(r"$\partial_z(\rho_0\overline{u'w'})$", fontweight='bold')
+axes[0].legend(fontsize=10) ; axes[0].grid(True, alpha=0.3)
+
+axes[1].plot(dz_flux_v_h * 1e5, z_fit_ab, color='royalblue',   lw=2.5, label='humide')
+axes[1].plot(dz_flux_v_s * 1e5, z_fit_ab, color='saddlebrown', lw=2.5, label='sèche')
+axes[1].axvline(0, color='grey', alpha=0.4)
+axes[1].set_xlabel(r"$\partial_z(\rho_0\,\overline{v'w'})$  (×10⁻⁵ kg/m³/s²)")
+axes[1].set_title(r"$\partial_z(\rho_0\overline{v'w'})$", fontweight='bold')
+axes[1].legend(fontsize=10) ; axes[1].grid(True, alpha=0.3)
+
+axes[0].set_ylabel('Altitude (m)')
+plt.suptitle(r"$\partial_z(\rho_0\overline{u'w'})$ et $\partial_z(\rho_0\overline{v'w'})$ — 2–18 km",
+             fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
