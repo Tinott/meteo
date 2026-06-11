@@ -164,3 +164,29 @@ plt.suptitle(r'§18v — Distributions temporelles $\alpha$, $\beta$ par niveau 
              fontsize=13, fontweight='bold')
 plt.tight_layout()
 plt.show()
+
+
+
+
+
+
+
+
+# ── dérivée verticale du flux de Reynolds dz(rho0 u'w') ──────────────
+dz_flux_glob_h = np.gradient(flux_glob_h, alt)
+dz_flux_glob_s = np.gradient(flux_glob_s, alt)
+
+fig, ax = plt.subplots(figsize=(7, 9))
+sl = slice(None, idx_tropo)
+
+ax.plot(dz_flux_glob_h[sl] * 1e5, alt[sl], color='royalblue',   lw=2.5, label='humide')
+ax.plot(dz_flux_glob_s[sl] * 1e5, alt[sl], color='saddlebrown', lw=2.5, label='sèche')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel(r'$\partial_z(\rho_0\,\overline{u\'w\'})$  (×10⁻⁵ kg/m³/s²)')
+ax.set_ylabel('Altitude (m)')
+ax.set_title(r'Dérivée verticale du flux de Reynolds $\partial_z(\rho_0\overline{u\'w\'})$'
+             '\nhumide vs sèche', fontweight='bold')
+ax.legend(fontsize=10)
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()
