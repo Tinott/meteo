@@ -131,5 +131,36 @@ plt.show()
 
 
 
+fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+pairs = [('HUMIDE α', alpha_zt_h, axes[0, 0]),
+         ('HUMIDE β', beta_zt_h,  axes[0, 1]),
+         ('SÈCHE α',  alpha_zt_s, axes[1, 0]),
+         ('SÈCHE β',  beta_zt_s,  axes[1, 1])]
 
-pareil pour le deuxieme graph
+colors_z = plt.cm.plasma(np.linspace(0.1, 0.9, len(iz_targets)))
+
+for title, arr, ax in pairs:
+    # ── filtre ±3σ global ──
+    mu  = np.nanmean(arr)
+    sig = np.nanstd(arr)
+    lo, hi = mu - 3*sig, mu + 3*sig
+    arr_filt = arr.copy()
+    arr_filt[(arr_filt < lo) | (arr_filt > hi)] = np.nan
+
+    for iz_t, zt, c in zip(iz_targets, z_targets, colors_z):
+        data = arr_filt[iz_t, :]
+        data = data[~np.isnan(data)]
+        ax.hist(data, bins=30, color=c, alpha=0.55, density=True,
+                label=f'z={zt//1000} km')
+
+    ax.axvline(0, color='grey', alpha=0.5)
+    ax.set_title(title, fontweight='bold')
+    ax.set_xlabel('valeur du paramètre')
+    ax.set_ylabel('densité')
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+plt.suptitle(r'§18v — Distributions temporelles $\alpha$, $\beta$ par niveau — outliers exclus (±3σ)',
+             fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
