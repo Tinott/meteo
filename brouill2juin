@@ -1,78 +1,74 @@
-fig, axes = plt.subplots(1, 2, figsize=(16, 8))
-
-pairs = [('HUMIDE α', alpha_zt_h), ('HUMIDE β', beta_zt_h),
-         ('SÈCHE α',  alpha_zt_s), ('SÈCHE β',  beta_zt_s)]
-
-colors_reg = {'HUMIDE α': 'royalblue', 'HUMIDE β': 'royalblue',
-              'SÈCHE α':  'saddlebrown','SÈCHE β': 'saddlebrown'}
-ls_param   = {'α': '-', 'β': '--'}
-
-# ── gauche : KDE de TOUTES les valeurs (tous z, tous t confondus) ──────
-ax = axes[0]
 from scipy.stats import gaussian_kde
 
-for title, arr in pairs:
-    vals = arr[np.isfinite(arr)].ravel()
-    p1, p99 = np.percentile(vals, [0.5, 99.5])
-    xs = np.linspace(p1, p99, 500)
-    kde = gaussian_kde(vals, bw_method=0.15)
-    param = title.split()[-1]   # 'α' ou 'β'
-    ax.plot(xs, kde(xs),
-            color=colors_reg[title],
-            ls=ls_param[param],
-            lw=2, label=title)
+fig, axes = plt.subplots(1, 2, figsize=(16, 7))
 
-ax.axvline(0, color='grey', alpha=0.5, lw=1)
+# ── couleurs et styles ──────────────────────────────────────────────────
+style = {
+    'HUMIDE α': dict(arr=alpha_zt_h, color='royalblue',   ls='-',  lw=2.0),
+    'HUMIDE β': dict(arr=beta_zt_h,  color='royalblue',   ls='--', lw=2.0),
+    'SÈCHE α':  dict(arr=alpha_zt_s, color='saddlebrown', ls='-',  lw=2.0),
+    'SÈCHE β':  dict(arr=beta_zt_s,  color='saddlebrown', ls='--', lw=2.0),
+}
+
+# ════════════════════════════════════════════════════════════════════════
+# GAUCHE — KDE de toutes les valeurs (tous z, tous t confondus)
+# ════════════════════════════════════════════════════════════════════════
+ax = axes[0]
+for label, s in style.items():
+    vals = s['arr'].ravel()
+    vals = vals[np.isfinite(vals)]
+    p1, p99 = np.percentile(vals, [1, 99])
+    xs  = np.linspace(p1, p99, 600)
+    kde = gaussian_kde(vals, bw_method=0.12)
+    ax.plot(xs, kde(xs), color=s['color'], ls=s['ls'], lw=s['lw'], label=label)
+
+ax.axvline(0, color='grey', lw=1, alpha=0.5)
 ax.set_xlabel('valeur du paramètre')
 ax.set_ylabel('densité')
-ax.set_title('Distribution globale (tous z, tous t)', fontweight='bold')
+ax.set_title('Distribution globale — tous z, tous t', fontweight='bold')
 ax.legend(fontsize=9)
 ax.grid(True, alpha=0.3)
 
-# ── droite : 3 niveaux les plus pertinents, histogrammes bien séparés ──
-# niveaux pertinents : bas (BL/bas de couche convective), mi-troposphère, sommet
-z_key   = [2000, 6000, 10000]
-labels_z = ['2 km (base convective)', '6 km (mi-tropo)', '10 km (sommet convectif)']
-colors_z  = ['#e41a1c', '#ff7f00', '#984ea3']   # rouge / orange / violet : bien distincts
-OFFSET    = 0.0   # pas de décalage vertical : histogrammes normaux mais semi-transparents
+# ════════════════════════════════════════════════════════════════════════
+# DROITE — histogrammes à 3 niveaux clés, bien séparés par région/param
+# ════════════════════════════════════════════════════════════════════════
+# 3 niveaux : base convective, max du flux Reynolds (~zc/(1+n)), sommet
+z_key    = [2000, int(zc_h / (1 + n_h)), 10000]   # adapté à ton fit §17
+labels_z = [f'{z//1000} km' for z in z_key]
+colors_z = ['#e41a1c', '#ff7f00', '#4dac26']       # rouge / orange / vert
 
 ax = axes[1]
+BW = 0.15
 
-for title, arr in pairs:
+for label, s in style.items():
     iz_keys = [np.argmin(np.abs(z_fit_ab - zt)) for zt in z_key]
-    param   = title.split()[-1]
-    reg     = title.split()[0]
-
-    # un seul panneau : on choisit HUMIDE α et HUMIDE β, SÈCHE α et SÈCHE β
-    # → trop chargé sur un seul axe. On superpose les 4 combinaisons par z
-    # avec ls + couleur pour les distinguer.
-
-ax2 = axes[1]
-for title, arr in pairs:
-    iz_keys = [np.argmin(np.abs(z_fit_ab - zt)) for zt in z_key]
-    param   = title.split()[-1]
-    for iz_t, zt, cz, lbl_z in zip(iz_keys, z_key, colors_z, labels_z):
-        data = arr[iz_t, :]
+    for iz_t, lbl_z, cz in zip(iz_keys, labels_z, colors_z):
+        data = s['arr'][iz_t, :]
         data = data[np.isfinite(data)]
         if data.size < 5:
             continue
         p1, p99 = np.percentile(data, [1, 99])
-        xs = np.linspace(p1, p99, 300)
-        kde = gaussian_kde(data, bw_method=0.2)
-        ax2.plot(xs, kde(xs),
-                 color=cz,
-                 ls=ls_param[param],
-                 lw=2 if 'HUMIDE' in title else 1.2,
-                 alpha=0.85,
-                 label=f'{title} — {lbl_z}' if param == 'α' else None)
+        xs  = np.linspace(p1, p99, 400)
+        kde = gaussian_kde(data, bw_method=BW)
+        # label uniquement sur la première combinaison pour éviter la légende en double
+        lbl = f'{lbl_z}' if label == 'HUMIDE α' else None
+        ax.plot(xs, kde(xs),
+                color=cz, ls=s['ls'], lw=s['lw'],
+                alpha=0.85, label=lbl)
 
-ax2.axvline(0, color='grey', alpha=0.5, lw=1)
-ax2.set_xlabel('valeur du paramètre')
-ax2.set_ylabel('densité')
-ax2.set_title('3 niveaux clés  (— α   -- β,   épais=humide)',
-              fontweight='bold')
-ax2.legend(fontsize=7, ncol=1)
-ax2.grid(True, alpha=0.3)
+# légendes manuelles : couleur = altitude, style = param/région
+from matplotlib.lines import Line2D
+leg_z = [Line2D([0],[0], color=c, lw=2, label=l)
+         for c, l in zip(colors_z, labels_z)]
+leg_s = [Line2D([0],[0], color='grey', ls='-',  lw=2, label='α  (humide épais / sèche fin)'),
+         Line2D([0],[0], color='grey', ls='--', lw=2, label='β  (humide épais / sèche fin)')]
+ax.legend(handles=leg_z + leg_s, fontsize=8, ncol=1)
+
+ax.axvline(0, color='grey', lw=1, alpha=0.5)
+ax.set_xlabel('valeur du paramètre')
+ax.set_ylabel('densité')
+ax.set_title('3 niveaux clés — KDE par (région, param, altitude)', fontweight='bold')
+ax.grid(True, alpha=0.3)
 
 plt.suptitle(r'§18v — Distributions de $\alpha(z,t)$ et $\beta(z,t)$',
              fontsize=13, fontweight='bold')
