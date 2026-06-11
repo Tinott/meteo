@@ -126,3 +126,10 @@ plt.suptitle(r'§18v — $\alpha(z,t)$ et $\beta(z,t)$ — outliers exclus (±3�
              fontsize=13, fontweight='bold')
 plt.tight_layout()
 plt.show()
+
+
+
+
+
+
+pareil pour le deuxieme graph
