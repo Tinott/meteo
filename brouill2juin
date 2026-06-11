@@ -215,3 +215,28 @@ ax.legend(fontsize=10)
 ax.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.show()
+
+
+
+
+
+
+
+sl_ab = (alt >= 2000) & (alt <= 18000)
+
+dz_flux_glob_h = np.gradient(flux_glob_h, alt)
+dz_flux_glob_s = np.gradient(flux_glob_s, alt)
+
+fig, ax = plt.subplots(figsize=(7, 9))
+
+ax.plot(dz_flux_glob_h[sl_ab] * 1e5, alt[sl_ab], color='royalblue',   lw=2.5, label='humide')
+ax.plot(dz_flux_glob_s[sl_ab] * 1e5, alt[sl_ab], color='saddlebrown', lw=2.5, label='sèche')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel(r'$\partial_z(\rho_0\,\overline{u\'w\'})$  (×10⁻⁵ kg/m³/s²)')
+ax.set_ylabel('Altitude (m)')
+ax.set_title(r'$\partial_z(\rho_0\overline{u\'w\'})$ — humide vs sèche'
+             '\n(2–18 km)', fontweight='bold')
+ax.legend(fontsize=10)
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()
