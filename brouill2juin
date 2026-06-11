@@ -1,329 +1,80 @@
-i_t_show = np.arange(n_stat_it)
-cmap     = plt.cm.viridis
+fig, axes = plt.subplots(1, 2, figsize=(16, 8))
 
-fig, axes = plt.subplots(2, 2, figsize=(14, 12), sharey=True)
-titles = [('HUMIDE', alpha_zt_h, beta_zt_h),
-          ('SÈCHE',  alpha_zt_s, beta_zt_s)]
+pairs = [('HUMIDE α', alpha_zt_h), ('HUMIDE β', beta_zt_h),
+         ('SÈCHE α',  alpha_zt_s), ('SÈCHE β',  beta_zt_s)]
 
-for col, (region, alpha_zt, beta_zt) in enumerate(titles):
-    for k, i_t in enumerate(i_t_show):
-        c = cmap(k / (n_stat_it - 1))
-        axes[0, col].plot(alpha_zt[:, i_t], z_fit_ab, color=c, lw=0.8, alpha=0.5)
-        axes[1, col].plot(beta_zt[:, i_t],  z_fit_ab, color=c, lw=0.8, alpha=0.5)
+colors_reg = {'HUMIDE α': 'royalblue', 'HUMIDE β': 'royalblue',
+              'SÈCHE α':  'saddlebrown','SÈCHE β': 'saddlebrown'}
+ls_param   = {'α': '-', 'β': '--'}
 
-    # moyenne temporelle par-dessus
-    axes[0, col].plot(np.nanmean(alpha_zt, axis=1), z_fit_ab,
-                      color='red', lw=2.5, label='moyenne')
-    axes[1, col].plot(np.nanmean(beta_zt,  axis=1), z_fit_ab,
-                      color='red', lw=2.5, label='moyenne')
+# ── gauche : KDE de TOUTES les valeurs (tous z, tous t confondus) ──────
+ax = axes[0]
+from scipy.stats import gaussian_kde
 
-    for row, lbl in enumerate([r'$\alpha(z)$', r'$\beta(z)$']):
-        axes[row, col].axvline(0, color='grey', alpha=0.4)
-        axes[row, col].set_title(f'{region} — {lbl}', fontweight='bold')
-        axes[row, col].grid(True, alpha=0.3)
-        axes[row, col].legend(fontsize=9)
-        if col == 0:
-            axes[row, col].set_ylabel('Altitude (m)')
+for title, arr in pairs:
+    vals = arr[np.isfinite(arr)].ravel()
+    p1, p99 = np.percentile(vals, [0.5, 99.5])
+    xs = np.linspace(p1, p99, 500)
+    kde = gaussian_kde(vals, bw_method=0.15)
+    param = title.split()[-1]   # 'α' ou 'β'
+    ax.plot(xs, kde(xs),
+            color=colors_reg[title],
+            ls=ls_param[param],
+            lw=2, label=title)
 
-    axes[1, col].set_xlabel('valeur du paramètre')
+ax.axvline(0, color='grey', alpha=0.5, lw=1)
+ax.set_xlabel('valeur du paramètre')
+ax.set_ylabel('densité')
+ax.set_title('Distribution globale (tous z, tous t)', fontweight='bold')
+ax.legend(fontsize=9)
+ax.grid(True, alpha=0.3)
 
-sm = plt.cm.ScalarMappable(cmap=cmap,
-     norm=plt.Normalize(vmin=t_stat, vmax=t_stat + n_stat_it - 1))
-sm.set_array([])
-fig.colorbar(sm, ax=axes, orientation='vertical', fraction=0.02, pad=0.02,
-             label='pas de temps')
-plt.suptitle(r'§18v — Profils verticaux $\alpha(z,t)$ et $\beta(z,t)$ — tous les $t$',
-             fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
+# ── droite : 3 niveaux les plus pertinents, histogrammes bien séparés ──
+# niveaux pertinents : bas (BL/bas de couche convective), mi-troposphère, sommet
+z_key   = [2000, 6000, 10000]
+labels_z = ['2 km (base convective)', '6 km (mi-tropo)', '10 km (sommet convectif)']
+colors_z  = ['#e41a1c', '#ff7f00', '#984ea3']   # rouge / orange / violet : bien distincts
+OFFSET    = 0.0   # pas de décalage vertical : histogrammes normaux mais semi-transparents
 
+ax = axes[1]
 
+for title, arr in pairs:
+    iz_keys = [np.argmin(np.abs(z_fit_ab - zt)) for zt in z_key]
+    param   = title.split()[-1]
+    reg     = title.split()[0]
 
+    # un seul panneau : on choisit HUMIDE α et HUMIDE β, SÈCHE α et SÈCHE β
+    # → trop chargé sur un seul axe. On superpose les 4 combinaisons par z
+    # avec ls + couleur pour les distinguer.
 
-
-
-
-
-
-
-
-# ── Figure 2 : distributions temporelles à quelques z choisis ─────────
-z_targets  = [2000, 4000, 6000, 8000, 10000]  # altitudes cibles (m)
-iz_targets = [np.argmin(np.abs(z_fit_ab - zt)) for zt in z_targets]
-
-fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-pairs = [('HUMIDE α', alpha_zt_h, axes[0, 0]),
-         ('HUMIDE β', beta_zt_h,  axes[0, 1]),
-         ('SÈCHE α',  alpha_zt_s, axes[1, 0]),
-         ('SÈCHE β',  beta_zt_s,  axes[1, 1])]
-
-colors_z = plt.cm.plasma(np.linspace(0.1, 0.9, len(iz_targets)))
-
-for title, arr, ax in pairs:
-    for iz_t, zt, c in zip(iz_targets, z_targets, colors_z):
+ax2 = axes[1]
+for title, arr in pairs:
+    iz_keys = [np.argmin(np.abs(z_fit_ab - zt)) for zt in z_key]
+    param   = title.split()[-1]
+    for iz_t, zt, cz, lbl_z in zip(iz_keys, z_key, colors_z, labels_z):
         data = arr[iz_t, :]
-        data = data[~np.isnan(data)]
-        ax.hist(data, bins=30, color=c, alpha=0.55, density=True,
-                label=f'z={zt//1000} km')
-    ax.axvline(0, color='grey', alpha=0.5)
-    ax.set_title(title, fontweight='bold')
-    ax.set_xlabel('valeur du paramètre')
-    ax.set_ylabel('densité')
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3)
-
-plt.suptitle(r'§18v — Distributions temporelles de $\alpha$ et $\beta$ par niveau',
-             fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
-
-
-
-
-
-
-fig, axes = plt.subplots(2, 2, figsize=(14, 12), sharey=True)
-titles = [('HUMIDE', alpha_zt_h, beta_zt_h),
-          ('SÈCHE',  alpha_zt_s, beta_zt_s)]
-
-for col, (region, alpha_zt, beta_zt) in enumerate(titles):
-    for row, (arr, lbl) in enumerate([(alpha_zt, r'$\alpha(z)$'),
-                                       (beta_zt,  r'$\beta(z)$')]):
-        ax = axes[row, col]
-
-        # ── seuils ±3σ globaux (sur tous z et t) ──
-        mu  = np.nanmean(arr)
-        sig = np.nanstd(arr)
-        lo, hi = mu - 3*sig, mu + 3*sig
-
-        for k in range(n_stat_it):
-            profil = arr[:, k].copy()
-            profil[(profil < lo) | (profil > hi)] = np.nan
-            c = cmap(k / (n_stat_it - 1))
-            ax.plot(profil, z_fit_ab, color=c, lw=0.8, alpha=0.5)
-
-        # moyenne temporelle (après filtrage)
-        arr_filt = arr.copy()
-        arr_filt[(arr_filt < lo) | (arr_filt > hi)] = np.nan
-        ax.plot(np.nanmean(arr_filt, axis=1), z_fit_ab,
-                color='red', lw=2.5, label='moyenne')
-
-        ax.axvline(0, color='grey', alpha=0.4)
-        ax.set_title(f'{region} — {lbl}', fontweight='bold')
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=9)
-        if col == 0:
-            ax.set_ylabel('Altitude (m)')
-        if row == 1:
-            ax.set_xlabel('valeur du paramètre')
-
-sm = plt.cm.ScalarMappable(cmap=cmap,
-     norm=plt.Normalize(vmin=t_stat, vmax=t_stat + n_stat_it - 1))
-sm.set_array([])
-fig.colorbar(sm, ax=axes, orientation='vertical', fraction=0.02, pad=0.02,
-             label='pas de temps')
-plt.suptitle(r'§18v — $\alpha(z,t)$ et $\beta(z,t)$ — outliers exclus (±3σ)',
-             fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
-
-
-
-
-
-fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-pairs = [('HUMIDE α', alpha_zt_h, axes[0, 0]),
-         ('HUMIDE β', beta_zt_h,  axes[0, 1]),
-         ('SÈCHE α',  alpha_zt_s, axes[1, 0]),
-         ('SÈCHE β',  beta_zt_s,  axes[1, 1])]
-
-colors_z = plt.cm.plasma(np.linspace(0.1, 0.9, len(iz_targets)))
-
-for title, arr, ax in pairs:
-    # ── filtre ±3σ global ──
-    mu  = np.nanmean(arr)
-    sig = np.nanstd(arr)
-    lo, hi = mu - 3*sig, mu + 3*sig
-    arr_filt = arr.copy()
-    arr_filt[(arr_filt < lo) | (arr_filt > hi)] = np.nan
-
-    for iz_t, zt, c in zip(iz_targets, z_targets, colors_z):
-        data = arr_filt[iz_t, :]
-        data = data[~np.isnan(data)]
-        ax.hist(data, bins=30, color=c, alpha=0.55, density=True,
-                label=f'z={zt//1000} km')
-
-    ax.axvline(0, color='grey', alpha=0.5)
-    ax.set_title(title, fontweight='bold')
-    ax.set_xlabel('valeur du paramètre')
-    ax.set_ylabel('densité')
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3)
-
-plt.suptitle(r'§18v — Distributions temporelles $\alpha$, $\beta$ par niveau — outliers exclus (±3σ)',
-             fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
-
-
-
-
-
-
-
-
-# ── dérivée verticale du flux de Reynolds dz(rho0 u'w') ──────────────
-dz_flux_glob_h = np.gradient(flux_glob_h, alt)
-dz_flux_glob_s = np.gradient(flux_glob_s, alt)
-
-fig, ax = plt.subplots(figsize=(7, 9))
-sl = slice(None, idx_tropo)
-
-ax.plot(dz_flux_glob_h[sl] * 1e5, alt[sl], color='royalblue',   lw=2.5, label='humide')
-ax.plot(dz_flux_glob_s[sl] * 1e5, alt[sl], color='saddlebrown', lw=2.5, label='sèche')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel(r'$\partial_z(\rho_0\,\overline{u\'w\'})$  (×10⁻⁵ kg/m³/s²)')
-ax.set_ylabel('Altitude (m)')
-ax.set_title(r'Dérivée verticale du flux de Reynolds $\partial_z(\rho_0\overline{u\'w\'})$'
-             '\nhumide vs sèche', fontweight='bold')
-ax.legend(fontsize=10)
-ax.grid(True, alpha=0.3)
-plt.tight_layout()
-plt.show()
-
-
-
-
-
-
-
-# ── dérivée verticale du flux de Reynolds dz(rho0 u'w') ──────────────
-dz_flux_glob_h = np.gradient(flux_glob_h, alt)
-dz_flux_glob_s = np.gradient(flux_glob_s, alt)
-
-fig, ax = plt.subplots(figsize=(7, 9))
-sl = slice(None, idx_tropo)
-
-ax.plot(dz_flux_glob_h[sl] * 1e5, alt[sl], color='royalblue',   lw=2.5, label='humide')
-ax.plot(dz_flux_glob_s[sl] * 1e5, alt[sl], color='saddlebrown', lw=2.5, label='sèche')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel(r'$\partial_z(\rho_0\,\overline{u\'w\'})$  (×10⁻⁵ kg/m³/s²)')
-ax.set_ylabel('Altitude (m)')
-ax.set_title(r'Dérivée verticale du flux de Reynolds $\partial_z(\rho_0\overline{u\'w\'})$'
-             '\nhumide vs sèche', fontweight='bold')
-ax.legend(fontsize=10)
-ax.grid(True, alpha=0.3)
-plt.tight_layout()
-plt.show()
-
-
-
-
-
-
-
-sl_ab = (alt >= 2000) & (alt <= 18000)
-
-dz_flux_glob_h = np.gradient(flux_glob_h, alt)
-dz_flux_glob_s = np.gradient(flux_glob_s, alt)
-
-fig, ax = plt.subplots(figsize=(7, 9))
-
-ax.plot(dz_flux_glob_h[sl_ab] * 1e5, alt[sl_ab], color='royalblue',   lw=2.5, label='humide')
-ax.plot(dz_flux_glob_s[sl_ab] * 1e5, alt[sl_ab], color='saddlebrown', lw=2.5, label='sèche')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel(r'$\partial_z(\rho_0\,\overline{u\'w\'})$  (×10⁻⁵ kg/m³/s²)')
-ax.set_ylabel('Altitude (m)')
-ax.set_title(r'$\partial_z(\rho_0\overline{u\'w\'})$ — humide vs sèche'
-             '\n(2–18 km)', fontweight='bold')
-ax.legend(fontsize=10)
-ax.grid(True, alpha=0.3)
-plt.tight_layout()
-plt.show()
-
-
-
-
-
-
-
-# ── Moyennes temporelles de dz(rho0 u'w') et dz(rho0 v'w') par région ─
-dz_flux_u_h = np.zeros(n_z_fit)
-dz_flux_u_s = np.zeros(n_z_fit)
-dz_flux_v_h = np.zeros(n_z_fit)
-dz_flux_v_s = np.zeros(n_z_fit)
-
-ds_u = xr.open_dataset(path3d('ua'))
-ds_v = xr.open_dataset(path3d('va'))
-ds_w = xr.open_dataset(path3d('wa'))
-
-for i_iz, iz in enumerate(range(iz_lo_glob, iz_hi_glob)):
-
-    iz_lo = iz - 1
-    iz_hi = iz + 1
-    dz    = alt[iz_hi] - alt[iz_lo]
-
-    acc_u_h = 0.0 ; acc_u_s = 0.0
-    acc_v_h = 0.0 ; acc_v_s = 0.0
-    n = 0
-
-    for it in range(t_stat, n_t):
-        u_lo_ = ds_u['ua'].isel({dim_t: it, dim_z: iz_lo}).values
-        u_hi_ = ds_u['ua'].isel({dim_t: it, dim_z: iz_hi}).values
-        v_lo_ = ds_v['va'].isel({dim_t: it, dim_z: iz_lo}).values
-        v_hi_ = ds_v['va'].isel({dim_t: it, dim_z: iz_hi}).values
-        w_lo_ = ds_w['wa'].isel({dim_t: it, dim_z: iz_lo}).values
-        w_hi_ = ds_w['wa'].isel({dim_t: it, dim_z: iz_hi}).values
-
-        u_p_lo = u_lo_ - u_lo_.mean() ; u_p_hi = u_hi_ - u_hi_.mean()
-        v_p_lo = v_lo_ - v_lo_.mean() ; v_p_hi = v_hi_ - v_hi_.mean()
-        w_p_lo = w_lo_ - w_lo_.mean() ; w_p_hi = w_hi_ - w_hi_.mean()
-
-        acc_u_h += ((rho0[iz_hi]*u_p_hi*w_p_hi)[mh].mean()
-                  - (rho0[iz_lo]*u_p_lo*w_p_lo)[mh].mean()) / dz
-        acc_u_s += ((rho0[iz_hi]*u_p_hi*w_p_hi)[ms].mean()
-                  - (rho0[iz_lo]*u_p_lo*w_p_lo)[ms].mean()) / dz
-        acc_v_h += ((rho0[iz_hi]*v_p_hi*w_p_hi)[mh].mean()
-                  - (rho0[iz_lo]*v_p_lo*w_p_lo)[mh].mean()) / dz
-        acc_v_s += ((rho0[iz_hi]*v_p_hi*w_p_hi)[ms].mean()
-                  - (rho0[iz_lo]*v_p_lo*w_p_lo)[ms].mean()) / dz
-        n += 1
-        del u_lo_, u_hi_, v_lo_, v_hi_, w_lo_, w_hi_
-        del u_p_lo, u_p_hi, v_p_lo, v_p_hi, w_p_lo, w_p_hi
-        gc.collect()
-
-    dz_flux_u_h[i_iz] = acc_u_h / n
-    dz_flux_u_s[i_iz] = acc_u_s / n
-    dz_flux_v_h[i_iz] = acc_v_h / n
-    dz_flux_v_s[i_iz] = acc_v_s / n
-
-    if i_iz % 10 == 0:
-        print(f'  i_iz={i_iz}/{n_z_fit-1}  ({alt[iz]:.0f} m)')
-
-ds_u.close() ; ds_v.close() ; ds_w.close()
-del ds_u, ds_v, ds_w
-gc.collect()
-print('dz_flux calculés.')
-
-# ── Visualisation ──────────────────────────────────────────────────────
-fig, axes = plt.subplots(1, 2, figsize=(13, 9), sharey=True)
-
-axes[0].plot(dz_flux_u_h * 1e5, z_fit_ab, color='royalblue',   lw=2.5, label='humide')
-axes[0].plot(dz_flux_u_s * 1e5, z_fit_ab, color='saddlebrown', lw=2.5, label='sèche')
-axes[0].axvline(0, color='grey', alpha=0.4)
-axes[0].set_xlabel(r"$\partial_z(\rho_0\,\overline{u'w'})$  (×10⁻⁵ kg/m³/s²)")
-axes[0].set_title(r"$\partial_z(\rho_0\overline{u'w'})$", fontweight='bold')
-axes[0].legend(fontsize=10) ; axes[0].grid(True, alpha=0.3)
-
-axes[1].plot(dz_flux_v_h * 1e5, z_fit_ab, color='royalblue',   lw=2.5, label='humide')
-axes[1].plot(dz_flux_v_s * 1e5, z_fit_ab, color='saddlebrown', lw=2.5, label='sèche')
-axes[1].axvline(0, color='grey', alpha=0.4)
-axes[1].set_xlabel(r"$\partial_z(\rho_0\,\overline{v'w'})$  (×10⁻⁵ kg/m³/s²)")
-axes[1].set_title(r"$\partial_z(\rho_0\overline{v'w'})$", fontweight='bold')
-axes[1].legend(fontsize=10) ; axes[1].grid(True, alpha=0.3)
-
-axes[0].set_ylabel('Altitude (m)')
-plt.suptitle(r"$\partial_z(\rho_0\overline{u'w'})$ et $\partial_z(\rho_0\overline{v'w'})$ — 2–18 km",
+        data = data[np.isfinite(data)]
+        if data.size < 5:
+            continue
+        p1, p99 = np.percentile(data, [1, 99])
+        xs = np.linspace(p1, p99, 300)
+        kde = gaussian_kde(data, bw_method=0.2)
+        ax2.plot(xs, kde(xs),
+                 color=cz,
+                 ls=ls_param[param],
+                 lw=2 if 'HUMIDE' in title else 1.2,
+                 alpha=0.85,
+                 label=f'{title} — {lbl_z}' if param == 'α' else None)
+
+ax2.axvline(0, color='grey', alpha=0.5, lw=1)
+ax2.set_xlabel('valeur du paramètre')
+ax2.set_ylabel('densité')
+ax2.set_title('3 niveaux clés  (— α   -- β,   épais=humide)',
+              fontweight='bold')
+ax2.legend(fontsize=7, ncol=1)
+ax2.grid(True, alpha=0.3)
+
+plt.suptitle(r'§18v — Distributions de $\alpha(z,t)$ et $\beta(z,t)$',
              fontsize=13, fontweight='bold')
 plt.tight_layout()
 plt.show()
