@@ -1,142 +1,38 @@
-# ══════════════════════════════════════════════════════════════════════
-# §18v — α(z,t) et β(z,t) via système 2×2 (éq. u + éq. v)
-# ══════════════════════════════════════════════════════════════════════
+i_t_show = np.arange(n_stat_it)
+cmap     = plt.cm.viridis
 
-iz_lo_glob = np.searchsorted(alt, 2000)
-iz_hi_glob = np.searchsorted(alt, 18000)
-n_z_fit    = iz_hi_glob - iz_lo_glob
-z_fit_ab   = alt[iz_lo_glob:iz_hi_glob]
-n_stat_it  = n_t - t_stat
+fig, axes = plt.subplots(2, 2, figsize=(14, 12), sharey=True)
+titles = [('HUMIDE', alpha_zt_h, beta_zt_h),
+          ('SÈCHE',  alpha_zt_s, beta_zt_s)]
 
-# résultats : shape (n_z_fit, n_stat_it)
-alpha_zt_h = np.full((n_z_fit, n_stat_it), np.nan)
-beta_zt_h  = np.full((n_z_fit, n_stat_it), np.nan)
-alpha_zt_s = np.full((n_z_fit, n_stat_it), np.nan)
-beta_zt_s  = np.full((n_z_fit, n_stat_it), np.nan)
+for col, (region, alpha_zt, beta_zt) in enumerate(titles):
+    for k, i_t in enumerate(i_t_show):
+        c = cmap(k / (n_stat_it - 1))
+        axes[0, col].plot(alpha_zt[:, i_t], z_fit_ab, color=c, lw=0.8, alpha=0.5)
+        axes[1, col].plot(beta_zt[:, i_t],  z_fit_ab, color=c, lw=0.8, alpha=0.5)
 
-ds_u = xr.open_dataset(path3d('ua'))
-ds_v = xr.open_dataset(path3d('va'))
-ds_w = xr.open_dataset(path3d('wa'))
+    # moyenne temporelle par-dessus
+    axes[0, col].plot(np.nanmean(alpha_zt, axis=1), z_fit_ab,
+                      color='red', lw=2.5, label='moyenne')
+    axes[1, col].plot(np.nanmean(beta_zt,  axis=1), z_fit_ab,
+                      color='red', lw=2.5, label='moyenne')
 
-for i_iz, iz in enumerate(range(iz_lo_glob, iz_hi_glob)):
+    for row, lbl in enumerate([r'$\alpha(z)$', r'$\beta(z)$']):
+        axes[row, col].axvline(0, color='grey', alpha=0.4)
+        axes[row, col].set_title(f'{region} — {lbl}', fontweight='bold')
+        axes[row, col].grid(True, alpha=0.3)
+        axes[row, col].legend(fontsize=9)
+        if col == 0:
+            axes[row, col].set_ylabel('Altitude (m)')
 
-    iz_lo = iz - 1
-    iz_hi = iz + 1
-    dz    = alt[iz_hi] - alt[iz_lo]
+    axes[1, col].set_xlabel('valeur du paramètre')
 
-    # charger les 3 niveaux nécessaires, tous les pas de temps stat
-    u_all = ds_u['ua'].isel({dim_z: iz,    dim_t: slice(t_stat, n_t)}).values  # (nt, ny, nx)
-    u_lo  = ds_u['ua'].isel({dim_z: iz_lo, dim_t: slice(t_stat, n_t)}).values
-    u_hi  = ds_u['ua'].isel({dim_z: iz_hi, dim_t: slice(t_stat, n_t)}).values
-    v_all = ds_v['va'].isel({dim_z: iz,    dim_t: slice(t_stat, n_t)}).values
-    v_lo  = ds_v['va'].isel({dim_z: iz_lo, dim_t: slice(t_stat, n_t)}).values
-    v_hi  = ds_v['va'].isel({dim_z: iz_hi, dim_t: slice(t_stat, n_t)}).values
-    w_lo  = ds_w['wa'].isel({dim_z: iz_lo, dim_t: slice(t_stat, n_t)}).values
-    w_hi  = ds_w['wa'].isel({dim_z: iz_hi, dim_t: slice(t_stat, n_t)}).values
-
-    for i_t in range(n_stat_it):
-
-        # ── anomalies de vent vertical aux niveaux voisins ──
-        u_p_lo = u_lo[i_t] - u_lo[i_t].mean()
-        u_p_hi = u_hi[i_t] - u_hi[i_t].mean()
-        w_p_lo = w_lo[i_t] - w_lo[i_t].mean()
-        w_p_hi = w_hi[i_t] - w_hi[i_t].mean()
-
-        # ── membres droits : dz(rho0 * u'w') / rho0 par région ──
-        y_u_h = (  (rho0[iz_hi] * u_p_hi * w_p_hi)[mh].mean()
-                 - (rho0[iz_lo] * u_p_lo * w_p_lo)[mh].mean() ) / dz
-        y_u_s = (  (rho0[iz_hi] * u_p_hi * w_p_hi)[ms].mean()
-                 - (rho0[iz_lo] * u_p_lo * w_p_lo)[ms].mean() ) / dz
-
-        # idem pour v
-        v_p_lo = v_lo[i_t] - v_lo[i_t].mean()
-        v_p_hi = v_hi[i_t] - v_hi[i_t].mean()
-
-        y_v_h = (  (rho0[iz_hi] * v_p_hi * w_p_hi)[mh].mean()
-                 - (rho0[iz_lo] * v_p_lo * w_p_lo)[mh].mean() ) / dz
-        y_v_s = (  (rho0[iz_hi] * v_p_hi * w_p_hi)[ms].mean()
-                 - (rho0[iz_lo] * v_p_lo * w_p_lo)[ms].mean() ) / dz
-
-        # ── membres gauche : rho0*ubar_c et dz(rho0*ubar_c) par région ──
-        for mask, tag in [(mh, 'h'), (ms, 's')]:
-
-            # ligne 1 du système (éq. u)
-            A11 = rho0[iz] * u_all[i_t][mask].mean()
-            A12 = (rho0[iz_hi] * u_hi[i_t][mask].mean()
-                 - rho0[iz_lo] * u_lo[i_t][mask].mean()) / dz
-
-            # ligne 2 du système (éq. v)
-            A21 = rho0[iz] * v_all[i_t][mask].mean()
-            A22 = (rho0[iz_hi] * v_hi[i_t][mask].mean()
-                 - rho0[iz_lo] * v_lo[i_t][mask].mean()) / dz
-
-            y1 = y_u_h if tag == 'h' else y_u_s
-            y2 = y_v_h if tag == 'h' else y_v_s
-
-            M  = np.array([[A11, A12],
-                           [A21, A22]])
-            rhs = np.array([y1, y2])
-
-            det = A11 * A22 - A12 * A21
-            if np.abs(det) < 1e-30:   # système singulier → NaN
-                continue
-
-            sol = np.linalg.solve(M, rhs)
-
-            if tag == 'h':
-                alpha_zt_h[i_iz, i_t] = sol[0]
-                beta_zt_h [i_iz, i_t] = sol[1]
-            else:
-                alpha_zt_s[i_iz, i_t] = sol[0]
-                beta_zt_s [i_iz, i_t] = sol[1]
-
-    del u_all, u_lo, u_hi, v_all, v_lo, v_hi, w_lo, w_hi
-    gc.collect()
-
-    if i_iz % 10 == 0:
-        print(f'  i_iz={i_iz}/{n_z_fit-1}  ({alt[iz]:.0f} m)')
-
-ds_u.close() ; ds_v.close() ; ds_w.close()
-del ds_u, ds_v, ds_w
-gc.collect()
-print('α(z,t) et β(z,t) calculés.')
-
-
-
-
-
-
-
-# ── moyenne et écart-type temporels ──
-alpha_h_mean = np.nanmean(alpha_zt_h, axis=1)
-beta_h_mean  = np.nanmean(beta_zt_h,  axis=1)
-alpha_s_mean = np.nanmean(alpha_zt_s, axis=1)
-beta_s_mean  = np.nanmean(beta_zt_s,  axis=1)
-
-alpha_h_std  = np.nanstd(alpha_zt_h, axis=1)
-beta_h_std   = np.nanstd(beta_zt_h,  axis=1)
-
-fig, axes = plt.subplots(1, 2, figsize=(12, 8), sharey=True)
-
-for ax, mean_h, std_h, mean_s, lbl in zip(
-    axes,
-    [alpha_h_mean, beta_h_mean],
-    [alpha_h_std,  beta_h_std],
-    [alpha_s_mean, beta_s_mean],
-    [r'$\alpha(z,t)$', r'$\beta(z,t)$'],
-):
-    ax.plot(mean_h, z_fit_ab, color='royalblue',   lw=2, label='humide (moy. t)')
-    ax.fill_betweenx(z_fit_ab, mean_h - std_h, mean_h + std_h,
-                     color='royalblue', alpha=0.2, label='±1σ')
-    ax.plot(mean_s, z_fit_ab, color='saddlebrown', lw=2, label='sèche (moy. t)')
-    ax.axvline(0, color='grey', alpha=0.4)
-    ax.set_xlabel(lbl)
-    ax.set_title(lbl, fontweight='bold')
-    ax.legend(fontsize=9)
-    ax.grid(True, alpha=0.3)
-
-axes[0].set_ylabel('Altitude (m)')
-plt.suptitle(r'§18v — $\alpha(z,t)$, $\beta(z,t)$ via système 2×2 (éq. $u$ + éq. $v$)',
+sm = plt.cm.ScalarMappable(cmap=cmap,
+     norm=plt.Normalize(vmin=t_stat, vmax=t_stat + n_stat_it - 1))
+sm.set_array([])
+fig.colorbar(sm, ax=axes, orientation='vertical', fraction=0.02, pad=0.02,
+             label='pas de temps')
+plt.suptitle(r'§18v — Profils verticaux $\alpha(z,t)$ et $\beta(z,t)$ — tous les $t$',
              fontsize=13, fontweight='bold')
 plt.tight_layout()
 plt.show()
@@ -147,58 +43,36 @@ plt.show()
 
 
 
-# ── Vérification reconstruction §18v ──────────────────────────────────
-# Prendre un niveau et un pas de temps arbitraires
-i_iz_test = 20
-i_t_test  = 5
-iz        = iz_lo_glob + i_iz_test
-iz_lo     = iz - 1
-iz_hi     = iz + 1
-dz        = alt[iz_hi] - alt[iz_lo]
 
-ds_u = xr.open_dataset(path3d('ua'))
-ds_v = xr.open_dataset(path3d('va'))
-ds_w = xr.open_dataset(path3d('wa'))
 
-it = t_stat + i_t_test
 
-u_2d  = ds_u['ua'].isel({dim_t: it, dim_z: iz   }).values
-u_lo_ = ds_u['ua'].isel({dim_t: it, dim_z: iz_lo}).values
-u_hi_ = ds_u['ua'].isel({dim_t: it, dim_z: iz_hi}).values
-v_2d  = ds_v['va'].isel({dim_t: it, dim_z: iz   }).values
-v_lo_ = ds_v['va'].isel({dim_t: it, dim_z: iz_lo}).values
-v_hi_ = ds_v['va'].isel({dim_t: it, dim_z: iz_hi}).values
-w_lo_ = ds_w['wa'].isel({dim_t: it, dim_z: iz_lo}).values
-w_hi_ = ds_w['wa'].isel({dim_t: it, dim_z: iz_hi}).values
 
-ds_u.close(); ds_v.close(); ds_w.close()
+# ── Figure 2 : distributions temporelles à quelques z choisis ─────────
+z_targets  = [2000, 4000, 6000, 8000, 10000]  # altitudes cibles (m)
+iz_targets = [np.argmin(np.abs(z_fit_ab - zt)) for zt in z_targets]
 
-# ── recalcul y_u et y_v (membres droits) ──
-u_p_lo = u_lo_ - u_lo_.mean(); u_p_hi = u_hi_ - u_hi_.mean()
-v_p_lo = v_lo_ - v_lo_.mean(); v_p_hi = v_hi_ - v_hi_.mean()
-w_p_lo = w_lo_ - w_lo_.mean(); w_p_hi = w_hi_ - w_hi_.mean()
+fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+pairs = [('HUMIDE α', alpha_zt_h, axes[0, 0]),
+         ('HUMIDE β', beta_zt_h,  axes[0, 1]),
+         ('SÈCHE α',  alpha_zt_s, axes[1, 0]),
+         ('SÈCHE β',  beta_zt_s,  axes[1, 1])]
 
-y_u_h = ((rho0[iz_hi]*u_p_hi*w_p_hi)[mh].mean()
-        - (rho0[iz_lo]*u_p_lo*w_p_lo)[mh].mean()) / dz
-y_v_h = ((rho0[iz_hi]*v_p_hi*w_p_hi)[mh].mean()
-        - (rho0[iz_lo]*v_p_lo*w_p_lo)[mh].mean()) / dz
+colors_z = plt.cm.plasma(np.linspace(0.1, 0.9, len(iz_targets)))
 
-# ── recalcul x1, x2 pour u et v (membres gauches) ──
-x1_u = rho0[iz] * u_2d[mh].mean()
-x2_u = (rho0[iz_hi]*u_hi_[mh].mean() - rho0[iz_lo]*u_lo_[mh].mean()) / dz
-x1_v = rho0[iz] * v_2d[mh].mean()
-x2_v = (rho0[iz_hi]*v_hi_[mh].mean() - rho0[iz_lo]*v_lo_[mh].mean()) / dz
+for title, arr, ax in pairs:
+    for iz_t, zt, c in zip(iz_targets, z_targets, colors_z):
+        data = arr[iz_t, :]
+        data = data[~np.isnan(data)]
+        ax.hist(data, bins=30, color=c, alpha=0.55, density=True,
+                label=f'z={zt//1000} km')
+    ax.axvline(0, color='grey', alpha=0.5)
+    ax.set_title(title, fontweight='bold')
+    ax.set_xlabel('valeur du paramètre')
+    ax.set_ylabel('densité')
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
 
-# ── reconstruction ──
-a = alpha_zt_h[i_iz_test, i_t_test]
-b = beta_zt_h [i_iz_test, i_t_test]
-
-yhat_u = a * x1_u + b * x2_u
-yhat_v = a * x1_v + b * x2_v
-
-print(f'Niveau z = {alt[iz]:.0f} m,  pas de temps i_t = {i_t_test}')
-print(f'  α = {a:.6e},  β = {b:.6e}')
-print()
-print(f'  y_u  = {y_u_h:.6e}   ŷ_u  = {yhat_u:.6e}   Δ = {abs(y_u_h - yhat_u):.2e}')
-print(f'  y_v  = {y_v_h:.6e}   ŷ_v  = {yhat_v:.6e}   Δ = {abs(y_v_h - yhat_v):.2e}')
-
+plt.suptitle(r'§18v — Distributions temporelles de $\alpha$ et $\beta$ par niveau',
+             fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
