@@ -76,3 +76,53 @@ plt.suptitle(r'§18v — Distributions temporelles de $\alpha$ et $\beta$ par ni
              fontsize=13, fontweight='bold')
 plt.tight_layout()
 plt.show()
+
+
+
+
+
+
+fig, axes = plt.subplots(2, 2, figsize=(14, 12), sharey=True)
+titles = [('HUMIDE', alpha_zt_h, beta_zt_h),
+          ('SÈCHE',  alpha_zt_s, beta_zt_s)]
+
+for col, (region, alpha_zt, beta_zt) in enumerate(titles):
+    for row, (arr, lbl) in enumerate([(alpha_zt, r'$\alpha(z)$'),
+                                       (beta_zt,  r'$\beta(z)$')]):
+        ax = axes[row, col]
+
+        # ── seuils ±3σ globaux (sur tous z et t) ──
+        mu  = np.nanmean(arr)
+        sig = np.nanstd(arr)
+        lo, hi = mu - 3*sig, mu + 3*sig
+
+        for k in range(n_stat_it):
+            profil = arr[:, k].copy()
+            profil[(profil < lo) | (profil > hi)] = np.nan
+            c = cmap(k / (n_stat_it - 1))
+            ax.plot(profil, z_fit_ab, color=c, lw=0.8, alpha=0.5)
+
+        # moyenne temporelle (après filtrage)
+        arr_filt = arr.copy()
+        arr_filt[(arr_filt < lo) | (arr_filt > hi)] = np.nan
+        ax.plot(np.nanmean(arr_filt, axis=1), z_fit_ab,
+                color='red', lw=2.5, label='moyenne')
+
+        ax.axvline(0, color='grey', alpha=0.4)
+        ax.set_title(f'{region} — {lbl}', fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=9)
+        if col == 0:
+            ax.set_ylabel('Altitude (m)')
+        if row == 1:
+            ax.set_xlabel('valeur du paramètre')
+
+sm = plt.cm.ScalarMappable(cmap=cmap,
+     norm=plt.Normalize(vmin=t_stat, vmax=t_stat + n_stat_it - 1))
+sm.set_array([])
+fig.colorbar(sm, ax=axes, orientation='vertical', fraction=0.02, pad=0.02,
+             label='pas de temps')
+plt.suptitle(r'§18v — $\alpha(z,t)$ et $\beta(z,t)$ — outliers exclus (±3σ)',
+             fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
