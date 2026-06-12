@@ -1,76 +1,95 @@
-from scipy.stats import gaussian_kde
+# ══════════════════════════════════════════════════════════════════════
+# §22 — β(z) vs flux de masse M_c/ρ0 : le coefficient down-gradient
+#        est-il piloté par la convection ?  (région humide)
+# ══════════════════════════════════════════════════════════════════════
+from scipy.stats import linregress
 
-fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+# ── 1. Mettre β(z) et M_c/ρ0 sur la MÊME grille verticale ────────────
+#    β est défini sur z_fit_ab (iz_lo_glob:iz_hi_glob)
+#    M_c est défini sur toute la grille alt → on restreint à la fenêtre de β
+iz_lo = iz_lo_glob ; iz_hi = iz_hi_glob          # 2000–18000 m
+z_c   = z_fit_ab                                  # grille commune
 
-# ── couleurs et styles ──────────────────────────────────────────────────
-style = {
-    'HUMIDE α': dict(arr=alpha_zt_h, color='royalblue',   ls='-',  lw=2.0),
-    'HUMIDE β': dict(arr=beta_zt_h,  color='royalblue',   ls='--', lw=2.0),
-    'SÈCHE α':  dict(arr=alpha_zt_s, color='saddlebrown', ls='-',  lw=2.0),
-    'SÈCHE β':  dict(arr=beta_zt_s,  color='saddlebrown', ls='--', lw=2.0),
-}
+beta_h   = beta_h_mean                            # (n_z_fit,)  coef down-gradient humide
+Mc_over_rho_h = (Mc_up_h / rho0)[iz_lo:iz_hi]     # M_c/ρ0 = σ·w_up   (m/s)  même grille
 
-# ════════════════════════════════════════════════════════════════════════
-# GAUCHE — KDE de toutes les valeurs (tous z, tous t confondus)
-# ════════════════════════════════════════════════════════════════════════
+# garde-fou : ne travailler que sur les niveaux finis des deux côtés
+ok = np.isfinite(beta_h) & np.isfinite(Mc_over_rho_h)
+zc_ok   = z_c[ok]
+beta_ok = beta_h[ok]
+mc_ok   = Mc_over_rho_h[ok]
+
+# ── 2. Corrélation verticale (sur profils bruts) ─────────────────────
+r_vert = np.corrcoef(beta_ok, mc_ok)[0, 1]
+print(f'Corrélation verticale  β(z) ↔ M_c/ρ0  (humide) : r = {r_vert:+.3f}')
+
+# ── 3. Régression β = ℓ · (M_c/ρ0) + b  →  pente = longueur de mélange ─
+reg = linregress(mc_ok, beta_ok)
+ell      = reg.slope          # longueur de mélange effective (m)  [β en m, M_c/ρ0 en m/s → ℓ en... voir note]
+intercept= reg.intercept
+print(f'Régression  β = ℓ·(M_c/ρ0) + b :')
+print(f'   pente  ℓ        = {ell:.1f}   (unité = β / (M_c/ρ0))')
+print(f'   ordonnée b      = {intercept:.3e}')
+print(f'   r²              = {reg.rvalue**2:.3f}')
+
+# ── 4. Profils normalisés côte à côte ────────────────────────────────
+def norm(x):
+    x = np.asarray(x, float)
+    m = np.nanmax(np.abs(x))
+    return x / m if m > 0 else x
+
+fig, axes = plt.subplots(1, 3, figsize=(16, 8), sharey=True)
+
+# (a) profils normalisés superposés
 ax = axes[0]
-for label, s in style.items():
-    vals = s['arr'].ravel()
-    vals = vals[np.isfinite(vals)]
-    p1, p99 = np.percentile(vals, [1, 99])
-    xs  = np.linspace(p1, p99, 600)
-    kde = gaussian_kde(vals, bw_method=0.12)
-    ax.plot(xs, kde(xs), color=s['color'], ls=s['ls'], lw=s['lw'], label=label)
+ax.plot(norm(beta_ok),  zc_ok, color='royalblue', lw=2.5, label=r'$\beta(z)$ (norm.)')
+ax.plot(norm(mc_ok),    zc_ok, color='seagreen', lw=2.5, ls='--',
+        label=r'$M_c/\rho_0$ (norm.)')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('profil normalisé (sans unité)')
+ax.set_ylabel('Altitude (m)')
+ax.set_title(f'Profils normalisés\nr = {r_vert:+.3f}', fontweight='bold')
+ax.legend(fontsize=9) ; ax.grid(True, alpha=0.3)
 
-ax.axvline(0, color='grey', lw=1, alpha=0.5)
-ax.set_xlabel('valeur du paramètre')
-ax.set_ylabel('densité')
-ax.set_title('Distribution globale — tous z, tous t', fontweight='bold')
-ax.legend(fontsize=9)
-ax.grid(True, alpha=0.3)
-
-# ════════════════════════════════════════════════════════════════════════
-# DROITE — histogrammes à 3 niveaux clés, bien séparés par région/param
-# ════════════════════════════════════════════════════════════════════════
-# 3 niveaux : base convective, max du flux Reynolds (~zc/(1+n)), sommet
-z_key    = [2000, int(zc_h / (1 + n_h)), 10000]   # adapté à ton fit §17
-labels_z = [f'{z//1000} km' for z in z_key]
-colors_z = ['#e41a1c', '#ff7f00', '#4dac26']       # rouge / orange / vert
-
+# (b) profils bruts, double axe
 ax = axes[1]
-BW = 0.15
-
-for label, s in style.items():
-    iz_keys = [np.argmin(np.abs(z_fit_ab - zt)) for zt in z_key]
-    for iz_t, lbl_z, cz in zip(iz_keys, labels_z, colors_z):
-        data = s['arr'][iz_t, :]
-        data = data[np.isfinite(data)]
-        if data.size < 5:
-            continue
-        p1, p99 = np.percentile(data, [1, 99])
-        xs  = np.linspace(p1, p99, 400)
-        kde = gaussian_kde(data, bw_method=BW)
-        # label uniquement sur la première combinaison pour éviter la légende en double
-        lbl = f'{lbl_z}' if label == 'HUMIDE α' else None
-        ax.plot(xs, kde(xs),
-                color=cz, ls=s['ls'], lw=s['lw'],
-                alpha=0.85, label=lbl)
-
-# légendes manuelles : couleur = altitude, style = param/région
-from matplotlib.lines import Line2D
-leg_z = [Line2D([0],[0], color=c, lw=2, label=l)
-         for c, l in zip(colors_z, labels_z)]
-leg_s = [Line2D([0],[0], color='grey', ls='-',  lw=2, label='α  (humide épais / sèche fin)'),
-         Line2D([0],[0], color='grey', ls='--', lw=2, label='β  (humide épais / sèche fin)')]
-ax.legend(handles=leg_z + leg_s, fontsize=8, ncol=1)
-
-ax.axvline(0, color='grey', lw=1, alpha=0.5)
-ax.set_xlabel('valeur du paramètre')
-ax.set_ylabel('densité')
-ax.set_title('3 niveaux clés — KDE par (région, param, altitude)', fontweight='bold')
+ax.plot(beta_ok, zc_ok, color='royalblue', lw=2.5, label=r'$\beta(z)$')
+ax.set_xlabel(r'$\beta(z)$', color='royalblue')
+ax.tick_params(axis='x', labelcolor='royalblue')
+ax2 = ax.twiny()
+ax2.plot(mc_ok, zc_ok, color='seagreen', lw=2.5, ls='--', label=r'$M_c/\rho_0$')
+ax2.set_xlabel(r'$M_c/\rho_0$ (m/s)', color='seagreen')
+ax2.tick_params(axis='x', labelcolor='seagreen')
+ax.set_title('Profils bruts', fontweight='bold')
 ax.grid(True, alpha=0.3)
 
-plt.suptitle(r'§18v — Distributions de $\alpha(z,t)$ et $\beta(z,t)$',
-             fontsize=13, fontweight='bold')
+# (c) nuage de points β vs M_c/ρ0 + droite de régression
+ax = axes[2]
+sc = ax.scatter(mc_ok, beta_ok, c=zc_ok, cmap='viridis', s=35)
+xx = np.linspace(mc_ok.min(), mc_ok.max(), 50)
+ax.plot(xx, reg.slope*xx + reg.intercept, 'r-', lw=2,
+        label=f'pente ℓ = {ell:.0f}\nr² = {reg.rvalue**2:.2f}')
+cb = plt.colorbar(sc, ax=ax) ; cb.set_label('Altitude (m)')
+ax.set_xlabel(r'$M_c/\rho_0$ (m/s)')
+ax.set_ylabel(r'$\beta(z)$')
+ax.set_title(r'$\beta$ vs $M_c/\rho_0$', fontweight='bold')
+ax.legend(fontsize=9) ; ax.grid(True, alpha=0.3)
+
+plt.suptitle(r'§22 — Le coefficient down-gradient $\beta(z)$ est-il piloté par le flux de masse convectif ? (HUMIDE)',
+             fontsize=12, fontweight='bold')
 plt.tight_layout()
 plt.show()
+
+# ── 5. Lien avec Romps : timescale de damping ────────────────────────
+#   α(z) ~ 1/τ (Rayleigh) est l'analogue direct du damping de Romps.
+#   Pour β (diffusif), on construit un timescale équivalent via une échelle verticale H.
+H_scale = 5000.0   # m, échelle verticale typique de variation de ū (à ajuster)
+# K_turb ~ β  (si β a déjà les bonnes unités de la fermeture) → τ_diff ~ H²/K
+# Ici on estime plutôt l'ordre de grandeur :
+beta_typ = np.nanmedian(np.abs(beta_ok))
+if beta_typ > 0:
+    # si β ~ K/H  (m/s)  → τ ~ H/β ;  si β ~ K (m²/s) → τ ~ H²/β. On affiche les deux.
+    print('\n── Ordres de grandeur (comparaison Romps 1–10 jours) ──')
+    print(f'   |β| médian            = {beta_typ:.3e}')
+    print(f'   si β≡taux [1/s] : τ   = {1/beta_typ/86400:.2f} jours')
+    print(f'   si β≡K/H [m/s]  : τ~H/β = {H_scale/beta_typ/86400:.2f} jours  (H={H_scale:.0f} m)')
