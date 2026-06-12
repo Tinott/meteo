@@ -1,109 +1,324 @@
 # ============================================================================
-# S30 — Lien eq. momentum panache <-> budget  (VERSION ROBUSTE)
-#   Eq.1 : dz(u_c) = eps (u_e - u_c)
-#   Eq.2 : dz(Mc Du) = Mc[-delta Du - dz(u_e)]   (apres injection eq.1), Du=u_c-u_e
-#   uc/ue RECALCULES au meilleur seuil (W0_BEST, C_BEST) de S26.
+# S30bis — REPARATION figure Eq.1 (panneau gauche ecrase)
+#   Probleme : dz(u_c) a quelques niveaux aberrants qui ecrasent le nuage sur y~0
+#   Fix : (1) filtre MAD sur dz(u_c)   (2) regression robuste   (3) axes bornes
 # ============================================================================
 
-# --- 0) recalcul de u_c, u_e au MEILLEUR seuil (coherent avec Mc_up_*, duc_*) ---
-uc_h = np.full(n_z, np.nan); ue_h = np.full(n_z, np.nan)
-ds_u = xr.open_dataset(path3d('ua'))
-ds_w = xr.open_dataset(path3d('wa'))
-for iz in range(n_z):
-    a_uc = a_ue = 0.0; n = 0
-    for it in range(t_stat, n_t):
-        u_r = ds_u['ua'].isel({dim_t: it, dim_z: iz}).values[mh]
-        w_r = ds_w['wa'].isel({dim_t: it, dim_z: iz}).values[mh]
-        ws  = max(W0_BEST, C_BEST * w_r.std())
-        up  = w_r > ws
-        a_uc += u_r[up].mean()  if up.any()    else u_r.mean()
-        a_ue += u_r[~up].mean() if (~up).any() else u_r.mean()
-        n += 1
-        del u_r, w_r, up
-    uc_h[iz] = a_uc / n; ue_h[iz] = a_ue / n
-    gc.collect()
-ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
-print('u_c, u_e recalcules au seuil best (W0=' + str(W0_BEST) + ', C=' + str(C_BEST) + ').')
-
-duc_h_loc = uc_h - ue_h          # u_c - u_e
-uec_h     = ue_h - uc_h          # u_e - u_c
+# on repart des profils u_c, u_e DEJA recalcules au meilleur seuil en S30
+duc_h_loc = uc_h - ue_h
+uec_h     = ue_h - uc_h
 dz_uc_h   = np.gradient(uc_h, alt)
 dz_ue_h   = np.gradient(ue_h, alt)
 
-# --- masque "flux de masse significatif" : Mc > 5% du max, pour tout l'affichage ---
+# fenetre Mc significatif (identique a S30)
 Mc_seuil = 0.05 * np.nanmax(np.abs(Mc_up_h))
-valid    = np.abs(Mc_up_h) > Mc_seuil          # bool plein colonne
-# borne haute effective : dernier niveau valide sous 18 km
-iz_top_valid = np.where(valid[:iz_hi])[0]
-iz_top = iz_top_valid.max() if iz_top_valid.size else iz_hi
-print('niveau max ou Mc significatif : z = ' + format(alt[iz_top], '.0f') + ' m')
+valid    = np.abs(Mc_up_h) > Mc_seuil
+iz_top_v = np.where(valid[:iz_hi])[0]
+iz_top   = iz_top_v.max() if iz_top_v.size else iz_hi
 
-# --- 1) Test eq.1 : regression dz(u_c) = eps (u_e - u_c) sur 2km - iz_top ---
 fenz = np.zeros(n_z, bool); fenz[iz_lo:iz_top+1] = True
-m1 = fenz & np.isfinite(uec_h) & np.isfinite(dz_uc_h)
+base = fenz & np.isfinite(uec_h) & np.isfinite(dz_uc_h)
+
+# --- filtre MAD sur dz(u_c) : on ecarte les gradients aberrants ---
+y_all = dz_uc_h[base]
+med   = np.median(y_all)
+mad   = np.median(np.abs(y_all - med)) + 1e-30
+keep  = np.abs(dz_uc_h - med) < 5.0 * 1.4826 * mad   # 5 sigma robustes
+m1    = base & keep
+
 x = uec_h[m1]; y = dz_uc_h[m1]
+# regression SANS ordonnee a l'origine (modele physique : 0 quand u_e=u_c)
 eps_glob_h = (x @ y) / (x @ x) if (x @ x) != 0 else np.nan
+# regression AVEC ordonnee (diagnostic du biais)
+A_lin = np.vstack([x, np.ones_like(x)]).T
+(slope_b, intpt_b), *_ = np.linalg.lstsq(A_lin, y, rcond=None)
 r_eq1 = np.corrcoef(x, y)[0, 1] if x.size > 2 else np.nan
-print('-- Eq.1 dz(u_c)=eps(u_e-u_c) -- eps=' + format(eps_glob_h*1000, '+.4f')
-      + ' km-1  corr=' + format(r_eq1, '+.3f') + '  (n=' + str(x.size) + ' pts)')
+r2    = r_eq1**2
 
-# --- 2) (eps-delta) du flux de masse -> delta ---
-def eps_delta_si(M, seuil_rel=0.05):
-    dMdz = np.gradient(M, alt)
-    s = seuil_rel * np.nanmax(np.abs(M))
-    return np.where(np.abs(M) > s, dMdz / M, np.nan)
-emd_h   = eps_delta_si(Mc_up_h)
-delta_h = eps_glob_h - emd_h
+n_out = base.sum() - m1.sum()
+print(f'Eq.1  eps (sans offset) = {eps_glob_h*1000:+.4f} km-1')
+print(f'      eps (avec offset) = {slope_b*1000:+.4f} km-1, offset={intpt_b*1e3:+.3e} x1e-3 s-1')
+print(f'      corr={r_eq1:+.3f}  R2={r2:.3f}  n={x.size} pts  ({n_out} outliers ecartes)')
 
-# --- 3) coherence budget direct vs reecrit via eq.1 ---
-div_direct_h = np.gradient(Mc_up_h * duc_h_loc, alt)
-div_eq1_h    = Mc_up_h * (-delta_h * duc_h_loc - dz_ue_h)
-m3 = fenz & np.isfinite(div_direct_h) & np.isfinite(div_eq1_h)
-rms_re  = np.sqrt(np.nanmean((div_direct_h[m3] - div_eq1_h[m3])**2))
-corr_re = np.corrcoef(div_direct_h[m3], div_eq1_h[m3])[0, 1] if m3.sum() > 2 else np.nan
-print('-- Reecriture budget via eq.1 -- corr=' + format(corr_re, '+.3f')
-      + '  RMS=' + format(rms_re*sc, '.4e') + ' x1e-3')
+# ---------------------------------------------------------------------------
+fig, ax = plt.subplots(figsize=(6.5, 7))
 
-# ----------------------------------------------------------------------------
-# Figures : on n'affiche QUE les niveaux valides (Mc significatif)
-# ----------------------------------------------------------------------------
-zb = alt[iz_lo:iz_top+1]          # axe vertical borne
-sb = slice(iz_lo, iz_top+1)
+xx = x; yy = y*1e3                       # y en 1e-3 s-1 pour lisibilite
+ax.scatter(xx, yy, s=34, color='royalblue', alpha=0.7, edgecolor='navy', lw=0.5,
+           zorder=3, label=f'niveaux 2-{alt[iz_top]/1000:.0f} km')
 
-fig, axes = plt.subplots(1, 3, figsize=(16, 6), sharey=True)
+# nuage des outliers (gris, pour transparence scientifique)
+xo = uec_h[base & ~keep]; yo = dz_uc_h[base & ~keep]*1e3
+if xo.size:
+    ax.scatter(xo, yo, s=22, color='lightgrey', alpha=0.6, zorder=2,
+               label=f'{xo.size} outliers (exclus)')
 
-# (a) test eq.1 : nuage + droite
-ax = axes[0]
-xx_pts = uec_h[m1]; yy_pts = dz_uc_h[m1]*1e3
-ax.scatter(xx_pts, yy_pts, s=28, color='royalblue', alpha=0.75)
-if np.isfinite(eps_glob_h) and xx_pts.size:
-    xr_ = np.linspace(xx_pts.min(), xx_pts.max(), 50)
-    ax.plot(xr_, eps_glob_h*xr_*1e3, color='red', lw=2,
-            label='eps=' + format(eps_glob_h*1000, '+.3f') + ' km-1')
-    ax.legend(fontsize=9)
+# droites
+xr_ = np.linspace(np.nanmin(xx), np.nanmax(xx), 50)
+ax.plot(xr_, eps_glob_h*xr_*1e3, color='red', lw=2.2, zorder=4,
+        label=f'eps={eps_glob_h*1000:+.3f} km-1 (R2={r2:.2f})')
+ax.plot(xr_, (slope_b*xr_+intpt_b)*1e3, color='darkorange', lw=1.5, ls='--',
+        zorder=4, label='avec offset')
+
 ax.axhline(0, color='grey', alpha=0.4); ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('u_e - u_c  (m/s)'); ax.set_ylabel('dz(u_c)  (x1e-3 s-1)')
-ax.set_title('Eq.1 : dz(u_c) vs (u_e-u_c)', fontweight='bold'); ax.grid(alpha=0.3)
 
-# (b) contrastes
+# --- axes bornes proprement sur les points retenus (plus d'ecrasement) ---
+pad_x = 0.05*(np.nanmax(xx)-np.nanmin(xx) + 1e-9)
+pad_y = 0.10*(np.nanmax(yy)-np.nanmin(yy) + 1e-9)
+ax.set_xlim(np.nanmin(xx)-pad_x, np.nanmax(xx)+pad_x)
+ax.set_ylim(np.nanmin(yy)-pad_y, np.nanmax(yy)+pad_y)
+
+ax.set_xlabel(r'$u_e - u_c$  (m/s)')
+ax.set_ylabel(r'$\partial_z u_c$  ($\times10^{-3}$ s$^{-1}$)')
+ax.set_title('Eq.1 panache : $\\partial_z u_c = \\varepsilon\\,(u_e-u_c)$\n(figure reparee, axes recadres)',
+             fontweight='bold')
+ax.legend(fontsize=9, loc='best'); ax.grid(alpha=0.3)
+plt.tight_layout(); plt.show()
+
+
+
+
+
+
+
+
+
+# ============================================================================
+# S31 — Test Romps (2014) : amplitude du flux de Reynolds proportionnelle a M_c/rho0
+#   Phi_rey(z) = rho0 <u'w'>  ;  Romps : |Phi_rey| ~ M_c * |Du|  (deja vu)
+#   Ici on teste la forme LOCALE  Phi_rey(z) ≈ k * (M_c/rho0)(z) * echelle_vent
+#   et la proportionnalite de l'AMPLITUDE globale A vs flux de masse integre.
+# ============================================================================
+
+z_c = alt[iz_top]                       # sommet utile (Mc significatif)
+sl_fit = slice(iz_lo, iz_top+1)
+zf = alt[sl_fit].astype(float)
+
+# 1) amplitude A(z) du flux de Reynolds : on enleve la forme adimensionnee xi(1-xi)^n
+#    en reutilisant le fit polynomial deja realise (A_h, zc_h, n_h en S17/§18).
+#    Ici on definit une amplitude LOCALE = Phi_rey / [ (Mc/rho0) ] pour tester Romps.
+Mc_over_rho_h = Mc_up_h / rho0
+Mc_over_rho_s = Mc_up_s / rho0
+
+# rapport local Phi_rey / (Mc/rho0)  -> doit etre ~ constant * Du si Romps tient
+ratio_h = np.where(np.abs(Mc_over_rho_h) > 1e-6,
+                   flux_glob_h / (Mc_over_rho_h + 1e-30), np.nan)
+
+# 2) regression directe : flux_glob_h ~ k * (Mc/rho0) * Du   (Romps complet)
+X = (Mc_over_rho_h * duc_h_loc)[sl_fit]
+Y = flux_glob_h[sl_fit]
+ok = np.isfinite(X) & np.isfinite(Y)
+k_romps = (X[ok] @ Y[ok]) / (X[ok] @ X[ok]) if (X[ok] @ X[ok]) != 0 else np.nan
+r_romps = np.corrcoef(X[ok], Y[ok])[0,1] if ok.sum() > 2 else np.nan
+print(f'Romps local : Phi_rey ≈ k·(Mc/rho0)·Du   k={k_romps:+.3f}  R2={r_romps**2:.3f}')
+
+# 3) Romps SANS le contraste : Phi_rey ~ k' * (Mc/rho0)   (test de robustesse)
+X2 = Mc_over_rho_h[sl_fit]
+k2 = (X2[ok] @ Y[ok]) / (X2[ok] @ X2[ok]) if (X2[ok] @ X2[ok]) != 0 else np.nan
+r2_simple = np.corrcoef(X2[ok], Y[ok])[0,1] if ok.sum() > 2 else np.nan
+print(f"Romps simplifie : Phi_rey ≈ k'·(Mc/rho0)        k'={k2:+.4f}  R2={r2_simple**2:.3f}")
+
+fig, axes = plt.subplots(1, 3, figsize=(16, 7), sharey=True)
+
+ax = axes[0]
+ax.plot(flux_glob_h[sl_fit]*sc, zf, color='royalblue', lw=2.5, label="Φ_rey = ρ₀⟨u'w'⟩")
+ax.plot((k_romps*Mc_over_rho_h*duc_h_loc)[sl_fit]*sc, zf, color='red', lw=2, ls='--',
+        label='k·(Mc/ρ₀)·Du')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('flux  (×10⁻³)'); ax.set_ylabel('Altitude (m)')
+ax.set_title(f'Romps complet (R²={r_romps**2:.2f})', fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
+
 ax = axes[1]
-ax.plot(duc_h_loc[sb], zb, color='royalblue', lw=2.5, label='u_c - u_e')
-ax.plot(uec_h[sb],     zb, color='crimson',   lw=2.0, ls='--', label='u_e - u_c')
+ax.plot(flux_glob_h[sl_fit]*sc, zf, color='royalblue', lw=2.5, label='Φ_rey')
+ax.plot((k2*Mc_over_rho_h)[sl_fit]*sc, zf, color='green', lw=2, ls='--',
+        label="k'·(Mc/ρ₀)")
 ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('m/s'); ax.set_title('Contrastes', fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3); ax.set_ylabel('Altitude (m)')
+ax.set_xlabel('flux  (×10⁻³)')
+ax.set_title(f'Romps simplifié (R²={r2_simple**2:.2f})', fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
 
-# (c) divergences : seulement sur niveaux valides -> plus de decrochage
 ax = axes[2]
-dd = np.where(valid, div_direct_h, np.nan)[sb]
-de = np.where(valid, div_eq1_h,    np.nan)[sb]
-ax.plot(dd*sc, zb, color='black',  lw=2.5, label='dz(Mc Du) direct')
-ax.plot(de*sc, zb, color='orange', lw=2, ls='--', label='Mc[-delta Du - dz u_e]')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('dPhi/dz  (x1e-3)'); ax.set_title('Budget direct vs eq.1', fontweight='bold')
-ax.legend(fontsize=8); ax.grid(alpha=0.3)
+sc_X = X[ok]*sc; sc_Y = Y[ok]*sc
+ax.scatter(sc_X, sc_Y, s=30, c=zf[ok], cmap='viridis', alpha=0.8)
+lim = [min(sc_X.min(), sc_Y.min()), max(sc_X.max(), sc_Y.max())]
+ax.plot(lim, [k_romps*l for l in lim], 'r--', lw=1.5, label=f'pente k={k_romps:.2f}')
+cb = plt.colorbar(ax.collections[0], ax=ax); cb.set_label('z (m)')
+ax.set_xlabel('(Mc/ρ₀)·Du  (×10⁻³)'); ax.set_ylabel('Φ_rey  (×10⁻³)')
+ax.set_title('Corrélation Romps', fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
 
-plt.suptitle('S30 - eq.1 panache <-> budget  [humide, 2km - '
-             + format(alt[iz_top]/1000, '.0f') + 'km, Mc significatif]',
-             fontsize=12, fontweight='bold')
+plt.suptitle('S31 — Test Romps (2014) : flux de Reynolds vs flux de masse convectif',
+             fontsize=13, fontweight='bold')
+plt.tight_layout(); plt.show()
+
+
+
+
+
+
+
+
+
+# ============================================================================
+# S32 — Variables grande-echelle pour la parametrisation (predicteurs GCM)
+#   - M_int      : flux de masse convectif integre sur la colonne (kg/m/s)
+#   - shear      : cisaillement de vent grande-echelle |du_bar/dz| moyen
+#   - cape_proxy : energie de flottabilite (proxy via theta_v, si dispo) sinon w'^2
+#   On les calcule par region humide pour relier a l'amplitude du flux.
+# ============================================================================
+
+# 1) flux de masse integre (proxy de l'intensite convective)
+M_int_h = np.trapz(Mc_up_h[sl_fit], zf)        # kg m-1 s-1
+M_int_s = np.trapz(Mc_up_s[sl_fit], zf)
+print(f'M integre humide = {M_int_h:.3f} kg/m/s   sec = {M_int_s:.3f}')
+
+# 2) vent moyen de region et cisaillement
+ubar_h_prof = np.zeros(n_z)
+ds_u = xr.open_dataset(path3d('ua'))
+for iz in range(n_z):
+    acc = 0.0; n = 0
+    for it in range(t_stat, n_t):
+        acc += ds_u['ua'].isel({dim_t: it, dim_z: iz}).values[mh].mean()
+        n += 1
+    ubar_h_prof[iz] = acc / n
+    gc.collect()
+ds_u.close(); del ds_u; gc.collect()
+
+dudz_h = np.gradient(ubar_h_prof, alt)
+shear_h = np.nanmean(np.abs(dudz_h[sl_fit]))     # cisaillement moyen (s-1)
+print(f'cisaillement moyen <|du/dz|> humide = {shear_h*1e3:.4f} x1e-3 s-1')
+
+# 3) proxy CAPE via variance de w (energie cinetique verticale convective)
+#    sqrt(<w'^2>) ~ vitesse convective w* liee a CAPE par w* ~ sqrt(2 CAPE)
+w_star_h = np.zeros(n_z)
+ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    acc = 0.0; n = 0
+    for it in range(t_stat, n_t):
+        w_r = ds_w['wa'].isel({dim_t: it, dim_z: iz}).values[mh]
+        acc += (w_r**2).mean(); n += 1
+        del w_r
+    w_star_h[iz] = np.sqrt(acc / n)
+    gc.collect()
+ds_w.close(); del ds_w; gc.collect()
+
+cape_proxy_h = 0.5 * np.nanmax(w_star_h[sl_fit])**2   # ~ CAPE (J/kg)
+print(f'proxy CAPE humide ~ {cape_proxy_h:.1f} J/kg  (w* max={np.nanmax(w_star_h[sl_fit]):.2f} m/s)')
+
+fig, axes = plt.subplots(1, 3, figsize=(15, 7), sharey=True)
+for ax, prof, lab, col in [
+    (axes[0], Mc_up_h[sl_fit]*scM, r'$M_c$ (×10⁻³ kg/m²/s)', 'royalblue'),
+    (axes[1], dudz_h[sl_fit]*1e3,  r'$\partial_z\bar u$ (×10⁻³ s⁻¹)', 'crimson'),
+    (axes[2], w_star_h[sl_fit],    r'$w_*=\sqrt{\langle w^2\rangle}$ (m/s)', 'seagreen')]:
+    ax.plot(prof, zf, color=col, lw=2.5)
+    ax.axvline(0, color='grey', alpha=0.4); ax.grid(alpha=0.3)
+    ax.set_xlabel(lab)
+axes[0].set_ylabel('Altitude (m)')
+plt.suptitle('S32 — Prédicteurs grande-échelle (région humide)', fontsize=13, fontweight='bold')
+plt.tight_layout(); plt.show()
+
+
+
+
+
+
+
+
+
+# ============================================================================
+# S33 — Closure predictive flux de masse  ->  tendance du vent
+#   Modele GCM-able :  Phi_param(z) = k * (Mc/rho0) * Du
+#                      d_t ubar = -(1/rho0) d/dz( rho0 * Phi_param )
+#   On confronte a la VERITE Reynolds  d_t ubar = -(1/rho0) d/dz( rho0 <u'w'> ).
+#   k = k_romps (calibre en S31).  Aucune info Reynolds dans la prediction.
+# ============================================================================
+
+sl = slice(iz_lo, iz_top+1)
+zf = alt[sl].astype(float)
+st = 1e5  # m/s2 -> 1e-5
+
+# flux parametrise (NE connait QUE Mc, rho0, Du, k)
+Phi_param_h = k_romps * (Mc_up_h / rho0) * duc_h_loc        # equivaut a <u'w'> predit
+# tendance predite  (on remet rho0 car flux_glob = rho0 <u'w'>)
+tend_param_h = -np.gradient(rho0 * Phi_param_h, alt) / rho0
+# verite
+tend_rey_h   = -np.gradient(flux_glob_h, alt) / rho0
+
+a = tend_rey_h[sl]; b = tend_param_h[sl]
+ok = np.isfinite(a) & np.isfinite(b)
+corr = np.corrcoef(a[ok], b[ok])[0,1]
+rms  = np.sqrt(np.mean((a[ok]-b[ok])**2))
+skill = 1 - np.sum((a[ok]-b[ok])**2)/np.sum((a[ok]-np.mean(a[ok]))**2)  # Nash-Sutcliffe
+print(f'Closure flux de masse :  corr={corr:+.3f}  RMS={rms*st:.3f} x1e-5  skill(NSE)={skill:+.3f}')
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 8), sharey=True)
+
+ax = axes[0]
+ax.plot(flux_glob_h[sl]*sc, zf, color='royalblue', lw=2.5, label="Φ_rey (vérité)")
+ax.plot((rho0*Phi_param_h)[sl]*sc, zf, color='red', lw=2, ls='--', label='Φ_param = k·Mc·Du')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('ρ₀⟨u\'w\'⟩  (×10⁻³)'); ax.set_ylabel('Altitude (m)')
+ax.set_title('Flux : vérité vs paramétré', fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
+
+ax = axes[1]
+ax.plot(a[ok]*st, zf[ok], color='royalblue', lw=2.5, label='Reynolds (vérité)')
+ax.plot(b[ok]*st, zf[ok], color='red', lw=2, ls='--', label='closure flux de masse')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel(r'$\partial_t\bar u$  (×10⁻⁵ m/s²)')
+ax.set_title(f'Tendance du vent (NSE={skill:.2f})', fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
+
+plt.suptitle('S33 — Closure CMT par flux de masse seul : prédiction de la force convective',
+             fontsize=13, fontweight='bold')
+plt.tight_layout(); plt.show()
+
+
+
+
+
+
+
+
+
+# ============================================================================
+# S34 — Bilan comparatif des closures CMT (region humide, 2km-iz_top)
+#   Critere commun : skill (NSE) sur la tendance du vent d_t ubar.
+#   1) flux de masse        : Phi = k (Mc/rho0) Du
+#   2) down-gradient K(z)    : Phi = -K dz(ubar)  avec K diagnostique
+#   3) reference Reynolds    : skill = 1 par construction
+# ============================================================================
+
+def nse(truth, pred, mask):
+    t = truth[mask]; p = pred[mask]
+    o = np.isfinite(t) & np.isfinite(p)
+    return 1 - np.sum((t[o]-p[o])**2)/np.sum((t[o]-np.mean(t[o]))**2)
+
+mask_sl = np.zeros(n_z, bool); mask_sl[sl] = True
+
+# closure 1 : flux de masse (deja calculee)
+tend_mass = tend_param_h
+
+# closure 2 : down-gradient K diagnostique (K = -<u'w'>/dz(ubar), borne >0)
+dudz = np.gradient(ubar_h_prof, alt)
+K_diag = np.where(np.abs(dudz) > 1e-5, -flux_glob_h/rho0/dudz, np.nan)
+K_diag = np.clip(K_diag, 0, np.nanpercentile(K_diag[sl], 90))   # K>=0, ecrete
+Phi_K  = -K_diag * dudz                                          # = <u'w'> reconstruit
+tend_K = -np.gradient(rho0*Phi_K, alt)/rho0
+
+truth = tend_rey_h
+print('-- Skill (Nash-Sutcliffe) sur la tendance du vent, region humide --')
+print(f'  flux de masse  : NSE = {nse(truth, tend_mass, mask_sl):+.3f}')
+print(f'  down-gradient K : NSE = {nse(truth, tend_K,   mask_sl):+.3f}')
+
+fig, ax = plt.subplots(figsize=(8, 8))
+ax.plot(truth[sl]*st,      zf, color='black',     lw=3,   label='Reynolds (vérité)')
+ax.plot(tend_mass[sl]*st,  zf, color='red',       lw=2, ls='--', label='flux de masse')
+ax.plot(tend_K[sl]*st,     zf, color='seagreen',  lw=2, ls=':',  label='down-gradient K(z)')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel(r'$\partial_t\bar u$  (×10⁻⁵ m/s²)'); ax.set_ylabel('Altitude (m)')
+ax.set_title('S34 — Comparaison des closures CMT\n(région humide, 2 km – sommet convectif)',
+             fontweight='bold')
+ax.legend(fontsize=10); ax.grid(alpha=0.3)
 plt.tight_layout(); plt.show()
