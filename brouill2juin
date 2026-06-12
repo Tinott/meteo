@@ -1,188 +1,67 @@
 # ============================================================================
-# §26 — Sensibilité de l'identité Reynolds↔masse au seuil de détection updraft
-# ----------------------------------------------------------------------------
-# On balaye le couple (W0_MIN, C_SIGMA) -> seuil ws(z)=max(W0, C·σ_w(z)).
-# Pour chaque seuil on recalcule Mc, (u_c-u_e), Phi_masse = Mc·(u_c-u_e)
-# et on confronte au flux de Reynolds VÉRITÉ flux_glob_* (invariant, indép. du seuil).
-# Métriques : corrélation, pente (Reynolds/masse) -> idéalement ~1, et amplitude.
-# ============================================================================
-
-# grille de seuils : (plancher W0 en m/s, multiplicateur c de σ_w)
-seuils = [(0.0, 0.5), (0.0, 1.0), (0.0, 1.5), (0.0, 2.0),
-          (0.5, 1.0), (1.0, 1.0), (0.25, 0.75)]
-
-def diag_flux_masse(W0, C, region_mask):
-    """Recalcule Mc, duc=u_c-u_e, sigma updraft pour un seuil donné, sur une région.
-    Retourne (Mc, duc, Phi, sigma) profils (n_z,)."""
-    Mc  = np.zeros(n_z); duc = np.zeros(n_z); sig = np.zeros(n_z)
-    ds_u = xr.open_dataset(path3d('ua'))
-    ds_w = xr.open_dataset(path3d('wa'))
-    for iz in range(n_z):
-        a_mc = a_uc = a_ue = a_sg = 0.0; n = 0
-        for it in range(t_stat, n_t):
-            u_r = ds_u['ua'].isel({dim_t: it, dim_z: iz}).values[region_mask]
-            w_r = ds_w['wa'].isel({dim_t: it, dim_z: iz}).values[region_mask]
-            ws  = max(W0, C * w_r.std())
-            up  = w_r > ws
-            a_mc += (w_r * up).mean()
-            a_uc += u_r[up].mean()  if up.any()    else u_r.mean()
-            a_ue += u_r[~up].mean() if (~up).any() else u_r.mean()
-            a_sg += up.mean()
-            n += 1
-            del u_r, w_r, up
-        Mc[iz]  = rho0[iz] * a_mc / n
-        duc[iz] = (a_uc - a_ue) / n
-        sig[iz] = a_sg / n
-        gc.collect()
-    ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
-    return Mc, duc, Mc * duc, sig
-
-res_seuil = {}   # (W0,C) -> dict par région
-for (W0, C) in seuils:
-    print(f'seuil W0={W0}  C={C} ...', end=' ', flush=True)
-    d = {}
-    for tag, mask, fr in [('h', mh, flux_glob_h), ('s', ms, flux_glob_s)]:
-        Mc, duc, Phi, sig = diag_flux_masse(W0, C, mask)
-        a = fr[:idx_tropo]; b = Phi[:idx_tropo]
-        ok = np.isfinite(a) & np.isfinite(b)
-        r     = np.corrcoef(a[ok], b[ok])[0, 1]
-        pente = (a[ok] @ b[ok]) / (b[ok] @ b[ok]) if (b[ok] @ b[ok]) != 0 else np.nan
-        d[tag] = dict(Mc=Mc, duc=duc, Phi=Phi, sig=sig, r=r, pente=pente)
-    res_seuil[(W0, C)] = d
-    print(f"corr_h={d['h']['r']:+.3f} pente_h={d['h']['pente']:+.2f} | "
-          f"corr_s={d['s']['r']:+.3f} pente_s={d['s']['pente']:+.2f}")
-
-print('\n── Récap sensibilité au seuil (région HUMIDE) ──')
-print(f"{'W0':>5} {'C':>5} | {'σ@2km(%)':>9} {'corr':>7} {'pente':>7} {'max|Φ|×sc':>10}")
-iz2 = np.argmin(np.abs(alt - 2000))
-for (W0, C), d in res_seuil.items():
-    h = d['h']
-    print(f"{W0:5.2f} {C:5.2f} | {h['sig'][iz2]*100:9.2f} {h['r']:+7.3f} "
-          f"{h['pente']:+7.2f} {np.nanmax(np.abs(h['Phi'][:idx_tropo]))*sc:10.3f}")
-
-
-
-
-
-
-
-
-# ----------------------------------------------------------------------------
-# §26b — La pente (Reynolds/masse) doit rester ≈ 1 si l'identité est robuste.
-# Idée physique : ρ₀<u'w'> = ρ₀ σ(1-σ)(u_c-u_e)(w_c-w_e) est EXACT (top-hat) ;
-# l'approx Mc·(u_c-u_e) néglige le facteur (1-σ) et w_e. Bouger le seuil change
-# σ donc le produit σ(1-σ) — on regarde si la pente dérive avec σ.
-# ----------------------------------------------------------------------------
-fig, axes = plt.subplots(1, 3, figsize=(16, 5))
-labels = [f'{W0:.2f}/{C:.1f}' for (W0, C) in seuils]
-x = np.arange(len(seuils))
-
-ax = axes[0]
-ax.plot(x, [res_seuil[k]['h']['pente'] for k in seuils], 'o-', color='royalblue', label='humide')
-ax.plot(x, [res_seuil[k]['s']['pente'] for k in seuils], 's-', color='saddlebrown', label='sèche')
-ax.axhline(1.0, color='green', ls=':', label='pente idéale = 1')
-ax.set_xticks(x); ax.set_xticklabels(labels, rotation=45, fontsize=8)
-ax.set_ylabel('pente (Reynolds / masse)'); ax.set_xlabel('seuil  W0/C')
-ax.set_title('Pente vs seuil', fontweight='bold'); ax.legend(fontsize=8); ax.grid(alpha=0.3)
-
-ax = axes[1]
-ax.plot(x, [res_seuil[k]['h']['r'] for k in seuils], 'o-', color='royalblue', label='humide')
-ax.plot(x, [res_seuil[k]['s']['r'] for k in seuils], 's-', color='saddlebrown', label='sèche')
-ax.set_xticks(x); ax.set_xticklabels(labels, rotation=45, fontsize=8)
-ax.set_ylabel('corrélation'); ax.set_xlabel('seuil  W0/C')
-ax.set_title('Corrélation vs seuil', fontweight='bold'); ax.set_ylim(0, 1.02)
-ax.legend(fontsize=8); ax.grid(alpha=0.3)
-
-# pente vs σ moyen (0-tropo) : teste le facteur σ(1-σ)
-ax = axes[2]
-for tag, col, mk in [('h', 'royalblue', 'o'), ('s', 'saddlebrown', 's')]:
-    sigm = [np.nanmean(res_seuil[k][tag]['sig'][:idx_tropo]) for k in seuils]
-    pent = [res_seuil[k][tag]['pente'] for k in seuils]
-    ax.scatter(sigm, pent, color=col, marker=mk, s=60,
-               label='humide' if tag == 'h' else 'sèche')
-ax.set_xlabel(r'$\bar\sigma$ updraft (0–tropo)'); ax.set_ylabel('pente')
-ax.axhline(1.0, color='green', ls=':')
-ax.set_title('Pente vs fraction σ', fontweight='bold'); ax.legend(fontsize=8); ax.grid(alpha=0.3)
-
-plt.suptitle('§26 — Sensibilité de l’identité Reynolds↔masse au seuil de détection',
-             fontsize=13, fontweight='bold')
-plt.tight_layout(); plt.show()
-
-
-
-
-
-
-
-
-# ============================================================================
 # §27 — Décomposition de la divergence du flux de masse en deux termes
 # ----------------------------------------------------------------------------
-#   ∂_z[Mc·Δu] = (∂_z Mc)·Δu   +   Mc·(∂_z Δu)        avec Δu = u_c - u_e
-#                └── terme A ──┘   └──── terme B ────┘
-#   A : la divergence du flux de MASSE module le moment via le contraste de vent
-#       (lié à (ε-δ)Mc·Δu, cf. §22 : ∂_z Mc = (ε-δ)Mc)
-#   B : flux de masse agissant sur le CISAILLEMENT du contraste cœur/environnement
-#
-#   La tendance de vent : ∂_t ū = -(1/ρ₀)·∂_z(Mc·Δu) = -(1/ρ₀)(A + B)
+#   d/dz[Mc·Du] = (dMc/dz)·Du  +  Mc·(dDu/dz)     avec Du = u_c - u_e
+#                 \___ terme A __/  \___ terme B __/
+#   tendance vent : d(ubar)/dt = -(1/rho0)·d/dz(Mc·Du) = -(1/rho0)(A + B)
 # ============================================================================
 
+sl = slice(None, idx_tropo)
+st = 1e5  # m/s^2 -> 1e-5
+
 def decompose_div(Mc, duc):
-    """Retourne (divA, divB, divTot) de Phi=Mc·duc, et la tendance -1/ρ₀·divTot."""
     dMc  = np.gradient(Mc,  alt)
     dduc = np.gradient(duc, alt)
-    A = dMc * duc          # (∂_z Mc)·Δu
-    B = Mc  * dduc         # Mc·(∂_z Δu)
-    tot = A + B            # = ∂_z(Mc·duc)
+    A = dMc * duc
+    B = Mc * dduc
+    tot = A + B
     return A, B, tot, -tot / rho0
 
 A_h, B_h, div_h, tend_h = decompose_div(Mc_up_h, duc_h)
 A_s, B_s, div_s, tend_s = decompose_div(Mc_up_s, duc_s)
 
-# vérité Reynolds pour comparaison (déjà en §24)
 tend_rey_h = -np.gradient(flux_glob_h, alt) / rho0
 tend_rey_s = -np.gradient(flux_glob_s, alt) / rho0
 
-sl = slice(None, idx_tropo)
 fig, axes = plt.subplots(2, 2, figsize=(14, 11), sharey=True)
-st = 1e5  # m/s² -> 1e-5
 
-for row, (tag, A, B, div, tend, trey) in enumerate(
-        [('HUMIDE', A_h, B_h, div_h, tend_h, tend_rey_h),
-         ('SÈCHE',  A_s, B_s, div_s, tend_s, tend_rey_s)]):
+cases = [('HUMIDE', A_h, B_h, div_h, tend_h, tend_rey_h, 'royalblue'),
+         ('SECHE',  A_s, B_s, div_s, tend_s, tend_rey_s, 'saddlebrown')]
 
-    # (gauche) les deux termes de la divergence du flux de masse
+for row, (tag, A, B, div, tend, trey, col) in enumerate(cases):
     ax = axes[row, 0]
-    ax.plot(A[sl]*sc,   alt[sl], color='darkorange', lw=2.2, label=r'A = $(\partial_z M_c)\,\Delta u$')
-    ax.plot(B[sl]*sc,   alt[sl], color='purple',     lw=2.2, label=r'B = $M_c\,\partial_z\Delta u$')
+    ax.plot(A[sl]*sc,   alt[sl], color='darkorange', lw=2.2, label='A = (dMc/dz) Du')
+    ax.plot(B[sl]*sc,   alt[sl], color='purple',     lw=2.2, label='B = Mc (dDu/dz)')
     ax.plot(div[sl]*sc, alt[sl], color='black', lw=2.5, ls='--', label='A + B')
     ax.axvline(0, color='grey', alpha=0.4)
-    ax.set_xlabel(r'$\partial_z\Phi$  (×10⁻³)'); ax.set_title(f'{tag} — décomposition divergence', fontweight='bold')
-    ax.legend(fontsize=9); ax.grid(alpha=0.3); ax.set_ylabel('Altitude (m)')
+    ax.set_xlabel('dPhi/dz  (x1e-3)')
+    ax.set_title(tag + ' - decomposition divergence', fontweight='bold')
+    ax.legend(fontsize=9)
+    ax.grid(alpha=0.3)
+    ax.set_ylabel('Altitude (m)')
 
-    # (droite) tendance vent : Reynolds vs masse(A+B)
     ax = axes[row, 1]
-    ax.plot(trey[sl]*st, alt[sl], color='royalblue' if row==0 else 'saddlebrown',
-            lw=2.5, label='Reynolds (vérité)')
-    ax.plot(tend[sl]*st, alt[sl], color='red', lw=2, ls='--', label=r'masse $-\frac1{\rho_0}(A{+}B)$')
+    ax.plot(trey[sl]*st, alt[sl], color=col, lw=2.5, label='Reynolds (verite)')
+    ax.plot(tend[sl]*st, alt[sl], color='red', lw=2, ls='--', label='masse -1/rho0 (A+B)')
     ax.plot((-A[sl]/rho0[sl])*st, alt[sl], color='darkorange', lw=1.3, ls=':', label='part A')
     ax.plot((-B[sl]/rho0[sl])*st, alt[sl], color='purple',     lw=1.3, ls=':', label='part B')
     ax.axvline(0, color='grey', alpha=0.4)
-    ax.set_xlabel(r'$\partial_t\bar u$  (×10⁻⁵ m/s²)'); ax.set_title(f'{tag} — tendance vent', fontweight='bold')
-    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+    ax.set_xlabel('d(ubar)/dt  (x1e-5 m/s2)')
+    ax.set_title(tag + ' - tendance vent', fontweight='bold')
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
 
-plt.suptitle(r'§27 — $\partial_z(M_c\Delta u)=(\partial_z M_c)\Delta u+M_c\partial_z\Delta u$',
-             fontsize=13, fontweight='bold')
-plt.tight_layout(); plt.show()
+plt.suptitle('S27 - d/dz(Mc Du) = (dMc/dz) Du + Mc dDu/dz', fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
 
-# poids relatif des deux termes (norme L2 sur 0-tropo)
-print('── Poids relatif des termes A et B (norme L2, 0–tropo) ──')
-for tag, A, B in [('HUMIDE', A_h, B_h), ('SÈCHE', A_s, B_s)]:
-    nA = np.sqrt(np.nansum(A[sl]**2)); nB = np.sqrt(np.nansum(B[sl]**2))
-    print(f'{tag:7s}: ||A||={nA*sc:7.3f}  ||B||={nB*sc:7.3f}  '
-          f'-> A domine à {100*nA/(nA+nB):4.1f}%')
-
-
+print('-- Poids relatif des termes A et B (norme L2, 0-tropo) --')
+for tag, A, B in [('HUMIDE', A_h, B_h), ('SECHE', A_s, B_s)]:
+    nA = np.sqrt(np.nansum(A[sl]**2))
+    nB = np.sqrt(np.nansum(B[sl]**2))
+    print(tag.ljust(7) + ': ||A||=' + format(nA*sc, '7.3f')
+          + '  ||B||=' + format(nB*sc, '7.3f')
+          + '  -> A domine a ' + format(100*nA/(nA+nB), '4.1f') + '%')
 
 
 
@@ -191,83 +70,83 @@ for tag, A, B in [('HUMIDE', A_h, B_h), ('SÈCHE', A_s, B_s)]:
 
 
 # ============================================================================
-# §28 — Tout exprimer en fonction de Δu = u_c - u_e
+# S28 — Tout exprimer en fonction de Du = u_c - u_e
 # ----------------------------------------------------------------------------
-# En injectant l'éq. bulk-plume (1) ∂_z Mc = (ε-δ)Mc  (§22) dans le terme A :
-#
-#   ∂_z(Mc·Δu) = (ε-δ)·Mc·Δu  +  Mc·∂_z Δu
-#              = Mc·[ (ε-δ)·Δu + ∂_z Δu ]
-#
-# d'où la tendance ENTIÈREMENT pilotée par le flux de masse et le contraste Δu :
-#
-#   ∂_t ū = -(1/ρ₀)·Mc·[ (ε-δ)Δu + ∂_z Δu ]
-#
-# On vérifie que cette réécriture reproduit bien div_h/div_s du §27 (sanity check),
-# puis on caractérise la VARIATION de Δu : valeur, cisaillement ∂_zΔu, et
-# corrélation Δu ↔ ū-u_c (l'autre contraste, cf. avertissement §21).
+#   En injectant dMc/dz = (eps-delta) Mc  (S22) :
+#   d/dz(Mc Du) = Mc [ (eps-delta) Du + dDu/dz ]
+#   d(ubar)/dt  = -(1/rho0) Mc [ (eps-delta) Du + dDu/dz ]
 # ============================================================================
 
-# (ε-δ) déjà calculable ; on le recalcule en s^-1 (sans le ×1000 du §22)
+sl = slice(None, idx_tropo)
+
 def eps_delta_si(M, seuil_rel=0.05):
     dMdz = np.gradient(M, alt)
     seuil = seuil_rel * np.nanmax(np.abs(M))
-    return np.where(np.abs(M) > seuil, dMdz / M, np.nan)   # m^-1
+    return np.where(np.abs(M) > seuil, dMdz / M, np.nan)
 
-edh = eps_delta_si(Mc_up_h); eds = eps_delta_si(Mc_up_s)
+edh = eps_delta_si(Mc_up_h)
+eds = eps_delta_si(Mc_up_s)
 
-# réécriture Mc·[(ε-δ)Δu + ∂_zΔu]  vs  div direct A+B
 div_re_h = Mc_up_h * (edh*duc_h + np.gradient(duc_h, alt))
 div_re_s = Mc_up_s * (eds*duc_s + np.gradient(duc_s, alt))
 
-print('── Sanity check : réécriture (ε-δ) vs dérivée directe ──')
-for tag, d1, d2 in [('HUMIDE', div_h, div_re_h), ('SÈCHE', div_s, div_re_s)]:
-    ok = np.isfinite(d1[sl]) & np.isfinite(d2[sl])
-    err = np.sqrt(np.nanmean((d1[sl][ok[:idx_tropo]] - d2[sl][ok[:idx_tropo]])**2))
-    print(f'{tag:7s}: RMS écart = {err*sc:.4e} ×10⁻³  (≈0 attendu)')
+print('-- Sanity check : reecriture (eps-delta) vs derivee directe --')
+for tag, d1, d2 in [('HUMIDE', div_h, div_re_h), ('SECHE', div_s, div_re_s)]:
+    aa = d1[sl]
+    bb = d2[sl]
+    ok = np.isfinite(aa) & np.isfinite(bb)
+    err = np.sqrt(np.nanmean((aa[ok] - bb[ok])**2))
+    print(tag.ljust(7) + ': RMS ecart = ' + format(err*sc, '.4e') + ' x1e-3  (≈0 attendu)')
 
-# caractérisation de la variation de Δu
 fig, axes = plt.subplots(1, 3, figsize=(16, 6), sharey=True)
 
 ax = axes[0]
-ax.plot(duc_h[sl], alt[sl], color='royalblue', lw=2.5, label=r'$\Delta u=u_c-u_e$ humide')
-ax.plot(duc_s[sl], alt[sl], color='saddlebrown', lw=2.5, label='sèche')
-# autre contraste pour comparaison (ū - u_c), de signe opposé (cf. §21)
-ax.plot((ubar_h-uc_h)[sl], alt[sl], color='royalblue', lw=1.3, ls=':', label=r'$\bar u-u_c$ humide')
-ax.plot((ubar_s-uc_s)[sl], alt[sl], color='saddlebrown', lw=1.3, ls=':', label=r'$\bar u-u_c$ sèche')
-ax.axvline(0, color='grey', alpha=0.4); ax.set_xlabel('m/s')
-ax.set_title('Contrastes de vent', fontweight='bold'); ax.legend(fontsize=8)
-ax.grid(alpha=0.3); ax.set_ylabel('Altitude (m)')
+ax.plot(duc_h[sl], alt[sl], color='royalblue', lw=2.5, label='Du humide')
+ax.plot(duc_s[sl], alt[sl], color='saddlebrown', lw=2.5, label='Du seche')
+ax.plot((ubar_h-uc_h)[sl], alt[sl], color='royalblue', lw=1.3, ls=':', label='ubar-uc humide')
+ax.plot((ubar_s-uc_s)[sl], alt[sl], color='saddlebrown', lw=1.3, ls=':', label='ubar-uc seche')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('m/s')
+ax.set_title('Contrastes de vent', fontweight='bold')
+ax.legend(fontsize=8)
+ax.grid(alpha=0.3)
+ax.set_ylabel('Altitude (m)')
 
 ax = axes[1]
 ax.plot(np.gradient(duc_h, alt)[sl]*1e3, alt[sl], color='royalblue', lw=2.5, label='humide')
-ax.plot(np.gradient(duc_s, alt)[sl]*1e3, alt[sl], color='saddlebrown', lw=2.5, label='sèche')
+ax.plot(np.gradient(duc_s, alt)[sl]*1e3, alt[sl], color='saddlebrown', lw=2.5, label='seche')
 ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel(r'$\partial_z\Delta u$  (×10⁻³ s⁻¹)')
-ax.set_title('Cisaillement du contraste', fontweight='bold'); ax.legend(fontsize=9); ax.grid(alpha=0.3)
+ax.set_xlabel('dDu/dz  (x1e-3 s-1)')
+ax.set_title('Cisaillement du contraste', fontweight='bold')
+ax.legend(fontsize=9)
+ax.grid(alpha=0.3)
 
 ax = axes[2]
 ax.plot(edh[sl]*1000, alt[sl], color='royalblue', lw=2.5, label='humide')
-ax.plot(eds[sl]*1000, alt[sl], color='saddlebrown', lw=2.5, label='sèche')
-ax.axvline(0, color='grey', alpha=0.4); ax.set_xlim(-3, 3)
-ax.set_xlabel(r'$(\varepsilon-\delta)$  (km⁻¹)')
-ax.set_title('Entraînement net', fontweight='bold'); ax.legend(fontsize=9); ax.grid(alpha=0.3)
+ax.plot(eds[sl]*1000, alt[sl], color='saddlebrown', lw=2.5, label='seche')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlim(-3, 3)
+ax.set_xlabel('(eps-delta)  (km-1)')
+ax.set_title('Entrainement net', fontweight='bold')
+ax.legend(fontsize=9)
+ax.grid(alpha=0.3)
 
-plt.suptitle(r'§28 — $\partial_t\bar u=-\frac{1}{\rho_0}M_c[(\varepsilon-\delta)\Delta u+\partial_z\Delta u]$',
+plt.suptitle('S28 - d(ubar)/dt = -(1/rho0) Mc [(eps-delta) Du + dDu/dz]',
              fontsize=13, fontweight='bold')
-plt.tight_layout(); plt.show()
+plt.tight_layout()
+plt.show()
 
-# le contraste Δu est-il ~ constant ? ~ linéaire en z ? -> conditionne la param
-print('\n── Caractérisation de Δu (0–tropo) ──')
-for tag, duc in [('HUMIDE', duc_h), ('SÈCHE', duc_s)]:
-    d = duc[sl]; ok = np.isfinite(d)
+print()
+print('-- Caracterisation de Du (0-tropo) --')
+for tag, duc in [('HUMIDE', duc_h), ('SECHE', duc_s)]:
+    d = duc[sl]
+    ok = np.isfinite(d)
     z = alt[sl][ok]
     pente, ordo = np.polyfit(z, d[ok], 1)
-    print(f'{tag:7s}: <Δu>={np.nanmean(d):+.3f} m/s  σ(Δu)={np.nanstd(d):.3f}  '
-          f'∂_zΔu(lin)={pente*1e3:+.4f}×10⁻³ s⁻¹  '
-          f'ratio σ/|moy|={np.nanstd(d)/abs(np.nanmean(d)):.2f}')
-
-
-
+    print(tag.ljust(7) + ': <Du>=' + format(np.nanmean(d), '+.3f')
+          + ' m/s  sig(Du)=' + format(np.nanstd(d), '.3f')
+          + '  dDu/dz(lin)=' + format(pente*1e3, '+.4f') + 'x1e-3 s-1'
+          + '  ratio sig/|moy|=' + format(np.nanstd(d)/abs(np.nanmean(d)), '.2f'))
 
 
 
@@ -276,16 +155,21 @@ for tag, duc in [('HUMIDE', duc_h), ('SÈCHE', duc_s)]:
 
 
 # ============================================================================
-# §29 — Modèle réduit : Δu paramétré simplement, flux reconstruit
+# S29 — Modele reduit : Du parametre simplement, flux reconstruit
+#   (i)  Du ~ cste = <Du>      -> Phi proportionnel a Mc
+#   (ii) Du ~ a + b z          -> Phi = Mc (a + b z)
 # ============================================================================
+
+sl = slice(None, idx_tropo)
+
 fig, axes = plt.subplots(1, 2, figsize=(13, 8), sharey=True)
 
-for ax, tag, Mc, duc, frey in [
-        (axes[0], 'HUMIDE', Mc_up_h, duc_h, flux_glob_h),
-        (axes[1], 'SÈCHE',  Mc_up_s, duc_s, flux_glob_s)]:
+cases = [(axes[0], 'HUMIDE', Mc_up_h, duc_h, flux_glob_h),
+         (axes[1], 'SECHE',  Mc_up_s, duc_s, flux_glob_s)]
 
-    Mc_t   = Mc[sl]              # (idx_tropo,)
-    duc_t  = duc[sl]            # tronqué AUSSI
+for ax, tag, Mc, duc, frey in cases:
+    Mc_t   = Mc[sl]
+    duc_t  = duc[sl]
     frey_t = frey[sl]
     z      = alt[sl]
 
@@ -298,61 +182,28 @@ for ax, tag, Mc, duc, frey in [
     Phi_cste = Mc_t * duc_cste
     Phi_lin  = Mc_t * duc_lin
 
-    ax.plot(frey_t*sc,  z, color='black', lw=2.5, label='Reynolds vérité')
-    ax.plot(Phi_full*sc, z, color='red',   lw=1.8, ls='--', label=r'$M_c\Delta u$ (réel)')
-    ax.plot(Phi_cste*sc, z, color='teal',  lw=1.6, ls=':',  label=r'$M_c\langle\Delta u\rangle$')
-    ax.plot(Phi_lin*sc,  z, color='orange',lw=1.6, ls='-.', label=r'$M_c(a+bz)$')
+    ax.plot(frey_t*sc,  z, color='black',  lw=2.5, label='Reynolds verite')
+    ax.plot(Phi_full*sc, z, color='red',    lw=1.8, ls='--', label='Mc Du (reel)')
+    ax.plot(Phi_cste*sc, z, color='teal',   lw=1.6, ls=':',  label='Mc <Du>')
+    ax.plot(Phi_lin*sc,  z, color='orange', lw=1.6, ls='-.', label='Mc (a+bz)')
     ax.axvline(0, color='grey', alpha=0.4)
-    ax.set_xlabel(r'flux  (×10⁻³)'); ax.set_title(tag, fontweight='bold')
-    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+    ax.set_xlabel('flux  (x1e-3)')
+    ax.set_title(tag, fontweight='bold')
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
 
-    def rms(P):
-        e = frey_t - P; m = np.isfinite(e); return np.sqrt(np.nanmean(e[m]**2))*sc
-    print(f'{tag:7s}: RMS  full={rms(Phi_full):.3f}  cste={rms(Phi_cste):.3f}  '
-          f'lin={rms(Phi
-
-
-
-
-
-
-
-# ============================================================================
-# §29 — Modèle réduit : Δu paramétré simplement, flux reconstruit
-# ============================================================================
-fig, axes = plt.subplots(1, 2, figsize=(13, 8), sharey=True)
-
-for ax, tag, Mc, duc, frey in [
-        (axes[0], 'HUMIDE', Mc_up_h, duc_h, flux_glob_h),
-        (axes[1], 'SÈCHE',  Mc_up_s, duc_s, flux_glob_s)]:
-
-    Mc_t   = Mc[sl]              # (idx_tropo,)
-    duc_t  = duc[sl]            # tronqué AUSSI
-    frey_t = frey[sl]
-    z      = alt[sl]
-
-    ok = np.isfinite(duc_t)
-    duc_cste = np.full_like(z, np.nanmean(duc_t))
-    b, a = np.polyfit(z[ok], duc_t[ok], 1)
-    duc_lin = a + b*z
-
-    Phi_full = Mc_t * duc_t
-    Phi_cste = Mc_t * duc_cste
-    Phi_lin  = Mc_t * duc_lin
-
-    ax.plot(frey_t*sc,  z, color='black', lw=2.5, label='Reynolds vérité')
-    ax.plot(Phi_full*sc, z, color='red',   lw=1.8, ls='--', label=r'$M_c\Delta u$ (réel)')
-    ax.plot(Phi_cste*sc, z, color='teal',  lw=1.6, ls=':',  label=r'$M_c\langle\Delta u\rangle$')
-    ax.plot(Phi_lin*sc,  z, color='orange',lw=1.6, ls='-.', label=r'$M_c(a+bz)$')
-    ax.axvline(0, color='grey', alpha=0.4)
-    ax.set_xlabel(r'flux  (×10⁻³)'); ax.set_title(tag, fontweight='bold')
-    ax.legend(fontsize=8); ax.grid(alpha=0.3)
-
-    def rms(P):
-        e = frey_t - P; m = np.isfinite(e); return np.sqrt(np.nanmean(e[m]**2))*sc
-    print(f'{tag:7s}: RMS  full={rms(Phi_full):.3f}  cste={rms(Phi_cste):.3f}  '
-          f'lin={rms(Phi_lin):.3f}  (×10⁻³)  [Δu≈{a:+.2f}{b*1e3:+.3f}e-3·z]')
+    e_full = frey_t - Phi_full
+    e_cste = frey_t - Phi_cste
+    e_lin  = frey_t - Phi_lin
+    def rms(e):
+        m = np.isfinite(e)
+        return np.sqrt(np.nanmean(e[m]**2))*sc
+    print(tag.ljust(7) + ': RMS  full=' + format(rms(e_full), '.3f')
+          + '  cste=' + format(rms(e_cste), '.3f')
+          + '  lin=' + format(rms(e_lin), '.3f')
+          + '  (x1e-3)  [Du~' + format(a, '+.2f') + format(b*1e3, '+.3f') + 'e-3 z]')
 
 axes[0].set_ylabel('Altitude (m)')
-plt.suptitle('§29 — Fermetures réduites du contraste Δu', fontsize=13, fontweight='bold')
-plt.tight_layout(); plt.show()
+plt.suptitle('S29 - Fermetures reduites du contraste Du', fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
