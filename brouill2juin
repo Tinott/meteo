@@ -322,3 +322,126 @@ ax.set_title('S34 — Comparaison des closures CMT\n(région humide, 2 km – so
              fontweight='bold')
 ax.legend(fontsize=10); ax.grid(alpha=0.3)
 plt.tight_layout(); plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ============================================================================
+# S34 — Bilan comparatif des closures CMT (region humide, 2km-iz_top)  [CORRIGE]
+# ============================================================================
+
+def nse(truth, pred, mask):
+    t = truth[mask]; p = pred[mask]
+    o = np.isfinite(t) & np.isfinite(p)
+    if o.sum() < 3 or np.std(t[o]) == 0:
+        return np.nan
+    return 1 - np.sum((t[o]-p[o])**2)/np.sum((t[o]-np.mean(t[o]))**2)
+
+mask_sl = np.zeros(n_z, bool); mask_sl[sl] = True
+
+# closure 1 : flux de masse
+tend_mass = tend_param_h
+
+# closure 2 : down-gradient K(z) diagnostique
+#   K = -<u'w'>/dz(ubar).  On NE clippe PAS brutalement : on masque les niveaux
+#   ou dz(ubar) est trop faible (K mal defini) et on interpole pour rester continu.
+dudz   = np.gradient(ubar_h_prof, alt)
+uw_spec = flux_glob_h / rho0                     # <u'w'> specifique (verite)
+
+K_raw = np.where(np.abs(dudz) > 5e-5, -uw_spec/dudz, np.nan)   # seuil plus prudent
+# on ne garde K que la ou il est physique (>=0 : flux down-gradient)
+K_phys = np.where(K_raw >= 0, K_raw, np.nan)
+
+# interpolation des trous pour un K(z) continu sur la fenetre
+zz = alt.astype(float)
+good = np.isfinite(K_phys)
+if good.sum() >= 2:
+    K_diag = np.interp(zz, zz[good], K_phys[good])
+else:
+    K_diag = np.zeros_like(zz)
+
+Phi_K  = -K_diag * dudz                           # <u'w'> reconstruit (continu)
+tend_K = -np.gradient(rho0*Phi_K, alt)/rho0
+
+truth = tend_rey_h
+print('-- Skill (Nash-Sutcliffe) sur la tendance du vent, region humide --')
+print(f'  flux de masse   : NSE = {nse(truth, tend_mass, mask_sl):+.3f}')
+print(f'  down-gradient K  : NSE = {nse(truth, tend_K,   mask_sl):+.3f}')
+print(f'  K median (fenetre) = {np.nanmedian(K_diag[sl]):.1f} m2/s')
+
+fig, ax = plt.subplots(figsize=(8, 8))
+ax.plot(truth[sl]*st,      zf, color='black',     lw=3,   label='Reynolds (vérité)')
+ax.plot(tend_mass[sl]*st,  zf, color='red',       lw=2, ls='--', label='flux de masse')
+ax.plot(tend_K[sl]*st,     zf, color='seagreen',  lw=2, ls=':',  label='down-gradient K(z)')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel(r'$\partial_t\bar u$  (×10⁻⁵ m/s²)'); ax.set_ylabel('Altitude (m)')
+ax.set_title('S34 — Comparaison des closures CMT\n(région humide, 2 km – sommet convectif)',
+             fontweight='bold')
+ax.legend(fontsize=10); ax.grid(alpha=0.3)
+plt.tight_layout(); plt.show()
+
+
+
+
+
+
+
+
+
+# ============================================================================
+# S33 — Closure predictive flux de masse -> tendance du vent  [CORRIGE]
+#   k_romps calibre en S31 sur  flux_glob_h ≈ k·(Mc/rho0)·Du
+#   => Phi_param_h a DEJA la dimension rho0<u'w'> (= flux_glob).
+#      Donc d_t ubar = -(1/rho0) d/dz( Phi_param_h )   (PAS de rho0 en plus)
+# ============================================================================
+
+sl = slice(iz_lo, iz_top+1)
+zf = alt[sl].astype(float)
+st = 1e5
+
+# flux PARAMETRE, meme dimension que flux_glob_h (= rho0<u'w'>)
+Phi_param_h = k_romps * (Mc_up_h / rho0) * duc_h_loc
+
+# tendance : flux_glob est deja rho0<u'w'>, donc on derive directement /rho0
+tend_param_h = -np.gradient(Phi_param_h, alt) / rho0
+tend_rey_h   = -np.gradient(flux_glob_h, alt) / rho0          # verite (coherent)
+
+a = tend_rey_h[sl]; b = tend_param_h[sl]
+ok = np.isfinite(a) & np.isfinite(b)
+corr  = np.corrcoef(a[ok], b[ok])[0,1]
+rms   = np.sqrt(np.mean((a[ok]-b[ok])**2))
+skill = 1 - np.sum((a[ok]-b[ok])**2)/np.sum((a[ok]-np.mean(a[ok]))**2)
+print(f'Closure flux de masse :  corr={corr:+.3f}  RMS={rms*st:.3f} x1e-5  skill(NSE)={skill:+.3f}')
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 8), sharey=True)
+
+ax = axes[0]
+ax.plot(flux_glob_h[sl]*sc,  zf, color='royalblue', lw=2.5, label="Φ_rey (vérité)")
+ax.plot(Phi_param_h[sl]*sc,  zf, color='red', lw=2, ls='--', label='Φ_param = k·(Mc/ρ₀)·Du')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('ρ₀⟨u\'w\'⟩  (×10⁻³)'); ax.set_ylabel('Altitude (m)')
+ax.set_title('Flux : vérité vs paramétré', fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
+
+ax = axes[1]
+ax.plot(a[ok]*st, zf[ok], color='royalblue', lw=2.5, label='Reynolds (vérité)')
+ax.plot(b[ok]*st, zf[ok], color='red', lw=2, ls='--', label='closure flux de masse')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel(r'$\partial_t\bar u$  (×10⁻⁵ m/s²)')
+ax.set_title(f'Tendance du vent (NSE={skill:.2f})', fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
+
+plt.suptitle('S33 — Closure CMT par flux de masse seul : prédiction de la force convective',
+             fontsize=13, fontweight='bold')
+plt.tight_layout(); plt.show()
