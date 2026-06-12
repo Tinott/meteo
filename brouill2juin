@@ -3,3 +3,13 @@
 $(\varepsilon-\delta)=\partial_z M_c/M_c$ est **fortement positif près de la base** (entraînement dominant, le panache aspire de l'air) puis **change de signe en altitude** (détraînement au sommet convectif). C'est la structure bulk-plume canonique de l'éq. (1) de Romps.
 
 Entre 2 et 12 km le signal est bruité et oscille autour de zéro : $M_c$ y est quasi constant, donc le rapport $\partial_z M_c/M_c$ amplifie le moindre bruit. Seuls les niveaux extrêmes (base, sommet) portent un signal robuste. À retenir : l'entraînement net est concentré à la base, pas réparti sur la colonne.
+
+
+
+
+
+### Interprétation S26
+
+Le balayage de seuils montre que la **corrélation** humide est excellente et stable (0.87–0.98) quel que soit le seuil : la *forme* du flux de masse suit robustement le Reynolds. En revanche la **pente** reste systématiquement entre 2 et 3 — jamais proche de 1. Autrement dit, $M_c\,Du$ reproduit bien la structure verticale mais **sous-estime l'amplitude d'un facteur ~2–3**.
+
+Le seuil retenu ($W_0=0,\ C=0.5$) est celui de pente minimale (2.17), faute de mieux. La région sèche est instable (pente jusqu'à 100) dès que le seuil monte : $\sigma$ y devient si petit que $M_c\,Du$ s'effondre et le rapport explose. **Conclusion méthodologique** : la calibration ne doit pas viser une pente=1 illusoire mais accepter un facteur d'échelle $k\sim2$–3, ce que fait S31.
