@@ -196,6 +196,73 @@ for tag, A, B in [('HUMIDE', A_h, B_h), ('SECHE', A_s, B_s)]:
 
 
 
+# ============================================================================
+# S28 — Tout exprimer en fonction de Du = u_c - u_e (MEILLEUR SEUIL S26)
+#   dMc/dz = (eps-delta) Mc  ->  d/dz(Mc Du) = Mc [(eps-delta) Du + dDu/dz]
+#   (CALCULS pleine colonne ; AFFICHAGE 2000-18000 m ; zone humide)
+# ============================================================================
+
+def eps_delta_si(M, seuil_rel=0.05):
+    dMdz = np.gradient(M, alt)
+    seuil = seuil_rel * np.nanmax(np.abs(M))
+    return np.where(np.abs(M) > seuil, dMdz / M, np.nan)
+
+edh = eps_delta_si(Mc_up_h)
+eds = eps_delta_si(Mc_up_s)   # calcul conserve
+
+div_re_h = Mc_up_h * (edh*duc_h + np.gradient(duc_h, alt))
+div_re_s = Mc_up_s * (eds*duc_s + np.gradient(duc_s, alt))   # calcul conserve
+
+print('-- Sanity check : reecriture (eps-delta) vs derivee directe (2-18 km) --')
+for tag, d1, d2 in [('HUMIDE', div_h, div_re_h), ('SECHE', div_s, div_re_s)]:
+    aa = d1[disp]; bb = d2[disp]
+    ok = np.isfinite(aa) & np.isfinite(bb)
+    err = np.sqrt(np.nanmean((aa[ok] - bb[ok])**2))
+    print(tag.ljust(7) + ': RMS ecart = ' + format(err*sc, '.4e') + ' x1e-3  (≈0 attendu)')
+
+fig, axes = plt.subplots(1, 3, figsize=(16, 6), sharey=True)
+
+ax = axes[0]
+ax.plot(duc_h[disp], alt[disp], color='royalblue', lw=2.5, label='Du = u_c - u_e')
+ax.plot((ubar_h-uc_h)[disp], alt[disp], color='royalblue', lw=1.3, ls=':', label='ubar - u_c')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('m/s'); ax.set_title('HUMIDE - contrastes de vent', fontweight='bold')
+ax.legend(fontsize=8); ax.grid(alpha=0.3)
+ax.set_ylabel('Altitude (m)'); ax.set_ylim(2000, 18000)
+
+ax = axes[1]
+ax.plot(np.gradient(duc_h, alt)[disp]*1e3, alt[disp], color='royalblue', lw=2.5, label='humide')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('dDu/dz  (x1e-3 s-1)')
+ax.set_title('HUMIDE - cisaillement du contraste', fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3); ax.set_ylim(2000, 18000)
+
+ax = axes[2]
+ax.plot(edh[disp]*1000, alt[disp], color='royalblue', lw=2.5, label='humide')
+ax.axvline(0, color='grey', alpha=0.4); ax.set_xlim(-3, 3)
+ax.set_xlabel('(eps-delta)  (km-1)')
+ax.set_title('HUMIDE - entrainement net', fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3); ax.set_ylim(2000, 18000)
+
+plt.suptitle('S28 - Mc [(eps-delta) Du + dDu/dz]  [best seuil, humide, 2-18 km]',
+             fontsize=13, fontweight='bold')
+plt.tight_layout(); plt.show()
+
+print()
+print('-- Caracterisation de Du (2-18 km) --')
+for tag, duc in [('HUMIDE', duc_h), ('SECHE', duc_s)]:
+    d = duc[disp]; ok = np.isfinite(d); z = alt[disp][ok]
+    pente, ordo = np.polyfit(z, d[ok], 1)
+    print(tag.ljust(7) + ': <Du>=' + format(np.nanmean(d), '+.3f')
+          + ' m/s  sig(Du)=' + format(np.nanstd(d), '.3f')
+          + '  dDu/dz(lin)=' + format(pente*1e3, '+.4f') + 'x1e-3 s-1'
+          + '  ratio sig/|moy|=' + format(np.nanstd(d)/abs(np.nanmean(d)), '.2f'))
+
+
+
+
+
+
 
 
 
