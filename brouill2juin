@@ -1,14 +1,147 @@
 # ============================================================================
-# S27 — Decomposition de la divergence du flux de masse en deux termes
-#   d/dz[Mc·Du] = (dMc/dz)·Du  +  Mc·(dDu/dz)     avec Du = u_c - u_e
-#   tendance vent : d(ubar)/dt = -(1/rho0)·d/dz(Mc·Du) = -(1/rho0)(A + B)
-#   (CALCULS pleine colonne ; AFFICHAGE 2000-18000 m ; zone humide)
+# S26 — Sensibilite au seuil + SELECTION du meilleur seuil
+#   Pour chaque (W0,C) : seuil ws(z)=max(W0, C*sigma_w(z)).
+#   On recalcule Mc, Du=u_c-u_e, Phi=Mc*Du, puis on confronte au Reynolds verite.
+#   Meilleur seuil = celui qui minimise |pente_humide - 1| (identite la plus fidele).
 # ============================================================================
 
-# fenetre d'affichage 2000 - 18000 m
 iz_lo = int(np.searchsorted(alt, 2000))
 iz_hi = int(np.searchsorted(alt, 18000))
 disp  = slice(iz_lo, iz_hi)
+
+seuils = [(0.0, 0.5), (0.0, 1.0), (0.0, 1.5), (0.0, 2.0),
+          (0.5, 1.0), (1.0, 1.0), (0.25, 0.75)]
+
+def diag_flux_masse(W0, C, region_mask):
+    """Recalcule (Mc, Du, Phi, sigma) profils pleine colonne pour un seuil donne."""
+    Mc  = np.zeros(n_z); duc = np.zeros(n_z); sig = np.zeros(n_z)
+    ds_u = xr.open_dataset(path3d('ua'))
+    ds_w = xr.open_dataset(path3d('wa'))
+    for iz in range(n_z):
+        a_mc = a_uc = a_ue = a_sg = 0.0; n = 0
+        for it in range(t_stat, n_t):
+            u_r = ds_u['ua'].isel({dim_t: it, dim_z: iz}).values[region_mask]
+            w_r = ds_w['wa'].isel({dim_t: it, dim_z: iz}).values[region_mask]
+            ws  = max(W0, C * w_r.std())
+            up  = w_r > ws
+            a_mc += (w_r * up).mean()
+            a_uc += u_r[up].mean()  if up.any()    else u_r.mean()
+            a_ue += u_r[~up].mean() if (~up).any() else u_r.mean()
+            a_sg += up.mean()
+            n += 1
+            del u_r, w_r, up
+        Mc[iz]  = rho0[iz] * a_mc / n
+        duc[iz] = (a_uc - a_ue) / n
+        sig[iz] = a_sg / n
+        gc.collect()
+    ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
+    return Mc, duc, Mc * duc, sig
+
+res_seuil = {}
+for (W0, C) in seuils:
+    print('seuil W0=' + str(W0) + ' C=' + str(C) + ' ...', end=' ', flush=True)
+    d = {}
+    for tag, mask, fr in [('h', mh, flux_glob_h), ('s', ms, flux_glob_s)]:
+        Mc, duc, Phi, sig = diag_flux_masse(W0, C, mask)
+        a = fr[disp]; b = Phi[disp]
+        ok = np.isfinite(a) & np.isfinite(b)
+        r     = np.corrcoef(a[ok], b[ok])[0, 1]
+        pente = (a[ok] @ b[ok]) / (b[ok] @ b[ok]) if (b[ok] @ b[ok]) != 0 else np.nan
+        d[tag] = dict(Mc=Mc, duc=duc, Phi=Phi, sig=sig, r=r, pente=pente)
+    res_seuil[(W0, C)] = d
+    print('corr_h=' + format(d['h']['r'], '+.3f')
+          + ' pente_h=' + format(d['h']['pente'], '+.2f')
+          + ' | corr_s=' + format(d['s']['r'], '+.3f')
+          + ' pente_s=' + format(d['s']['pente'], '+.2f'))
+
+# --- SELECTION du meilleur seuil : pente humide la plus proche de 1 ---
+def score(k):
+    p = res_seuil[k]['h']['pente']
+    return abs(p - 1.0) if np.isfinite(p) else np.inf
+
+best = min(seuils, key=score)
+W0_BEST, C_BEST = best
+print()
+print('>>> MEILLEUR SEUIL : W0=' + str(W0_BEST) + '  C=' + str(C_BEST)
+      + '  (pente_h=' + format(res_seuil[best]['h']['pente'], '+.3f')
+      + ', corr_h=' + format(res_seuil[best]['h']['r'], '+.3f') + ')')
+
+# --- on FIGE les profils du meilleur seuil pour tout le reste (S27-S29) ---
+Mc_up_h   = res_seuil[best]['h']['Mc'].copy()
+Mc_up_s   = res_seuil[best]['s']['Mc'].copy()
+duc_h     = res_seuil[best]['h']['duc'].copy()
+duc_s     = res_seuil[best]['s']['duc'].copy()
+Phi_masse_h = res_seuil[best]['h']['Phi'].copy()
+Phi_masse_s = res_seuil[best]['s']['Phi'].copy()
+sig_h     = res_seuil[best]['h']['sig'].copy()
+sig_s     = res_seuil[best]['s']['sig'].copy()
+print('Mc_up_*, duc_*, Phi_masse_* recalcules avec le meilleur seuil.')
+
+
+
+
+
+
+
+
+
+# ----------------------------------------------------------------------------
+# S26b — Visualisation : pente et correlation vs seuil ; le best surligne
+# ----------------------------------------------------------------------------
+fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+labels = [str(W0) + '/' + str(C) for (W0, C) in seuils]
+x = np.arange(len(seuils))
+ibest = seuils.index(best)
+
+ax = axes[0]
+ax.plot(x, [res_seuil[k]['h']['pente'] for k in seuils], 'o-', color='royalblue', label='humide')
+ax.plot(x, [res_seuil[k]['s']['pente'] for k in seuils], 's-', color='saddlebrown', label='seche')
+ax.axhline(1.0, color='green', ls=':', label='pente ideale = 1')
+ax.scatter([ibest], [res_seuil[best]['h']['pente']], s=160, facecolors='none',
+           edgecolors='red', linewidths=2, zorder=5, label='best')
+ax.set_xticks(x); ax.set_xticklabels(labels, rotation=45, fontsize=8)
+ax.set_ylabel('pente (Reynolds / masse)'); ax.set_xlabel('seuil W0/C')
+ax.set_title('Pente vs seuil', fontweight='bold'); ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+ax = axes[1]
+ax.plot(x, [res_seuil[k]['h']['r'] for k in seuils], 'o-', color='royalblue', label='humide')
+ax.plot(x, [res_seuil[k]['s']['r'] for k in seuils], 's-', color='saddlebrown', label='seche')
+ax.scatter([ibest], [res_seuil[best]['h']['r']], s=160, facecolors='none',
+           edgecolors='red', linewidths=2, zorder=5, label='best')
+ax.set_xticks(x); ax.set_xticklabels(labels, rotation=45, fontsize=8)
+ax.set_ylabel('correlation'); ax.set_xlabel('seuil W0/C')
+ax.set_title('Correlation vs seuil', fontweight='bold'); ax.set_ylim(0, 1.02)
+ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+ax = axes[2]
+for tag, col, mk in [('h', 'royalblue', 'o'), ('s', 'saddlebrown', 's')]:
+    sigm = [np.nanmean(res_seuil[k][tag]['sig'][disp]) for k in seuils]
+    pent = [res_seuil[k][tag]['pente'] for k in seuils]
+    ax.scatter(sigm, pent, color=col, marker=mk, s=60,
+               label='humide' if tag == 'h' else 'seche')
+ax.axhline(1.0, color='green', ls=':')
+ax.set_xlabel('sigma updraft moyen (2-18 km)'); ax.set_ylabel('pente')
+ax.set_title('Pente vs fraction sigma', fontweight='bold'); ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+plt.suptitle('S26 - Selection du seuil  (best = W0=' + str(W0_BEST) + ' C=' + str(C_BEST) + ')',
+             fontsize=13, fontweight='bold')
+plt.tight_layout(); plt.show()
+
+
+
+
+
+
+
+
+
+
+# ============================================================================
+# S27 — Decomposition de la divergence du flux de masse (MEILLEUR SEUIL S26)
+#   d/dz[Mc·Du] = (dMc/dz)·Du  +  Mc·(dDu/dz)     avec Du = u_c - u_e
+#   (CALCULS pleine colonne ; AFFICHAGE 2000-18000 m ; zone humide)
+# ============================================================================
+
 st = 1e5  # m/s^2 -> 1e-5
 
 def decompose_div(Mc, duc):
@@ -34,10 +167,8 @@ ax.plot(div_h[disp]*sc, alt[disp], color='black', lw=2.5, ls='--', label='A + B'
 ax.axvline(0, color='grey', alpha=0.4)
 ax.set_xlabel('dPhi/dz  (x1e-3)')
 ax.set_title('HUMIDE - decomposition divergence', fontweight='bold')
-ax.legend(fontsize=9)
-ax.grid(alpha=0.3)
-ax.set_ylabel('Altitude (m)')
-ax.set_ylim(2000, 18000)
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
+ax.set_ylabel('Altitude (m)'); ax.set_ylim(2000, 18000)
 
 ax = axes[1]
 ax.plot(tend_rey_h[disp]*st, alt[disp], color='royalblue', lw=2.5, label='Reynolds (verite)')
@@ -47,19 +178,15 @@ ax.plot((-B_h[disp]/rho0[disp])*st, alt[disp], color='purple',     lw=1.3, ls=':
 ax.axvline(0, color='grey', alpha=0.4)
 ax.set_xlabel('d(ubar)/dt  (x1e-5 m/s2)')
 ax.set_title('HUMIDE - tendance vent', fontweight='bold')
-ax.legend(fontsize=8)
-ax.grid(alpha=0.3)
-ax.set_ylim(2000, 18000)
+ax.legend(fontsize=8); ax.grid(alpha=0.3); ax.set_ylim(2000, 18000)
 
-plt.suptitle('S27 - d/dz(Mc Du) = (dMc/dz) Du + Mc dDu/dz  [humide, 2-18 km]',
+plt.suptitle('S27 - decomposition divergence  [best seuil, humide, 2-18 km]',
              fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
+plt.tight_layout(); plt.show()
 
 print('-- Poids relatif des termes A et B (norme L2, 2-18 km) --')
 for tag, A, B in [('HUMIDE', A_h, B_h), ('SECHE', A_s, B_s)]:
-    nA = np.sqrt(np.nansum(A[disp]**2))
-    nB = np.sqrt(np.nansum(B[disp]**2))
+    nA = np.sqrt(np.nansum(A[disp]**2)); nB = np.sqrt(np.nansum(B[disp]**2))
     print(tag.ljust(7) + ': ||A||=' + format(nA*sc, '7.3f')
           + '  ||B||=' + format(nB*sc, '7.3f')
           + '  -> A domine a ' + format(100*nA/(nA+nB), '4.1f') + '%')
@@ -72,107 +199,14 @@ for tag, A, B in [('HUMIDE', A_h, B_h), ('SECHE', A_s, B_s)]:
 
 
 
-
-
-
-
-
 # ============================================================================
-# S28 — Tout exprimer en fonction de Du = u_c - u_e
-#   dMc/dz = (eps-delta) Mc  ->  d/dz(Mc Du) = Mc [(eps-delta) Du + dDu/dz]
-#   (CALCULS humide + seche ; AFFICHAGE humide seul)
+# S29 — Fermetures reduites du contraste Du (MEILLEUR SEUIL S26)
+#   (i) Du ~ cste = <Du> ;  (ii) Du ~ a + b z
+#   (AFFICHAGE 2000-18000 m ; zone humide)
 # ============================================================================
-
-sl = slice(None, idx_tropo)
-
-def eps_delta_si(M, seuil_rel=0.05):
-    dMdz = np.gradient(M, alt)
-    seuil = seuil_rel * np.nanmax(np.abs(M))
-    return np.where(np.abs(M) > seuil, dMdz / M, np.nan)
-
-edh = eps_delta_si(Mc_up_h)
-eds = eps_delta_si(Mc_up_s)   # calcul conserve
-
-div_re_h = Mc_up_h * (edh*duc_h + np.gradient(duc_h, alt))
-div_re_s = Mc_up_s * (eds*duc_s + np.gradient(duc_s, alt))   # calcul conserve
-
-print('-- Sanity check : reecriture (eps-delta) vs derivee directe --')
-for tag, d1, d2 in [('HUMIDE', div_h, div_re_h), ('SECHE', div_s, div_re_s)]:
-    aa = d1[sl]
-    bb = d2[sl]
-    ok = np.isfinite(aa) & np.isfinite(bb)
-    err = np.sqrt(np.nanmean((aa[ok] - bb[ok])**2))
-    print(tag.ljust(7) + ': RMS ecart = ' + format(err*sc, '.4e') + ' x1e-3  (≈0 attendu)')
-
-fig, axes = plt.subplots(1, 3, figsize=(16, 6), sharey=True)
-
-ax = axes[0]
-ax.plot(duc_h[sl], alt[sl], color='royalblue', lw=2.5, label='Du = u_c - u_e')
-ax.plot((ubar_h-uc_h)[sl], alt[sl], color='royalblue', lw=1.3, ls=':', label='ubar - u_c')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('m/s')
-ax.set_title('HUMIDE - contrastes de vent', fontweight='bold')
-ax.legend(fontsize=8)
-ax.grid(alpha=0.3)
-ax.set_ylabel('Altitude (m)')
-
-ax = axes[1]
-ax.plot(np.gradient(duc_h, alt)[sl]*1e3, alt[sl], color='royalblue', lw=2.5, label='humide')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('dDu/dz  (x1e-3 s-1)')
-ax.set_title('HUMIDE - cisaillement du contraste', fontweight='bold')
-ax.legend(fontsize=9)
-ax.grid(alpha=0.3)
-
-ax = axes[2]
-ax.plot(edh[sl]*1000, alt[sl], color='royalblue', lw=2.5, label='humide')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlim(-3, 3)
-ax.set_xlabel('(eps-delta)  (km-1)')
-ax.set_title('HUMIDE - entrainement net', fontweight='bold')
-ax.legend(fontsize=9)
-ax.grid(alpha=0.3)
-
-plt.suptitle('S28 - d(ubar)/dt = -(1/rho0) Mc [(eps-delta) Du + dDu/dz]  [zone humide]',
-             fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
-
-print()
-print('-- Caracterisation de Du (0-tropo) --')
-for tag, duc in [('HUMIDE', duc_h), ('SECHE', duc_s)]:
-    d = duc[sl]
-    ok = np.isfinite(d)
-    z = alt[sl][ok]
-    pente, ordo = np.polyfit(z, d[ok], 1)
-    print(tag.ljust(7) + ': <Du>=' + format(np.nanmean(d), '+.3f')
-          + ' m/s  sig(Du)=' + format(np.nanstd(d), '.3f')
-          + '  dDu/dz(lin)=' + format(pente*1e3, '+.4f') + 'x1e-3 s-1'
-          + '  ratio sig/|moy|=' + format(np.nanstd(d)/abs(np.nanmean(d)), '.2f'))
-
-
-
-
-
-
-
-# ============================================================================
-# S29 — Modele reduit : Du parametre simplement, flux reconstruit
-#   (i)  Du ~ cste = <Du>      -> Phi proportionnel a Mc
-#   (ii) Du ~ a + b z          -> Phi = Mc (a + b z)
-#   (CALCULS pleine colonne ; AFFICHAGE 2000-18000 m ; zone humide)
-# ============================================================================
-
-iz_lo = int(np.searchsorted(alt, 2000))
-iz_hi = int(np.searchsorted(alt, 18000))
-disp  = slice(iz_lo, iz_hi)
 
 def reduit(Mc, duc, frey):
-    # fit du contraste sur la fenetre d'affichage 2-18 km
-    Mc_d   = Mc[disp]
-    duc_d  = duc[disp]
-    frey_d = frey[disp]
-    z      = alt[disp]
+    Mc_d   = Mc[disp]; duc_d = duc[disp]; frey_d = frey[disp]; z = alt[disp]
     ok = np.isfinite(duc_d)
     duc_cste = np.full_like(z, np.nanmean(duc_d))
     b, a = np.polyfit(z[ok], duc_d[ok], 1)
@@ -188,16 +222,12 @@ ax.plot(Phi_full_h*sc, z_h, color='red',    lw=1.8, ls='--', label='Mc Du (reel)
 ax.plot(Phi_cste_h*sc, z_h, color='teal',   lw=1.6, ls=':',  label='Mc <Du>')
 ax.plot(Phi_lin_h*sc,  z_h, color='orange', lw=1.6, ls='-.', label='Mc (a+bz)')
 ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('flux  (x1e-3)')
-ax.set_ylabel('Altitude (m)')
+ax.set_xlabel('flux  (x1e-3)'); ax.set_ylabel('Altitude (m)')
 ax.set_title('HUMIDE - fermetures reduites du contraste Du', fontweight='bold')
-ax.legend(fontsize=9)
-ax.grid(alpha=0.3)
-ax.set_ylim(2000, 18000)
-plt.suptitle('S29 - Fermetures reduites du contraste Du  [humide, 2-18 km]',
+ax.legend(fontsize=9); ax.grid(alpha=0.3); ax.set_ylim(2000, 18000)
+plt.suptitle('S29 - Fermetures reduites  [best seuil, humide, 2-18 km]',
              fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
+plt.tight_layout(); plt.show()
 
 def rms_set(frey_d, Pf, Pc, Pl):
     def rms(e):
