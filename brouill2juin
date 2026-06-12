@@ -1,9 +1,8 @@
 # ============================================================================
-# §27 — Décomposition de la divergence du flux de masse en deux termes
-# ----------------------------------------------------------------------------
+# S27 — Decomposition de la divergence du flux de masse en deux termes
 #   d/dz[Mc·Du] = (dMc/dz)·Du  +  Mc·(dDu/dz)     avec Du = u_c - u_e
-#                 \___ terme A __/  \___ terme B __/
 #   tendance vent : d(ubar)/dt = -(1/rho0)·d/dz(Mc·Du) = -(1/rho0)(A + B)
+#   (CALCULS humide + seche ; AFFICHAGE humide seul)
 # ============================================================================
 
 sl = slice(None, idx_tropo)
@@ -18,40 +17,37 @@ def decompose_div(Mc, duc):
     return A, B, tot, -tot / rho0
 
 A_h, B_h, div_h, tend_h = decompose_div(Mc_up_h, duc_h)
-A_s, B_s, div_s, tend_s = decompose_div(Mc_up_s, duc_s)
+A_s, B_s, div_s, tend_s = decompose_div(Mc_up_s, duc_s)   # calcul conserve
 
 tend_rey_h = -np.gradient(flux_glob_h, alt) / rho0
-tend_rey_s = -np.gradient(flux_glob_s, alt) / rho0
+tend_rey_s = -np.gradient(flux_glob_s, alt) / rho0        # calcul conserve
 
-fig, axes = plt.subplots(2, 2, figsize=(14, 11), sharey=True)
+fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
 
-cases = [('HUMIDE', A_h, B_h, div_h, tend_h, tend_rey_h, 'royalblue'),
-         ('SECHE',  A_s, B_s, div_s, tend_s, tend_rey_s, 'saddlebrown')]
+ax = axes[0]
+ax.plot(A_h[sl]*sc,   alt[sl], color='darkorange', lw=2.2, label='A = (dMc/dz) Du')
+ax.plot(B_h[sl]*sc,   alt[sl], color='purple',     lw=2.2, label='B = Mc (dDu/dz)')
+ax.plot(div_h[sl]*sc, alt[sl], color='black', lw=2.5, ls='--', label='A + B')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('dPhi/dz  (x1e-3)')
+ax.set_title('HUMIDE - decomposition divergence', fontweight='bold')
+ax.legend(fontsize=9)
+ax.grid(alpha=0.3)
+ax.set_ylabel('Altitude (m)')
 
-for row, (tag, A, B, div, tend, trey, col) in enumerate(cases):
-    ax = axes[row, 0]
-    ax.plot(A[sl]*sc,   alt[sl], color='darkorange', lw=2.2, label='A = (dMc/dz) Du')
-    ax.plot(B[sl]*sc,   alt[sl], color='purple',     lw=2.2, label='B = Mc (dDu/dz)')
-    ax.plot(div[sl]*sc, alt[sl], color='black', lw=2.5, ls='--', label='A + B')
-    ax.axvline(0, color='grey', alpha=0.4)
-    ax.set_xlabel('dPhi/dz  (x1e-3)')
-    ax.set_title(tag + ' - decomposition divergence', fontweight='bold')
-    ax.legend(fontsize=9)
-    ax.grid(alpha=0.3)
-    ax.set_ylabel('Altitude (m)')
+ax = axes[1]
+ax.plot(tend_rey_h[sl]*st, alt[sl], color='royalblue', lw=2.5, label='Reynolds (verite)')
+ax.plot(tend_h[sl]*st,     alt[sl], color='red', lw=2, ls='--', label='masse -1/rho0 (A+B)')
+ax.plot((-A_h[sl]/rho0[sl])*st, alt[sl], color='darkorange', lw=1.3, ls=':', label='part A')
+ax.plot((-B_h[sl]/rho0[sl])*st, alt[sl], color='purple',     lw=1.3, ls=':', label='part B')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('d(ubar)/dt  (x1e-5 m/s2)')
+ax.set_title('HUMIDE - tendance vent', fontweight='bold')
+ax.legend(fontsize=8)
+ax.grid(alpha=0.3)
 
-    ax = axes[row, 1]
-    ax.plot(trey[sl]*st, alt[sl], color=col, lw=2.5, label='Reynolds (verite)')
-    ax.plot(tend[sl]*st, alt[sl], color='red', lw=2, ls='--', label='masse -1/rho0 (A+B)')
-    ax.plot((-A[sl]/rho0[sl])*st, alt[sl], color='darkorange', lw=1.3, ls=':', label='part A')
-    ax.plot((-B[sl]/rho0[sl])*st, alt[sl], color='purple',     lw=1.3, ls=':', label='part B')
-    ax.axvline(0, color='grey', alpha=0.4)
-    ax.set_xlabel('d(ubar)/dt  (x1e-5 m/s2)')
-    ax.set_title(tag + ' - tendance vent', fontweight='bold')
-    ax.legend(fontsize=8)
-    ax.grid(alpha=0.3)
-
-plt.suptitle('S27 - d/dz(Mc Du) = (dMc/dz) Du + Mc dDu/dz', fontsize=13, fontweight='bold')
+plt.suptitle('S27 - d/dz(Mc Du) = (dMc/dz) Du + Mc dDu/dz  [zone humide]',
+             fontsize=13, fontweight='bold')
 plt.tight_layout()
 plt.show()
 
@@ -69,12 +65,17 @@ for tag, A, B in [('HUMIDE', A_h, B_h), ('SECHE', A_s, B_s)]:
 
 
 
+
+
+
+
+
+
+
 # ============================================================================
 # S28 — Tout exprimer en fonction de Du = u_c - u_e
-# ----------------------------------------------------------------------------
-#   En injectant dMc/dz = (eps-delta) Mc  (S22) :
-#   d/dz(Mc Du) = Mc [ (eps-delta) Du + dDu/dz ]
-#   d(ubar)/dt  = -(1/rho0) Mc [ (eps-delta) Du + dDu/dz ]
+#   dMc/dz = (eps-delta) Mc  ->  d/dz(Mc Du) = Mc [(eps-delta) Du + dDu/dz]
+#   (CALCULS humide + seche ; AFFICHAGE humide seul)
 # ============================================================================
 
 sl = slice(None, idx_tropo)
@@ -85,10 +86,10 @@ def eps_delta_si(M, seuil_rel=0.05):
     return np.where(np.abs(M) > seuil, dMdz / M, np.nan)
 
 edh = eps_delta_si(Mc_up_h)
-eds = eps_delta_si(Mc_up_s)
+eds = eps_delta_si(Mc_up_s)   # calcul conserve
 
 div_re_h = Mc_up_h * (edh*duc_h + np.gradient(duc_h, alt))
-div_re_s = Mc_up_s * (eds*duc_s + np.gradient(duc_s, alt))
+div_re_s = Mc_up_s * (eds*duc_s + np.gradient(duc_s, alt))   # calcul conserve
 
 print('-- Sanity check : reecriture (eps-delta) vs derivee directe --')
 for tag, d1, d2 in [('HUMIDE', div_h, div_re_h), ('SECHE', div_s, div_re_s)]:
@@ -101,37 +102,33 @@ for tag, d1, d2 in [('HUMIDE', div_h, div_re_h), ('SECHE', div_s, div_re_s)]:
 fig, axes = plt.subplots(1, 3, figsize=(16, 6), sharey=True)
 
 ax = axes[0]
-ax.plot(duc_h[sl], alt[sl], color='royalblue', lw=2.5, label='Du humide')
-ax.plot(duc_s[sl], alt[sl], color='saddlebrown', lw=2.5, label='Du seche')
-ax.plot((ubar_h-uc_h)[sl], alt[sl], color='royalblue', lw=1.3, ls=':', label='ubar-uc humide')
-ax.plot((ubar_s-uc_s)[sl], alt[sl], color='saddlebrown', lw=1.3, ls=':', label='ubar-uc seche')
+ax.plot(duc_h[sl], alt[sl], color='royalblue', lw=2.5, label='Du = u_c - u_e')
+ax.plot((ubar_h-uc_h)[sl], alt[sl], color='royalblue', lw=1.3, ls=':', label='ubar - u_c')
 ax.axvline(0, color='grey', alpha=0.4)
 ax.set_xlabel('m/s')
-ax.set_title('Contrastes de vent', fontweight='bold')
+ax.set_title('HUMIDE - contrastes de vent', fontweight='bold')
 ax.legend(fontsize=8)
 ax.grid(alpha=0.3)
 ax.set_ylabel('Altitude (m)')
 
 ax = axes[1]
 ax.plot(np.gradient(duc_h, alt)[sl]*1e3, alt[sl], color='royalblue', lw=2.5, label='humide')
-ax.plot(np.gradient(duc_s, alt)[sl]*1e3, alt[sl], color='saddlebrown', lw=2.5, label='seche')
 ax.axvline(0, color='grey', alpha=0.4)
 ax.set_xlabel('dDu/dz  (x1e-3 s-1)')
-ax.set_title('Cisaillement du contraste', fontweight='bold')
+ax.set_title('HUMIDE - cisaillement du contraste', fontweight='bold')
 ax.legend(fontsize=9)
 ax.grid(alpha=0.3)
 
 ax = axes[2]
 ax.plot(edh[sl]*1000, alt[sl], color='royalblue', lw=2.5, label='humide')
-ax.plot(eds[sl]*1000, alt[sl], color='saddlebrown', lw=2.5, label='seche')
 ax.axvline(0, color='grey', alpha=0.4)
 ax.set_xlim(-3, 3)
 ax.set_xlabel('(eps-delta)  (km-1)')
-ax.set_title('Entrainement net', fontweight='bold')
+ax.set_title('HUMIDE - entrainement net', fontweight='bold')
 ax.legend(fontsize=9)
 ax.grid(alpha=0.3)
 
-plt.suptitle('S28 - d(ubar)/dt = -(1/rho0) Mc [(eps-delta) Du + dDu/dz]',
+plt.suptitle('S28 - d(ubar)/dt = -(1/rho0) Mc [(eps-delta) Du + dDu/dz]  [zone humide]',
              fontsize=13, fontweight='bold')
 plt.tight_layout()
 plt.show()
@@ -154,56 +151,64 @@ for tag, duc in [('HUMIDE', duc_h), ('SECHE', duc_s)]:
 
 
 
+
+
+
+
+
+
+
+
 # ============================================================================
 # S29 — Modele reduit : Du parametre simplement, flux reconstruit
 #   (i)  Du ~ cste = <Du>      -> Phi proportionnel a Mc
 #   (ii) Du ~ a + b z          -> Phi = Mc (a + b z)
+#   (CALCULS humide + seche ; AFFICHAGE humide seul)
 # ============================================================================
 
 sl = slice(None, idx_tropo)
 
-fig, axes = plt.subplots(1, 2, figsize=(13, 8), sharey=True)
-
-cases = [(axes[0], 'HUMIDE', Mc_up_h, duc_h, flux_glob_h),
-         (axes[1], 'SECHE',  Mc_up_s, duc_s, flux_glob_s)]
-
-for ax, tag, Mc, duc, frey in cases:
+def reduit(Mc, duc, frey):
     Mc_t   = Mc[sl]
     duc_t  = duc[sl]
     frey_t = frey[sl]
     z      = alt[sl]
-
     ok = np.isfinite(duc_t)
     duc_cste = np.full_like(z, np.nanmean(duc_t))
     b, a = np.polyfit(z[ok], duc_t[ok], 1)
     duc_lin = a + b*z
+    return Mc_t*duc_t, Mc_t*duc_cste, Mc_t*duc_lin, frey_t, z, a, b
 
-    Phi_full = Mc_t * duc_t
-    Phi_cste = Mc_t * duc_cste
-    Phi_lin  = Mc_t * duc_lin
+Phi_full_h, Phi_cste_h, Phi_lin_h, frey_h, z_h, a_h, b_h = reduit(Mc_up_h, duc_h, flux_glob_h)
+Phi_full_s, Phi_cste_s, Phi_lin_s, frey_s, z_s, a_s, b_s = reduit(Mc_up_s, duc_s, flux_glob_s)  # calcul conserve
 
-    ax.plot(frey_t*sc,  z, color='black',  lw=2.5, label='Reynolds verite')
-    ax.plot(Phi_full*sc, z, color='red',    lw=1.8, ls='--', label='Mc Du (reel)')
-    ax.plot(Phi_cste*sc, z, color='teal',   lw=1.6, ls=':',  label='Mc <Du>')
-    ax.plot(Phi_lin*sc,  z, color='orange', lw=1.6, ls='-.', label='Mc (a+bz)')
-    ax.axvline(0, color='grey', alpha=0.4)
-    ax.set_xlabel('flux  (x1e-3)')
-    ax.set_title(tag, fontweight='bold')
-    ax.legend(fontsize=8)
-    ax.grid(alpha=0.3)
+fig, ax = plt.subplots(figsize=(7, 8))
+ax.plot(frey_h*sc,     z_h, color='black',  lw=2.5, label='Reynolds verite')
+ax.plot(Phi_full_h*sc, z_h, color='red',    lw=1.8, ls='--', label='Mc Du (reel)')
+ax.plot(Phi_cste_h*sc, z_h, color='teal',   lw=1.6, ls=':',  label='Mc <Du>')
+ax.plot(Phi_lin_h*sc,  z_h, color='orange', lw=1.6, ls='-.', label='Mc (a+bz)')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('flux  (x1e-3)')
+ax.set_ylabel('Altitude (m)')
+ax.set_title('HUMIDE - fermetures reduites du contraste Du', fontweight='bold')
+ax.legend(fontsize=9)
+ax.grid(alpha=0.3)
+plt.suptitle('S29 - Fermetures reduites du contraste Du  [zone humide]',
+             fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
 
-    e_full = frey_t - Phi_full
-    e_cste = frey_t - Phi_cste
-    e_lin  = frey_t - Phi_lin
+def rms_set(frey_t, Pf, Pc, Pl):
     def rms(e):
         m = np.isfinite(e)
         return np.sqrt(np.nanmean(e[m]**2))*sc
-    print(tag.ljust(7) + ': RMS  full=' + format(rms(e_full), '.3f')
-          + '  cste=' + format(rms(e_cste), '.3f')
-          + '  lin=' + format(rms(e_lin), '.3f')
-          + '  (x1e-3)  [Du~' + format(a, '+.2f') + format(b*1e3, '+.3f') + 'e-3 z]')
+    return rms(frey_t-Pf), rms(frey_t-Pc), rms(frey_t-Pl)
 
-axes[0].set_ylabel('Altitude (m)')
-plt.suptitle('S29 - Fermetures reduites du contraste Du', fontsize=13, fontweight='bold')
-plt.tight_layout()
-plt.show()
+for tag, (Pf, Pc, Pl, fr, a, b) in [
+        ('HUMIDE', (Phi_full_h, Phi_cste_h, Phi_lin_h, frey_h, a_h, b_h)),
+        ('SECHE',  (Phi_full_s, Phi_cste_s, Phi_lin_s, frey_s, a_s, b_s))]:
+    rf, rc, rl = rms_set(fr, Pf, Pc, Pl)
+    print(tag.ljust(7) + ': RMS  full=' + format(rf, '.3f')
+          + '  cste=' + format(rc, '.3f')
+          + '  lin=' + format(rl, '.3f')
+          + '  (x1e-3)  [Du~' + format(a, '+.2f') + format(b*1e3, '+.3f') + 'e-3 z]')
