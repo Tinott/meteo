@@ -277,39 +277,36 @@ for tag, duc in [('HUMIDE', duc_h), ('SÈCHE', duc_s)]:
 
 # ============================================================================
 # §29 — Modèle réduit : Δu paramétré simplement, flux reconstruit
-# ----------------------------------------------------------------------------
-# Si Δu varie peu (§28), on teste deux fermetures minimales du contraste :
-#   (i)  Δu ≈ cste = <Δu>             -> Φ ∝ Mc  pur
-#   (ii) Δu ≈ a + b·z  (fit linéaire) -> Φ = Mc·(a+bz)
-# et on compare au flux de Reynolds vérité. Donne l'erreur de chaque hypothèse.
 # ============================================================================
 fig, axes = plt.subplots(1, 2, figsize=(13, 8), sharey=True)
 
 for ax, tag, Mc, duc, frey in [
         (axes[0], 'HUMIDE', Mc_up_h, duc_h, flux_glob_h),
         (axes[1], 'SÈCHE',  Mc_up_s, duc_s, flux_glob_s)]:
-    d = duc[sl]; ok = np.isfinite(d); z = alt[sl]
-    duc_cste = np.full_like(z, np.nanmean(d))
-    b, a = np.polyfit(z[ok], d[ok], 1)
+
+    Mc_t   = Mc[sl]              # (idx_tropo,)
+    duc_t  = duc[sl]            # tronqué AUSSI
+    frey_t = frey[sl]
+    z      = alt[sl]
+
+    ok = np.isfinite(duc_t)
+    duc_cste = np.full_like(z, np.nanmean(duc_t))
+    b, a = np.polyfit(z[ok], duc_t[ok], 1)
     duc_lin = a + b*z
 
-    Phi_full = (Mc[sl]*duc)            # contraste réel
-    Phi_cste = (Mc[sl]*duc_cste)
-    Phi_lin  = (Mc[sl]*duc_lin)
+    Phi_full = Mc_t * duc_t
+    Phi_cste = Mc_t * duc_cste
+    Phi_lin  = Mc_t * duc_lin
 
-    ax.plot(frey[sl]*sc,  z, color='black', lw=2.5, label='Reynolds vérité')
-    ax.plot(Phi_full*sc,  z, color='red',   lw=1.8, ls='--', label=r'$M_c\Delta u$ (réel)')
-    ax.plot(Phi_cste*sc,  z, color='teal',  lw=1.6, ls=':',  label=r'$M_c\langle\Delta u\rangle$')
-    ax.plot(Phi_lin*sc,   z, color='orange',lw=1.6, ls='-.', label=r'$M_c(a+bz)$')
+    ax.plot(frey_t*sc,  z, color='black', lw=2.5, label='Reynolds vérité')
+    ax.plot(Phi_full*sc, z, color='red',   lw=1.8, ls='--', label=r'$M_c\Delta u$ (réel)')
+    ax.plot(Phi_cste*sc, z, color='teal',  lw=1.6, ls=':',  label=r'$M_c\langle\Delta u\rangle$')
+    ax.plot(Phi_lin*sc,  z, color='orange',lw=1.6, ls='-.', label=r'$M_c(a+bz)$')
     ax.axvline(0, color='grey', alpha=0.4)
     ax.set_xlabel(r'flux  (×10⁻³)'); ax.set_title(tag, fontweight='bold')
     ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
     def rms(P):
-        e = frey[sl]-P; m = np.isfinite(e); return np.sqrt(np.nanmean(e[m]**2))*sc
+        e = frey_t - P; m = np.isfinite(e); return np.sqrt(np.nanmean(e[m]**2))*sc
     print(f'{tag:7s}: RMS  full={rms(Phi_full):.3f}  cste={rms(Phi_cste):.3f}  '
-          f'lin={rms(Phi_lin):.3f}  (×10⁻³)  [Δu≈{a:+.2f}{b*1e3:+.3f}e-3·z]')
-
-axes[0].set_ylabel('Altitude (m)')
-plt.suptitle('§29 — Fermetures réduites du contraste Δu', fontsize=13, fontweight='bold')
-plt.tight_layout(); plt.show()
+          f'lin={rms(Phi
