@@ -1,94 +1,109 @@
 # ============================================================================
-# S30 — Lien entre l'eq. de momentum du panache et le budget
-#   Eq.1 (panache stationnaire) : dz(u_c) = eps * (u_e - u_c)
-#   Eq.2 (budget)               : dz(Mc*Du) = Mc[(eps-delta)Du + dz Du],  Du=u_c-u_e
-#   En injectant Eq.1 : dz(Mc*Du) = Mc[-delta*Du - dz(u_e)]
-#   -> on TESTE Eq.1 (regression eps) puis la coherence de la reecriture.
-#   (calculs pleine colonne ; affichage 2000-18000 m ; zone humide)
+# S30 — Lien eq. momentum panache <-> budget  (VERSION ROBUSTE)
+#   Eq.1 : dz(u_c) = eps (u_e - u_c)
+#   Eq.2 : dz(Mc Du) = Mc[-delta Du - dz(u_e)]   (apres injection eq.1), Du=u_c-u_e
+#   uc/ue RECALCULES au meilleur seuil (W0_BEST, C_BEST) de S26.
 # ============================================================================
 
-# --- profils issus du meilleur seuil (S26) ; uc/ue/ubar viennent de S21 ---
-# Du = u_c - u_e (deja = duc_h), et les deux contrastes demandes :
+# --- 0) recalcul de u_c, u_e au MEILLEUR seuil (coherent avec Mc_up_*, duc_*) ---
+uc_h = np.full(n_z, np.nan); ue_h = np.full(n_z, np.nan)
+ds_u = xr.open_dataset(path3d('ua'))
+ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    a_uc = a_ue = 0.0; n = 0
+    for it in range(t_stat, n_t):
+        u_r = ds_u['ua'].isel({dim_t: it, dim_z: iz}).values[mh]
+        w_r = ds_w['wa'].isel({dim_t: it, dim_z: iz}).values[mh]
+        ws  = max(W0_BEST, C_BEST * w_r.std())
+        up  = w_r > ws
+        a_uc += u_r[up].mean()  if up.any()    else u_r.mean()
+        a_ue += u_r[~up].mean() if (~up).any() else u_r.mean()
+        n += 1
+        del u_r, w_r, up
+    uc_h[iz] = a_uc / n; ue_h[iz] = a_ue / n
+    gc.collect()
+ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
+print('u_c, u_e recalcules au seuil best (W0=' + str(W0_BEST) + ', C=' + str(C_BEST) + ').')
+
 duc_h_loc = uc_h - ue_h          # u_c - u_e
-uec_h     = ue_h - uc_h          # u_e - u_c  = -duc_h_loc
+uec_h     = ue_h - uc_h          # u_e - u_c
+dz_uc_h   = np.gradient(uc_h, alt)
+dz_ue_h   = np.gradient(ue_h, alt)
 
-dz_uc_h = np.gradient(uc_h, alt)  # membre de gauche de l'eq.1
-dz_ue_h = np.gradient(ue_h, alt)
+# --- masque "flux de masse significatif" : Mc > 5% du max, pour tout l'affichage ---
+Mc_seuil = 0.05 * np.nanmax(np.abs(Mc_up_h))
+valid    = np.abs(Mc_up_h) > Mc_seuil          # bool plein colonne
+# borne haute effective : dernier niveau valide sous 18 km
+iz_top_valid = np.where(valid[:iz_hi])[0]
+iz_top = iz_top_valid.max() if iz_top_valid.size else iz_hi
+print('niveau max ou Mc significatif : z = ' + format(alt[iz_top], '.0f') + ' m')
 
-# --- 1) Test de l'eq.1 : regression dz(u_c) = eps * (u_e - u_c) ---
-#     eps_local(z) = dz(u_c) / (u_e - u_c)   (masque ou |u_e-u_c| trop petit)
-seuil_du = 0.05 * np.nanmax(np.abs(uec_h))
-eps_loc_h = np.where(np.abs(uec_h) > seuil_du, dz_uc_h / uec_h, np.nan)
+# --- 1) Test eq.1 : regression dz(u_c) = eps (u_e - u_c) sur 2km - iz_top ---
+fenz = np.zeros(n_z, bool); fenz[iz_lo:iz_top+1] = True
+m1 = fenz & np.isfinite(uec_h) & np.isfinite(dz_uc_h)
+x = uec_h[m1]; y = dz_uc_h[m1]
+eps_glob_h = (x @ y) / (x @ x) if (x @ x) != 0 else np.nan
+r_eq1 = np.corrcoef(x, y)[0, 1] if x.size > 2 else np.nan
+print('-- Eq.1 dz(u_c)=eps(u_e-u_c) -- eps=' + format(eps_glob_h*1000, '+.4f')
+      + ' km-1  corr=' + format(r_eq1, '+.3f') + '  (n=' + str(x.size) + ' pts)')
 
-# eps global par moindres carres sur la fenetre 2-18 km : dz_uc = eps * uec
-x = uec_h[disp]; y = dz_uc_h[disp]
-ok = np.isfinite(x) & np.isfinite(y)
-eps_glob_h = (x[ok] @ y[ok]) / (x[ok] @ x[ok]) if (x[ok] @ x[ok]) != 0 else np.nan
-r_eq1 = np.corrcoef(x[ok], y[ok])[0, 1]
-print('-- Eq.1  dz(u_c) = eps (u_e - u_c)  [humide, 2-18 km] --')
-print('   eps_global = ' + format(eps_glob_h*1000, '+.4f') + ' km-1'
-      + '   corr = ' + format(r_eq1, '+.3f'))
-print('   eps_local median = ' + format(np.nanmedian(eps_loc_h[disp])*1000, '+.4f') + ' km-1')
-
-# --- 2) (eps - delta) du flux de masse (S28) pour isoler delta ---
+# --- 2) (eps-delta) du flux de masse -> delta ---
 def eps_delta_si(M, seuil_rel=0.05):
     dMdz = np.gradient(M, alt)
     s = seuil_rel * np.nanmax(np.abs(M))
     return np.where(np.abs(M) > s, dMdz / M, np.nan)
+emd_h   = eps_delta_si(Mc_up_h)
+delta_h = eps_glob_h - emd_h
 
-emd_h = eps_delta_si(Mc_up_h)        # = eps - delta
-delta_h = eps_glob_h - emd_h         # delta(z) = eps - (eps-delta), eps suppose ~ const
-
-# --- 3) Coherence : reecriture du budget via eq.1 ---
-#     div_direct = dz(Mc*Du)                      (verite numerique, S27)
-#     div_eq1    = Mc * (-delta*Du - dz(u_e))     (si eq.1 tient)
+# --- 3) coherence budget direct vs reecrit via eq.1 ---
 div_direct_h = np.gradient(Mc_up_h * duc_h_loc, alt)
 div_eq1_h    = Mc_up_h * (-delta_h * duc_h_loc - dz_ue_h)
-
-aa = div_direct_h[disp]; bb = div_eq1_h[disp]
-ok = np.isfinite(aa) & np.isfinite(bb)
-rms_re = np.sqrt(np.nanmean((aa[ok] - bb[ok])**2))
-corr_re = np.corrcoef(aa[ok], bb[ok])[0, 1]
-print()
-print('-- Reecriture budget via eq.1 :  dz(Mc Du) =? Mc[-delta Du - dz(u_e)] --')
-print('   corr = ' + format(corr_re, '+.3f')
-      + '   RMS ecart = ' + format(rms_re*sc, '.4e') + ' x1e-3')
+m3 = fenz & np.isfinite(div_direct_h) & np.isfinite(div_eq1_h)
+rms_re  = np.sqrt(np.nanmean((div_direct_h[m3] - div_eq1_h[m3])**2))
+corr_re = np.corrcoef(div_direct_h[m3], div_eq1_h[m3])[0, 1] if m3.sum() > 2 else np.nan
+print('-- Reecriture budget via eq.1 -- corr=' + format(corr_re, '+.3f')
+      + '  RMS=' + format(rms_re*sc, '.4e') + ' x1e-3')
 
 # ----------------------------------------------------------------------------
-# Figures
+# Figures : on n'affiche QUE les niveaux valides (Mc significatif)
 # ----------------------------------------------------------------------------
+zb = alt[iz_lo:iz_top+1]          # axe vertical borne
+sb = slice(iz_lo, iz_top+1)
+
 fig, axes = plt.subplots(1, 3, figsize=(16, 6), sharey=True)
 
-# (a) test eq.1 : nuage dz(u_c) vs (u_e - u_c) + droite eps
+# (a) test eq.1 : nuage + droite
 ax = axes[0]
-ax.scatter(uec_h[disp], dz_uc_h[disp]*1e3, s=22, color='royalblue', alpha=0.7)
-xx = np.linspace(np.nanmin(uec_h[disp]), np.nanmax(uec_h[disp]), 50)
-ax.plot(xx, eps_glob_h*xx*1e3, color='red', lw=2,
-        label='pente eps=' + format(eps_glob_h*1000, '+.3f') + ' km-1')
+xx_pts = uec_h[m1]; yy_pts = dz_uc_h[m1]*1e3
+ax.scatter(xx_pts, yy_pts, s=28, color='royalblue', alpha=0.75)
+if np.isfinite(eps_glob_h) and xx_pts.size:
+    xr_ = np.linspace(xx_pts.min(), xx_pts.max(), 50)
+    ax.plot(xr_, eps_glob_h*xr_*1e3, color='red', lw=2,
+            label='eps=' + format(eps_glob_h*1000, '+.3f') + ' km-1')
+    ax.legend(fontsize=9)
 ax.axhline(0, color='grey', alpha=0.4); ax.axvline(0, color='grey', alpha=0.4)
 ax.set_xlabel('u_e - u_c  (m/s)'); ax.set_ylabel('dz(u_c)  (x1e-3 s-1)')
-ax.set_title('Eq.1 : dz(u_c) vs (u_e-u_c)', fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3)
+ax.set_title('Eq.1 : dz(u_c) vs (u_e-u_c)', fontweight='bold'); ax.grid(alpha=0.3)
 
-# (b) profils des deux contrastes
+# (b) contrastes
 ax = axes[1]
-ax.plot(duc_h_loc[disp], alt[disp], color='royalblue', lw=2.5, label='u_c - u_e')
-ax.plot(uec_h[disp],     alt[disp], color='crimson',   lw=2.0, ls='--', label='u_e - u_c')
+ax.plot(duc_h_loc[sb], zb, color='royalblue', lw=2.5, label='u_c - u_e')
+ax.plot(uec_h[sb],     zb, color='crimson',   lw=2.0, ls='--', label='u_e - u_c')
 ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('m/s'); ax.set_title('Contrastes u_c-u_e / u_e-u_c', fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3); ax.set_ylim(2000, 18000)
-ax.set_ylabel('Altitude (m)')
+ax.set_xlabel('m/s'); ax.set_title('Contrastes', fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3); ax.set_ylabel('Altitude (m)')
 
-# (c) coherence des deux divergences
+# (c) divergences : seulement sur niveaux valides -> plus de decrochage
 ax = axes[2]
-ax.plot(div_direct_h[disp]*sc, alt[disp], color='black', lw=2.5, label='dz(Mc Du) direct')
-ax.plot(div_eq1_h[disp]*sc,    alt[disp], color='orange', lw=2, ls='--',
-        label='Mc[-delta Du - dz u_e]')
+dd = np.where(valid, div_direct_h, np.nan)[sb]
+de = np.where(valid, div_eq1_h,    np.nan)[sb]
+ax.plot(dd*sc, zb, color='black',  lw=2.5, label='dz(Mc Du) direct')
+ax.plot(de*sc, zb, color='orange', lw=2, ls='--', label='Mc[-delta Du - dz u_e]')
 ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('dPhi/dz  (x1e-3)')
-ax.set_title('Budget direct vs reecrit via eq.1', fontweight='bold')
-ax.legend(fontsize=8); ax.grid(alpha=0.3); ax.set_ylim(2000, 18000)
+ax.set_xlabel('dPhi/dz  (x1e-3)'); ax.set_title('Budget direct vs eq.1', fontweight='bold')
+ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
-plt.suptitle('S30 - Lien eq.1 panache (dz u_c = eps(u_e-u_c)) <-> budget  [humide, 2-18 km]',
+plt.suptitle('S30 - eq.1 panache <-> budget  [humide, 2km - '
+             + format(alt[iz_top]/1000, '.0f') + 'km, Mc significatif]',
              fontsize=12, fontweight='bold')
 plt.tight_layout(); plt.show()
