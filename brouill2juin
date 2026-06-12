@@ -1,95 +1,315 @@
-# ══════════════════════════════════════════════════════════════════════
-# §22 — β(z) vs flux de masse M_c/ρ0 : le coefficient down-gradient
-#        est-il piloté par la convection ?  (région humide)
-# ══════════════════════════════════════════════════════════════════════
-from scipy.stats import linregress
+# ============================================================================
+# §26 — Sensibilité de l'identité Reynolds↔masse au seuil de détection updraft
+# ----------------------------------------------------------------------------
+# On balaye le couple (W0_MIN, C_SIGMA) -> seuil ws(z)=max(W0, C·σ_w(z)).
+# Pour chaque seuil on recalcule Mc, (u_c-u_e), Phi_masse = Mc·(u_c-u_e)
+# et on confronte au flux de Reynolds VÉRITÉ flux_glob_* (invariant, indép. du seuil).
+# Métriques : corrélation, pente (Reynolds/masse) -> idéalement ~1, et amplitude.
+# ============================================================================
 
-# ── 1. Mettre β(z) et M_c/ρ0 sur la MÊME grille verticale ────────────
-#    β est défini sur z_fit_ab (iz_lo_glob:iz_hi_glob)
-#    M_c est défini sur toute la grille alt → on restreint à la fenêtre de β
-iz_lo = iz_lo_glob ; iz_hi = iz_hi_glob          # 2000–18000 m
-z_c   = z_fit_ab                                  # grille commune
+# grille de seuils : (plancher W0 en m/s, multiplicateur c de σ_w)
+seuils = [(0.0, 0.5), (0.0, 1.0), (0.0, 1.5), (0.0, 2.0),
+          (0.5, 1.0), (1.0, 1.0), (0.25, 0.75)]
 
-beta_h   = beta_h_mean                            # (n_z_fit,)  coef down-gradient humide
-Mc_over_rho_h = (Mc_up_h / rho0)[iz_lo:iz_hi]     # M_c/ρ0 = σ·w_up   (m/s)  même grille
+def diag_flux_masse(W0, C, region_mask):
+    """Recalcule Mc, duc=u_c-u_e, sigma updraft pour un seuil donné, sur une région.
+    Retourne (Mc, duc, Phi, sigma) profils (n_z,)."""
+    Mc  = np.zeros(n_z); duc = np.zeros(n_z); sig = np.zeros(n_z)
+    ds_u = xr.open_dataset(path3d('ua'))
+    ds_w = xr.open_dataset(path3d('wa'))
+    for iz in range(n_z):
+        a_mc = a_uc = a_ue = a_sg = 0.0; n = 0
+        for it in range(t_stat, n_t):
+            u_r = ds_u['ua'].isel({dim_t: it, dim_z: iz}).values[region_mask]
+            w_r = ds_w['wa'].isel({dim_t: it, dim_z: iz}).values[region_mask]
+            ws  = max(W0, C * w_r.std())
+            up  = w_r > ws
+            a_mc += (w_r * up).mean()
+            a_uc += u_r[up].mean()  if up.any()    else u_r.mean()
+            a_ue += u_r[~up].mean() if (~up).any() else u_r.mean()
+            a_sg += up.mean()
+            n += 1
+            del u_r, w_r, up
+        Mc[iz]  = rho0[iz] * a_mc / n
+        duc[iz] = (a_uc - a_ue) / n
+        sig[iz] = a_sg / n
+        gc.collect()
+    ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
+    return Mc, duc, Mc * duc, sig
 
-# garde-fou : ne travailler que sur les niveaux finis des deux côtés
-ok = np.isfinite(beta_h) & np.isfinite(Mc_over_rho_h)
-zc_ok   = z_c[ok]
-beta_ok = beta_h[ok]
-mc_ok   = Mc_over_rho_h[ok]
+res_seuil = {}   # (W0,C) -> dict par région
+for (W0, C) in seuils:
+    print(f'seuil W0={W0}  C={C} ...', end=' ', flush=True)
+    d = {}
+    for tag, mask, fr in [('h', mh, flux_glob_h), ('s', ms, flux_glob_s)]:
+        Mc, duc, Phi, sig = diag_flux_masse(W0, C, mask)
+        a = fr[:idx_tropo]; b = Phi[:idx_tropo]
+        ok = np.isfinite(a) & np.isfinite(b)
+        r     = np.corrcoef(a[ok], b[ok])[0, 1]
+        pente = (a[ok] @ b[ok]) / (b[ok] @ b[ok]) if (b[ok] @ b[ok]) != 0 else np.nan
+        d[tag] = dict(Mc=Mc, duc=duc, Phi=Phi, sig=sig, r=r, pente=pente)
+    res_seuil[(W0, C)] = d
+    print(f"corr_h={d['h']['r']:+.3f} pente_h={d['h']['pente']:+.2f} | "
+          f"corr_s={d['s']['r']:+.3f} pente_s={d['s']['pente']:+.2f}")
 
-# ── 2. Corrélation verticale (sur profils bruts) ─────────────────────
-r_vert = np.corrcoef(beta_ok, mc_ok)[0, 1]
-print(f'Corrélation verticale  β(z) ↔ M_c/ρ0  (humide) : r = {r_vert:+.3f}')
+print('\n── Récap sensibilité au seuil (région HUMIDE) ──')
+print(f"{'W0':>5} {'C':>5} | {'σ@2km(%)':>9} {'corr':>7} {'pente':>7} {'max|Φ|×sc':>10}")
+iz2 = np.argmin(np.abs(alt - 2000))
+for (W0, C), d in res_seuil.items():
+    h = d['h']
+    print(f"{W0:5.2f} {C:5.2f} | {h['sig'][iz2]*100:9.2f} {h['r']:+7.3f} "
+          f"{h['pente']:+7.2f} {np.nanmax(np.abs(h['Phi'][:idx_tropo]))*sc:10.3f}")
 
-# ── 3. Régression β = ℓ · (M_c/ρ0) + b  →  pente = longueur de mélange ─
-reg = linregress(mc_ok, beta_ok)
-ell      = reg.slope          # longueur de mélange effective (m)  [β en m, M_c/ρ0 en m/s → ℓ en... voir note]
-intercept= reg.intercept
-print(f'Régression  β = ℓ·(M_c/ρ0) + b :')
-print(f'   pente  ℓ        = {ell:.1f}   (unité = β / (M_c/ρ0))')
-print(f'   ordonnée b      = {intercept:.3e}')
-print(f'   r²              = {reg.rvalue**2:.3f}')
 
-# ── 4. Profils normalisés côte à côte ────────────────────────────────
-def norm(x):
-    x = np.asarray(x, float)
-    m = np.nanmax(np.abs(x))
-    return x / m if m > 0 else x
 
-fig, axes = plt.subplots(1, 3, figsize=(16, 8), sharey=True)
 
-# (a) profils normalisés superposés
+
+
+
+
+# ----------------------------------------------------------------------------
+# §26b — La pente (Reynolds/masse) doit rester ≈ 1 si l'identité est robuste.
+# Idée physique : ρ₀<u'w'> = ρ₀ σ(1-σ)(u_c-u_e)(w_c-w_e) est EXACT (top-hat) ;
+# l'approx Mc·(u_c-u_e) néglige le facteur (1-σ) et w_e. Bouger le seuil change
+# σ donc le produit σ(1-σ) — on regarde si la pente dérive avec σ.
+# ----------------------------------------------------------------------------
+fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+labels = [f'{W0:.2f}/{C:.1f}' for (W0, C) in seuils]
+x = np.arange(len(seuils))
+
 ax = axes[0]
-ax.plot(norm(beta_ok),  zc_ok, color='royalblue', lw=2.5, label=r'$\beta(z)$ (norm.)')
-ax.plot(norm(mc_ok),    zc_ok, color='seagreen', lw=2.5, ls='--',
-        label=r'$M_c/\rho_0$ (norm.)')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('profil normalisé (sans unité)')
-ax.set_ylabel('Altitude (m)')
-ax.set_title(f'Profils normalisés\nr = {r_vert:+.3f}', fontweight='bold')
-ax.legend(fontsize=9) ; ax.grid(True, alpha=0.3)
+ax.plot(x, [res_seuil[k]['h']['pente'] for k in seuils], 'o-', color='royalblue', label='humide')
+ax.plot(x, [res_seuil[k]['s']['pente'] for k in seuils], 's-', color='saddlebrown', label='sèche')
+ax.axhline(1.0, color='green', ls=':', label='pente idéale = 1')
+ax.set_xticks(x); ax.set_xticklabels(labels, rotation=45, fontsize=8)
+ax.set_ylabel('pente (Reynolds / masse)'); ax.set_xlabel('seuil  W0/C')
+ax.set_title('Pente vs seuil', fontweight='bold'); ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
-# (b) profils bruts, double axe
 ax = axes[1]
-ax.plot(beta_ok, zc_ok, color='royalblue', lw=2.5, label=r'$\beta(z)$')
-ax.set_xlabel(r'$\beta(z)$', color='royalblue')
-ax.tick_params(axis='x', labelcolor='royalblue')
-ax2 = ax.twiny()
-ax2.plot(mc_ok, zc_ok, color='seagreen', lw=2.5, ls='--', label=r'$M_c/\rho_0$')
-ax2.set_xlabel(r'$M_c/\rho_0$ (m/s)', color='seagreen')
-ax2.tick_params(axis='x', labelcolor='seagreen')
-ax.set_title('Profils bruts', fontweight='bold')
-ax.grid(True, alpha=0.3)
+ax.plot(x, [res_seuil[k]['h']['r'] for k in seuils], 'o-', color='royalblue', label='humide')
+ax.plot(x, [res_seuil[k]['s']['r'] for k in seuils], 's-', color='saddlebrown', label='sèche')
+ax.set_xticks(x); ax.set_xticklabels(labels, rotation=45, fontsize=8)
+ax.set_ylabel('corrélation'); ax.set_xlabel('seuil  W0/C')
+ax.set_title('Corrélation vs seuil', fontweight='bold'); ax.set_ylim(0, 1.02)
+ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
-# (c) nuage de points β vs M_c/ρ0 + droite de régression
+# pente vs σ moyen (0-tropo) : teste le facteur σ(1-σ)
 ax = axes[2]
-sc = ax.scatter(mc_ok, beta_ok, c=zc_ok, cmap='viridis', s=35)
-xx = np.linspace(mc_ok.min(), mc_ok.max(), 50)
-ax.plot(xx, reg.slope*xx + reg.intercept, 'r-', lw=2,
-        label=f'pente ℓ = {ell:.0f}\nr² = {reg.rvalue**2:.2f}')
-cb = plt.colorbar(sc, ax=ax) ; cb.set_label('Altitude (m)')
-ax.set_xlabel(r'$M_c/\rho_0$ (m/s)')
-ax.set_ylabel(r'$\beta(z)$')
-ax.set_title(r'$\beta$ vs $M_c/\rho_0$', fontweight='bold')
-ax.legend(fontsize=9) ; ax.grid(True, alpha=0.3)
+for tag, col, mk in [('h', 'royalblue', 'o'), ('s', 'saddlebrown', 's')]:
+    sigm = [np.nanmean(res_seuil[k][tag]['sig'][:idx_tropo]) for k in seuils]
+    pent = [res_seuil[k][tag]['pente'] for k in seuils]
+    ax.scatter(sigm, pent, color=col, marker=mk, s=60,
+               label='humide' if tag == 'h' else 'sèche')
+ax.set_xlabel(r'$\bar\sigma$ updraft (0–tropo)'); ax.set_ylabel('pente')
+ax.axhline(1.0, color='green', ls=':')
+ax.set_title('Pente vs fraction σ', fontweight='bold'); ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
-plt.suptitle(r'§22 — Le coefficient down-gradient $\beta(z)$ est-il piloté par le flux de masse convectif ? (HUMIDE)',
-             fontsize=12, fontweight='bold')
-plt.tight_layout()
-plt.show()
+plt.suptitle('§26 — Sensibilité de l’identité Reynolds↔masse au seuil de détection',
+             fontsize=13, fontweight='bold')
+plt.tight_layout(); plt.show()
 
-# ── 5. Lien avec Romps : timescale de damping ────────────────────────
-#   α(z) ~ 1/τ (Rayleigh) est l'analogue direct du damping de Romps.
-#   Pour β (diffusif), on construit un timescale équivalent via une échelle verticale H.
-H_scale = 5000.0   # m, échelle verticale typique de variation de ū (à ajuster)
-# K_turb ~ β  (si β a déjà les bonnes unités de la fermeture) → τ_diff ~ H²/K
-# Ici on estime plutôt l'ordre de grandeur :
-beta_typ = np.nanmedian(np.abs(beta_ok))
-if beta_typ > 0:
-    # si β ~ K/H  (m/s)  → τ ~ H/β ;  si β ~ K (m²/s) → τ ~ H²/β. On affiche les deux.
-    print('\n── Ordres de grandeur (comparaison Romps 1–10 jours) ──')
-    print(f'   |β| médian            = {beta_typ:.3e}')
-    print(f'   si β≡taux [1/s] : τ   = {1/beta_typ/86400:.2f} jours')
-    print(f'   si β≡K/H [m/s]  : τ~H/β = {H_scale/beta_typ/86400:.2f} jours  (H={H_scale:.0f} m)')
+
+
+
+
+
+
+
+# ============================================================================
+# §27 — Décomposition de la divergence du flux de masse en deux termes
+# ----------------------------------------------------------------------------
+#   ∂_z[Mc·Δu] = (∂_z Mc)·Δu   +   Mc·(∂_z Δu)        avec Δu = u_c - u_e
+#                └── terme A ──┘   └──── terme B ────┘
+#   A : la divergence du flux de MASSE module le moment via le contraste de vent
+#       (lié à (ε-δ)Mc·Δu, cf. §22 : ∂_z Mc = (ε-δ)Mc)
+#   B : flux de masse agissant sur le CISAILLEMENT du contraste cœur/environnement
+#
+#   La tendance de vent : ∂_t ū = -(1/ρ₀)·∂_z(Mc·Δu) = -(1/ρ₀)(A + B)
+# ============================================================================
+
+def decompose_div(Mc, duc):
+    """Retourne (divA, divB, divTot) de Phi=Mc·duc, et la tendance -1/ρ₀·divTot."""
+    dMc  = np.gradient(Mc,  alt)
+    dduc = np.gradient(duc, alt)
+    A = dMc * duc          # (∂_z Mc)·Δu
+    B = Mc  * dduc         # Mc·(∂_z Δu)
+    tot = A + B            # = ∂_z(Mc·duc)
+    return A, B, tot, -tot / rho0
+
+A_h, B_h, div_h, tend_h = decompose_div(Mc_up_h, duc_h)
+A_s, B_s, div_s, tend_s = decompose_div(Mc_up_s, duc_s)
+
+# vérité Reynolds pour comparaison (déjà en §24)
+tend_rey_h = -np.gradient(flux_glob_h, alt) / rho0
+tend_rey_s = -np.gradient(flux_glob_s, alt) / rho0
+
+sl = slice(None, idx_tropo)
+fig, axes = plt.subplots(2, 2, figsize=(14, 11), sharey=True)
+st = 1e5  # m/s² -> 1e-5
+
+for row, (tag, A, B, div, tend, trey) in enumerate(
+        [('HUMIDE', A_h, B_h, div_h, tend_h, tend_rey_h),
+         ('SÈCHE',  A_s, B_s, div_s, tend_s, tend_rey_s)]):
+
+    # (gauche) les deux termes de la divergence du flux de masse
+    ax = axes[row, 0]
+    ax.plot(A[sl]*sc,   alt[sl], color='darkorange', lw=2.2, label=r'A = $(\partial_z M_c)\,\Delta u$')
+    ax.plot(B[sl]*sc,   alt[sl], color='purple',     lw=2.2, label=r'B = $M_c\,\partial_z\Delta u$')
+    ax.plot(div[sl]*sc, alt[sl], color='black', lw=2.5, ls='--', label='A + B')
+    ax.axvline(0, color='grey', alpha=0.4)
+    ax.set_xlabel(r'$\partial_z\Phi$  (×10⁻³)'); ax.set_title(f'{tag} — décomposition divergence', fontweight='bold')
+    ax.legend(fontsize=9); ax.grid(alpha=0.3); ax.set_ylabel('Altitude (m)')
+
+    # (droite) tendance vent : Reynolds vs masse(A+B)
+    ax = axes[row, 1]
+    ax.plot(trey[sl]*st, alt[sl], color='royalblue' if row==0 else 'saddlebrown',
+            lw=2.5, label='Reynolds (vérité)')
+    ax.plot(tend[sl]*st, alt[sl], color='red', lw=2, ls='--', label=r'masse $-\frac1{\rho_0}(A{+}B)$')
+    ax.plot((-A[sl]/rho0[sl])*st, alt[sl], color='darkorange', lw=1.3, ls=':', label='part A')
+    ax.plot((-B[sl]/rho0[sl])*st, alt[sl], color='purple',     lw=1.3, ls=':', label='part B')
+    ax.axvline(0, color='grey', alpha=0.4)
+    ax.set_xlabel(r'$\partial_t\bar u$  (×10⁻⁵ m/s²)'); ax.set_title(f'{tag} — tendance vent', fontweight='bold')
+    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+plt.suptitle(r'§27 — $\partial_z(M_c\Delta u)=(\partial_z M_c)\Delta u+M_c\partial_z\Delta u$',
+             fontsize=13, fontweight='bold')
+plt.tight_layout(); plt.show()
+
+# poids relatif des deux termes (norme L2 sur 0-tropo)
+print('── Poids relatif des termes A et B (norme L2, 0–tropo) ──')
+for tag, A, B in [('HUMIDE', A_h, B_h), ('SÈCHE', A_s, B_s)]:
+    nA = np.sqrt(np.nansum(A[sl]**2)); nB = np.sqrt(np.nansum(B[sl]**2))
+    print(f'{tag:7s}: ||A||={nA*sc:7.3f}  ||B||={nB*sc:7.3f}  '
+          f'-> A domine à {100*nA/(nA+nB):4.1f}%')
+
+
+
+
+
+
+
+
+
+# ============================================================================
+# §28 — Tout exprimer en fonction de Δu = u_c - u_e
+# ----------------------------------------------------------------------------
+# En injectant l'éq. bulk-plume (1) ∂_z Mc = (ε-δ)Mc  (§22) dans le terme A :
+#
+#   ∂_z(Mc·Δu) = (ε-δ)·Mc·Δu  +  Mc·∂_z Δu
+#              = Mc·[ (ε-δ)·Δu + ∂_z Δu ]
+#
+# d'où la tendance ENTIÈREMENT pilotée par le flux de masse et le contraste Δu :
+#
+#   ∂_t ū = -(1/ρ₀)·Mc·[ (ε-δ)Δu + ∂_z Δu ]
+#
+# On vérifie que cette réécriture reproduit bien div_h/div_s du §27 (sanity check),
+# puis on caractérise la VARIATION de Δu : valeur, cisaillement ∂_zΔu, et
+# corrélation Δu ↔ ū-u_c (l'autre contraste, cf. avertissement §21).
+# ============================================================================
+
+# (ε-δ) déjà calculable ; on le recalcule en s^-1 (sans le ×1000 du §22)
+def eps_delta_si(M, seuil_rel=0.05):
+    dMdz = np.gradient(M, alt)
+    seuil = seuil_rel * np.nanmax(np.abs(M))
+    return np.where(np.abs(M) > seuil, dMdz / M, np.nan)   # m^-1
+
+edh = eps_delta_si(Mc_up_h); eds = eps_delta_si(Mc_up_s)
+
+# réécriture Mc·[(ε-δ)Δu + ∂_zΔu]  vs  div direct A+B
+div_re_h = Mc_up_h * (edh*duc_h + np.gradient(duc_h, alt))
+div_re_s = Mc_up_s * (eds*duc_s + np.gradient(duc_s, alt))
+
+print('── Sanity check : réécriture (ε-δ) vs dérivée directe ──')
+for tag, d1, d2 in [('HUMIDE', div_h, div_re_h), ('SÈCHE', div_s, div_re_s)]:
+    ok = np.isfinite(d1[sl]) & np.isfinite(d2[sl])
+    err = np.sqrt(np.nanmean((d1[sl][ok[:idx_tropo]] - d2[sl][ok[:idx_tropo]])**2))
+    print(f'{tag:7s}: RMS écart = {err*sc:.4e} ×10⁻³  (≈0 attendu)')
+
+# caractérisation de la variation de Δu
+fig, axes = plt.subplots(1, 3, figsize=(16, 6), sharey=True)
+
+ax = axes[0]
+ax.plot(duc_h[sl], alt[sl], color='royalblue', lw=2.5, label=r'$\Delta u=u_c-u_e$ humide')
+ax.plot(duc_s[sl], alt[sl], color='saddlebrown', lw=2.5, label='sèche')
+# autre contraste pour comparaison (ū - u_c), de signe opposé (cf. §21)
+ax.plot((ubar_h-uc_h)[sl], alt[sl], color='royalblue', lw=1.3, ls=':', label=r'$\bar u-u_c$ humide')
+ax.plot((ubar_s-uc_s)[sl], alt[sl], color='saddlebrown', lw=1.3, ls=':', label=r'$\bar u-u_c$ sèche')
+ax.axvline(0, color='grey', alpha=0.4); ax.set_xlabel('m/s')
+ax.set_title('Contrastes de vent', fontweight='bold'); ax.legend(fontsize=8)
+ax.grid(alpha=0.3); ax.set_ylabel('Altitude (m)')
+
+ax = axes[1]
+ax.plot(np.gradient(duc_h, alt)[sl]*1e3, alt[sl], color='royalblue', lw=2.5, label='humide')
+ax.plot(np.gradient(duc_s, alt)[sl]*1e3, alt[sl], color='saddlebrown', lw=2.5, label='sèche')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel(r'$\partial_z\Delta u$  (×10⁻³ s⁻¹)')
+ax.set_title('Cisaillement du contraste', fontweight='bold'); ax.legend(fontsize=9); ax.grid(alpha=0.3)
+
+ax = axes[2]
+ax.plot(edh[sl]*1000, alt[sl], color='royalblue', lw=2.5, label='humide')
+ax.plot(eds[sl]*1000, alt[sl], color='saddlebrown', lw=2.5, label='sèche')
+ax.axvline(0, color='grey', alpha=0.4); ax.set_xlim(-3, 3)
+ax.set_xlabel(r'$(\varepsilon-\delta)$  (km⁻¹)')
+ax.set_title('Entraînement net', fontweight='bold'); ax.legend(fontsize=9); ax.grid(alpha=0.3)
+
+plt.suptitle(r'§28 — $\partial_t\bar u=-\frac{1}{\rho_0}M_c[(\varepsilon-\delta)\Delta u+\partial_z\Delta u]$',
+             fontsize=13, fontweight='bold')
+plt.tight_layout(); plt.show()
+
+# le contraste Δu est-il ~ constant ? ~ linéaire en z ? -> conditionne la param
+print('\n── Caractérisation de Δu (0–tropo) ──')
+for tag, duc in [('HUMIDE', duc_h), ('SÈCHE', duc_s)]:
+    d = duc[sl]; ok = np.isfinite(d)
+    z = alt[sl][ok]
+    pente, ordo = np.polyfit(z, d[ok], 1)
+    print(f'{tag:7s}: <Δu>={np.nanmean(d):+.3f} m/s  σ(Δu)={np.nanstd(d):.3f}  '
+          f'∂_zΔu(lin)={pente*1e3:+.4f}×10⁻³ s⁻¹  '
+          f'ratio σ/|moy|={np.nanstd(d)/abs(np.nanmean(d)):.2f}')
+
+
+
+
+
+
+
+
+
+
+# ============================================================================
+# §29 — Modèle réduit : Δu paramétré simplement, flux reconstruit
+# ----------------------------------------------------------------------------
+# Si Δu varie peu (§28), on teste deux fermetures minimales du contraste :
+#   (i)  Δu ≈ cste = <Δu>             -> Φ ∝ Mc  pur
+#   (ii) Δu ≈ a + b·z  (fit linéaire) -> Φ = Mc·(a+bz)
+# et on compare au flux de Reynolds vérité. Donne l'erreur de chaque hypothèse.
+# ============================================================================
+fig, axes = plt.subplots(1, 2, figsize=(13, 8), sharey=True)
+
+for ax, tag, Mc, duc, frey in [
+        (axes[0], 'HUMIDE', Mc_up_h, duc_h, flux_glob_h),
+        (axes[1], 'SÈCHE',  Mc_up_s, duc_s, flux_glob_s)]:
+    d = duc[sl]; ok = np.isfinite(d); z = alt[sl]
+    duc_cste = np.full_like(z, np.nanmean(d))
+    b, a = np.polyfit(z[ok], d[ok], 1)
+    duc_lin = a + b*z
+
+    Phi_full = (Mc[sl]*duc)            # contraste réel
+    Phi_cste = (Mc[sl]*duc_cste)
+    Phi_lin  = (Mc[sl]*duc_lin)
+
+    ax.plot(frey[sl]*sc,  z, color='black', lw=2.5, label='Reynolds vérité')
+    ax.plot(Phi_full*sc,  z, color='red',   lw=1.8, ls='--', label=r'$M_c\Delta u$ (réel)')
+    ax.plot(Phi_cste*sc,  z, color='teal',  lw=1.6, ls=':',  label=r'$M_c\langle\Delta u\rangle$')
+    ax.plot(Phi_lin*sc,   z, color='orange',lw=1.6, ls='-.', label=r'$M_c(a+bz)$')
+    ax.axvline(0, color='grey', alpha=0.4)
+    ax.set_xlabel(r'flux  (×10⁻³)'); ax.set_title(tag, fontweight='bold')
+    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+    def rms(P):
+        e = frey[sl]-P; m = np.isfinite(e); return np.sqrt(np.nanmean(e[m]**2))*sc
+    print(f'{tag:7s}: RMS  full={rms(Phi_full):.3f}  cste={rms(Phi_cste):.3f}  '
+          f'lin={rms(Phi_lin):.3f}  (×10⁻³)  [Δu≈{a:+.2f}{b*1e3:+.3f}e-3·z]')
+
+axes[0].set_ylabel('Altitude (m)')
+plt.suptitle('§29 — Fermetures réduites du contraste Δu', fontsize=13, fontweight='bold')
+plt.tight_layout(); plt.show()
