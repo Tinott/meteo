@@ -21,3 +21,16 @@ Le seuil retenu ($W_0=0,\ C=0.5$) est celui de pente minimale (2.17), faute de m
 ### Interprétation S27
 
 Décomposition $\partial_z(M_c Du) = \underbrace{(\partial_z M_c)Du}_{A} + \underbrace{M_c(\partial_z Du)}_{B}$. Le terme **B domine** (A ne pèse que 31 % en humide, 16 % en sec) : la force convective vient surtout de la **variation verticale du contraste de vent** $\partial_z Du$, et non du gradient de flux de masse. Conséquence pour la paramétrisation : c'est $Du(z)$ et son cisaillement qu'il faut savoir prédire, plus que les détails de $\partial_z M_c$.
+
+
+
+
+
+
+
+
+### Interprétation S28
+
+L'identité $\partial_z(M_c Du) = M_c[(\varepsilon-\delta)Du + \partial_z Du]$ est vérifiée au zéro machine (RMS ~10⁻¹⁹) : la réécriture est exacte, c'est un contrôle de cohérence interne réussi.
+
+Caractérisation de $Du = u_c - u_e$ : **moyenne négative** (−0.35 m/s en humide), donc les updrafts portent un vent *plus faible* que l'environnement → transport descendant de quantité de mouvement. Le ratio $\sigma/|moy|=0.57$ en humide indique un $Du$ assez régulier (paramétrable) ; en sec il vaut 1.14, $Du$ y est dominé par le bruit (peu exploitable).
