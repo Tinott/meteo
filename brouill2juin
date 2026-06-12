@@ -13,3 +13,11 @@ Entre 2 et 12 km le signal est bruité et oscille autour de zéro : $M_c$ y est 
 Le balayage de seuils montre que la **corrélation** humide est excellente et stable (0.87–0.98) quel que soit le seuil : la *forme* du flux de masse suit robustement le Reynolds. En revanche la **pente** reste systématiquement entre 2 et 3 — jamais proche de 1. Autrement dit, $M_c\,Du$ reproduit bien la structure verticale mais **sous-estime l'amplitude d'un facteur ~2–3**.
 
 Le seuil retenu ($W_0=0,\ C=0.5$) est celui de pente minimale (2.17), faute de mieux. La région sèche est instable (pente jusqu'à 100) dès que le seuil monte : $\sigma$ y devient si petit que $M_c\,Du$ s'effondre et le rapport explose. **Conclusion méthodologique** : la calibration ne doit pas viser une pente=1 illusoire mais accepter un facteur d'échelle $k\sim2$–3, ce que fait S31.
+
+
+
+
+
+### Interprétation S27
+
+Décomposition $\partial_z(M_c Du) = \underbrace{(\partial_z M_c)Du}_{A} + \underbrace{M_c(\partial_z Du)}_{B}$. Le terme **B domine** (A ne pèse que 31 % en humide, 16 % en sec) : la force convective vient surtout de la **variation verticale du contraste de vent** $\partial_z Du$, et non du gradient de flux de masse. Conséquence pour la paramétrisation : c'est $Du(z)$ et son cisaillement qu'il faut savoir prédire, plus que les détails de $\partial_z M_c$.
