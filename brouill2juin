@@ -1,9 +1,102 @@
-# pour un niveau iz, sur la region :
-up = w_r > ws
-# contribution updraft vs downdraft au flux de Reynolds VRAI
-flux_up = (w_p[up]   * u_p[up]).sum()   / N_tot   # w+ u'
-flux_dn = (w_p[~up]  * u_p[~up]).sum()  / N_tot   # w- u'  (manque dans Mc)
-# top-hat (ce que fait le flux de masse) :
-Mc_loc   = (w_p[up]).mean() * frac_up
-tophat   = Mc_loc * (u_r[up].mean() - u_r[~up].mean())
-print(flux_up, flux_dn, tophat, flux_up - tophat)
+# ============================================================================
+# Quatre termes, sommés/différenciés deux à deux
+#   Reynolds   : <w+ u'>  +  <w- u'>            = rho0^-1 * flux de Reynolds
+#   Flux masse : <w+ u_c> - <w+ u_e>  = <w+>(u_c - u_e) = rho0^-1 * top-hat
+#   ( u' = u - u_bar_region ;  u_c = <u>_up ;  u_e = <u>_non-up )
+# ============================================================================
+
+reg = mh
+W0_MIN, C_SIGMA = 0.001, 0.5
+
+T_wp_u   = np.zeros(n_z)   # <w+ u'>   (updraft,  anomalie)
+T_wm_u   = np.zeros(n_z)   # <w- u'>   (downdraft, anomalie)
+T_wp_uc  = np.zeros(n_z)   # <w+> * u_c
+T_wp_ue  = np.zeros(n_z)   # <w+> * u_e
+
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    a1=a2=a3=a4=0.0; n=0
+    for it in range(t_stat, n_t):
+        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
+        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
+        ub = u.mean()
+        up_ = u - ub                          # u'
+        ws  = max(W0_MIN, C_SIGMA*w.std())
+        wp  = np.where(w >  ws, w, 0.0)        # w+ (0 hors updraft)
+        wm  = np.where(w < -ws, w, 0.0)        # w- (0 hors downdraft)
+        up  = w > ws
+
+        # --- paire Reynolds : <w+ u'> et <w- u'>  (diviseur N = u.size) ---
+        a1 += (wp*up_).mean()                  # <w+ u'>
+        a2 += (wm*up_).mean()                  # <w- u'>
+
+        # --- paire flux de masse : <w+> u_c  et  <w+> u_e ---
+        wp_mean = (w*up).mean()                # <w+> = sigma <w>_up
+        uc = u[up].mean()  if up.any()  else ub
+        ue = u[~up].mean() if (~up).any() else ub
+        a3 += wp_mean * uc                     # <w+> u_c
+        a4 += wp_mean * ue                     # <w+> u_e
+        n+=1; del u,w,up_,wp,wm,up
+    T_wp_u[iz]  = rho0[iz]*a1/n
+    T_wm_u[iz]  = rho0[iz]*a2/n
+    T_wp_uc[iz] = rho0[iz]*a3/n
+    T_wp_ue[iz] = rho0[iz]*a4/n
+    if iz%10==0: print(f'  iz={iz}/{n_z-1}')
+    gc.collect()
+ds_u.close(); ds_w.close(); del ds_u,ds_w; gc.collect()
+
+# combinaisons
+flux_reynolds = T_wp_u + T_wm_u          # somme
+flux_masse    = T_wp_uc - T_wp_ue        # différence
+print('Termes calcules.')
+
+# ============================================================================
+# Figure : 4 termes separes + leurs combinaisons
+# ============================================================================
+iz_lo = np.searchsorted(alt, 2000)
+iz_hi = np.searchsorted(alt, 18000)
+sl = slice(iz_lo, iz_hi); zf = alt[sl]; sc = 1e3
+
+fig, axes = plt.subplots(1, 3, figsize=(16, 8), sharey=True)
+
+# (a) paire Reynolds
+ax = axes[0]
+ax.plot(T_wp_u[sl]*sc, zf, color='royalblue', lw=2, label="⟨w⁺u'⟩")
+ax.plot(T_wm_u[sl]*sc, zf, color='crimson',  lw=2, label="⟨w⁻u'⟩")
+ax.plot(flux_reynolds[sl]*sc, zf, color='black', lw=2.5, label="somme = flux Reynolds")
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('flux (×10⁻³)'); ax.set_ylabel('Altitude (m)')
+ax.set_title('Paire Reynolds (à sommer)', fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
+
+# (b) paire flux de masse
+ax = axes[1]
+ax.plot(T_wp_uc[sl]*sc, zf, color='seagreen', lw=2, label='⟨w⁺⟩u_c')
+ax.plot(T_wp_ue[sl]*sc, zf, color='darkorange', lw=2, label='⟨w⁺⟩u_e')
+ax.plot(flux_masse[sl]*sc, zf, color='black', lw=2.5, ls='--', label='différence = flux masse')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('flux (×10⁻³)')
+ax.set_title('Paire flux de masse (à différencier)', fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
+
+# (c) les deux combinaisons face à face
+ax = axes[2]
+ax.plot(flux_reynolds[sl]*sc, zf, color='black', lw=2.5, label='flux Reynolds')
+ax.plot(flux_masse[sl]*sc, zf, color='red', lw=2, ls='--', label='flux masse')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('flux (×10⁻³)')
+ax.set_title('Reynolds vs masse', fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
+
+plt.suptitle('Quatre termes : paire Reynolds (somme) vs paire flux de masse (différence)',
+             fontsize=13, fontweight='bold')
+plt.tight_layout(); plt.show()
+
+# bilan moyen
+print('-- moyennes sur 2-18 km (x1e-3) --')
+print(f"  <w+u'>          = {np.nanmean(T_wp_u[sl])*sc:+.3f}")
+print(f"  <w-u'>          = {np.nanmean(T_wm_u[sl])*sc:+.3f}")
+print(f"  flux Reynolds   = {np.nanmean(flux_reynolds[sl])*sc:+.3f}")
+print(f"  <w+>u_c         = {np.nanmean(T_wp_uc[sl])*sc:+.3f}")
+print(f"  <w+>u_e         = {np.nanmean(T_wp_ue[sl])*sc:+.3f}")
+print(f"  flux masse      = {np.nanmean(flux_masse[sl])*sc:+.3f}")
