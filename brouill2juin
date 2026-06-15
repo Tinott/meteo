@@ -1,4 +1,46 @@
 # ============================================================================
+# DEF 1 : u_e = u_bar (moyenne region) ; u' = u - u_bar
+#   reference des anomalies ET u_e identiques -> comparaison propre
+# ============================================================================
+reg = mh; W0_MIN, C_SIGMA = 0.001, 0.5
+
+T_wp_u  = np.zeros(n_z); T_wm_u  = np.zeros(n_z)   # paire Reynolds
+T_wp_uc = np.zeros(n_z); T_wp_ue = np.zeros(n_z)   # paire flux masse
+
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    a1=a2=a3=a4=0.0; n=0
+    for it in range(t_stat, n_t):
+        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
+        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
+        ub = u.mean()
+        ue = ub                                    # <-- DEF 1
+        up_ = u - ub                               # u' = u - u_bar  (coherent avec ue)
+        ws  = max(W0_MIN, C_SIGMA*w.std())
+        up  = w > ws
+        wp  = np.where(w >  ws, w, 0.0)
+        wm  = np.where(w < -ws, w, 0.0)
+        wp_mean = (w*up).mean()
+        uc = u[up].mean() if up.any() else ub
+        a1 += (wp*up_).mean(); a2 += (wm*up_).mean()
+        a3 += wp_mean*uc;      a4 += wp_mean*ue
+        n+=1; del u,w,up_,wp,wm,up
+    T_wp_u[iz]=rho0[iz]*a1/n; T_wm_u[iz]=rho0[iz]*a2/n
+    T_wp_uc[iz]=rho0[iz]*a3/n; T_wp_ue[iz]=rho0[iz]*a4/n
+    gc.collect()
+ds_u.close(); ds_w.close(); del ds_u,ds_w; gc.collect()
+
+flux_reynolds_1 = T_wp_u + T_wm_u
+flux_masse_1    = T_wp_uc - T_wp_ue
+iz_lo=np.searchsorted(alt,2000); iz_hi=np.searchsorted(alt,18000); s=slice(iz_lo,iz_hi)
+k1=(flux_masse_1[s]@flux_reynolds_1[s])/(flux_masse_1[s]@flux_masse_1[s])
+r1=np.corrcoef(flux_masse_1[s],flux_reynolds_1[s])[0,1]
+print(f'DEF 1 (u_e=u_bar)        k={k1:+.3f}  corr={r1:+.3f}')
+
+
+
+
+# ============================================================================
 # DEF 2 : u_e = <u>_{~up} (complement : downdrafts + calme)
 #   reference des anomalies = u_e (PAS u_bar) -> coherence
 # ============================================================================
