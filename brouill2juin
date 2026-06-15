@@ -44,7 +44,7 @@ axes[0].set_ylabel('tau (jours)')
 axes[0].set_title("Temps d'amortissement tau(lambda)", fontweight='bold')
 axes[0].grid(alpha=0.3)
 
-axes[1].plot(lam/1000, w*100, color='crimson', lw=2.5)
+axes[1].plot(lam/1000, w*100, color='crimson', lw=2.5)#
 axes[1].set_xlabel("longueur d'onde lambda (km)")
 axes[1].set_ylabel('|w| (cm/s)')
 axes[1].set_title('Vitesse de descente |w|(lambda)', fontweight='bold')
