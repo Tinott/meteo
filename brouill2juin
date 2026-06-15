@@ -1,58 +1,101 @@
 # ============================================================================
-# Test : l'erreur de creneau = covariance INTERNE aux updrafts ?
-#   flux_up_vrai = <w+ u'>  (contribution updraft au Reynolds, deja calcule)
-#   tophat       = <w+>(u_c - u_e)
-#   On calcule la covariance interne explicite : <(w-<w>_up)(u-<u>_up)>_up * sigma
+# Flux de Reynolds CONVECTIF : anomalies calculees sur la region convective
+#   (updrafts U downdrafts), separe en contribution up et down,
+#   compare aux flux de masse M+(u_c-u_e) et M-(u_d-u_e).
 # ============================================================================
 reg = mh; W0_MIN, C_SIGMA = 0.001, 0.5
 
-cov_int  = np.zeros(n_z)   # covariance u'w' INTERNE aux updrafts (ponderee sigma)
-flux_up  = np.zeros(n_z)   # <w+ u'> contribution updraft
-tophat   = np.zeros(n_z)   # <w+>(u_c - u_bar)
+# flux de Reynolds (anomalie / region convective)
+rey_up   = np.zeros(n_z)   # somme_{i in up}  u'_i w'_i  / N_conv
+rey_dn   = np.zeros(n_z)   # somme_{i in dn}  u'_i w'_i  / N_conv
+# flux de masse
+Mp       = np.zeros(n_z)   # M+ = rho0 <w 1_up>_conv
+Mm       = np.zeros(n_z)   # M- = rho0 <w 1_dn>_conv
+uc_p     = np.zeros(n_z); ud_p = np.zeros(n_z); ue_p = np.zeros(n_z)
 
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
 for iz in range(n_z):
-    ac=af=at=0.0; n=0
+    a_ru=a_rd=0.0; a_mp=a_mm=0.0; a_uc=a_ud=a_ue=0.0; n=0
     for it in range(t_stat, n_t):
         u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
         w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
-        ub = u.mean()
         ws = max(W0_MIN, C_SIGMA*w.std())
-        up = w > ws
-        N  = u.size
-        up_ = u - ub
-        # contribution updraft au Reynolds (diviseur N)
-        af += (np.where(up, w, 0.0)*up_).mean()
-        # top-hat
-        wp_mean = (w*up).mean()
-        uc = u[up].mean() if up.any() else ub
-        at += wp_mean*(uc - ub)
-        # covariance INTERNE : <(u-uc)(w-wc)> sur les updrafts, * fraction (N_up/N)
-        if up.any():
-            uu = u[up]; ww = w[up]
-            cov = ((uu-uu.mean())*(ww-ww.mean())).mean()
-            ac += cov * (up.sum()/N)
-        n+=1; del u,w,up,up_
-    cov_int[iz]=rho0[iz]*ac/n
-    flux_up[iz]=rho0[iz]*af/n
-    tophat[iz]=rho0[iz]*at/n
+        up = w >  ws
+        dn = w < -ws
+        conv = up | dn                       # region convective = up U down
+        Nc = conv.sum()
+        if Nc == 0:
+            n+=1; del u,w,up,dn,conv; continue
+
+        # --- anomalies calculees SUR LA REGION CONVECTIVE ---
+        u_conv = u[conv]; w_conv = w[conv]
+        ubar_c = u_conv.mean()               # reference = moyenne convective
+        wbar_c = w_conv.mean()
+        up_in_conv = up[conv]                # masques restreints a conv
+        dn_in_conv = dn[conv]
+        up_a = u_conv - ubar_c               # u' sur la region convective
+        wp_a = w_conv - wbar_c               # w'
+
+        # flux de Reynolds convectif, separe up / down (diviseur N_conv)
+        a_ru += (up_a[up_in_conv]*wp_a[up_in_conv]).sum()/Nc
+        a_rd += (up_a[dn_in_conv]*wp_a[dn_in_conv]).sum()/Nc
+
+        # --- flux de masse (sur la meme region convective) ---
+        a_mp += (w_conv*up_in_conv).mean()   # <w 1_up>_conv
+        a_mm += (w_conv*dn_in_conv).mean()   # <w 1_dn>_conv
+        a_uc += u_conv[up_in_conv].mean() if up_in_conv.any() else ubar_c
+        a_ud += u_conv[dn_in_conv].mean() if dn_in_conv.any() else ubar_c
+        a_ue += ubar_c                       # u_e = moyenne convective (reference)
+        n+=1; del u,w,up,dn,conv,u_conv,w_conv,up_a,wp_a
+    rey_up[iz]=rho0[iz]*a_ru/n; rey_dn[iz]=rho0[iz]*a_rd/n
+    Mp[iz]=rho0[iz]*a_mp/n;     Mm[iz]=rho0[iz]*a_mm/n
+    uc_p[iz]=a_uc/n; ud_p[iz]=a_ud/n; ue_p[iz]=a_ue/n
     gc.collect()
 ds_u.close(); ds_w.close(); del ds_u,ds_w; gc.collect()
 
-# verification : flux_up doit ~ tophat + cov_int  (identite de decomposition)
-err = flux_up - tophat
-s = slice(np.searchsorted(alt,2000), np.searchsorted(alt,18000))
-r = np.corrcoef(err[s], cov_int[s])[0,1]
-resid = np.nanmax(np.abs((tophat+cov_int-flux_up)[s]))
-print(f'corr(erreur_creneau, covariance_interne) = {r:+.3f}')
-print(f'residu |flux_up - (tophat+cov_int)| max   = {resid:.2e}  (doit etre ~0)')
+# flux de masse ascendant et descendant
+fm_up = Mp*(uc_p - ue_p)
+fm_dn = Mm*(ud_p - ue_p)
+print('Calcul termine.')
 
-fig,ax=plt.subplots(figsize=(8,8)); zf=alt[s]; sc=1e3
-ax.plot(flux_up[s]*sc, zf,'b',lw=2,label='⟨w⁺u\'⟩ (updraft vrai)')
-ax.plot(tophat[s]*sc, zf,'r--',lw=2,label='top-hat')
-ax.plot(cov_int[s]*sc, zf,color='purple',lw=2,label='covariance interne')
-ax.plot((tophat+cov_int)[s]*sc, zf,'g:',lw=1.5,label='tophat + cov (contrôle)')
+
+
+
+
+# ============================================================================
+# Comparaison : Reynolds convectif (up/dn) vs flux de masse (up/dn)
+# ============================================================================
+s = slice(np.searchsorted(alt,2000), np.searchsorted(alt,18000))
+zf = alt[s]; sc = 1e3
+
+def stat(a,b):
+    x,y=a[s],b[s]; ok=np.isfinite(x)&np.isfinite(y)
+    k=(y[ok]@x[ok])/(x[ok]@x[ok]) if (x[ok]@x[ok])!=0 else np.nan
+    r=np.corrcoef(x[ok],y[ok])[0,1]
+    return k,r
+
+k_up,r_up = stat(fm_up, rey_up)
+k_dn,r_dn = stat(fm_dn, rey_dn)
+print(f'UPDRAFT   : rey ~ k*fm   k={k_up:+.3f}  corr={r_up:+.3f}')
+print(f'DOWNDRAFT : rey ~ k*fm   k={k_dn:+.3f}  corr={r_dn:+.3f}')
+
+fig,axes=plt.subplots(1,2,figsize=(13,8),sharey=True)
+ax=axes[0]
+ax.plot(rey_up[s]*sc, zf,'b',lw=2.5,label="⟨u'w'⟩ updraft (Reynolds)")
+ax.plot(fm_up[s]*sc, zf,'r--',lw=2,label='M⁺(u_c−u_e) (flux masse)')
 ax.axvline(0,color='grey',alpha=0.4)
 ax.set_xlabel('flux (×10⁻³)'); ax.set_ylabel('Altitude (m)')
-ax.set_title('Erreur de créneau = covariance interne ?',fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3); plt.tight_layout(); plt.show()
+ax.set_title(f'Updraft (k={k_up:.2f}, r={r_up:.2f})',fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
+
+ax=axes[1]
+ax.plot(rey_dn[s]*sc, zf,color='crimson',lw=2.5,label="⟨u'w'⟩ downdraft (Reynolds)")
+ax.plot(fm_dn[s]*sc, zf,color='darkorange',lw=2,ls='--',label='M⁻(u_d−u_e) (flux masse)')
+ax.axvline(0,color='grey',alpha=0.4)
+ax.set_xlabel('flux (×10⁻³)')
+ax.set_title(f'Downdraft (k={k_dn:.2f}, r={r_dn:.2f})',fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
+
+plt.suptitle('Reynolds convectif vs flux de masse, par type de structure',
+             fontsize=13,fontweight='bold')
+plt.tight_layout(); plt.show()
