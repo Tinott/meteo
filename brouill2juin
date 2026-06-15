@@ -1,69 +1,39 @@
-# ============================================================================
-# Vers Phi_rey ≈ flux de masse : Du effectif + contraste pondere flux de masse
-# ============================================================================
+# Flux de masse up/down compensé : Phi = Mc * (u_c - u_d)
+#   u_c = <u>_up , u_d = <u>_dn , et on verifie la compensation de masse
 reg = mh; W0_MIN, C_SIGMA = 0.001, 0.5
-
-flux_rey = np.zeros(n_z)   # rho0 <u'w'> vrai (ref region)
-Mc_up    = np.zeros(n_z)   # rho0 <w 1_up>
-uc_simple= np.zeros(n_z)   # <u>_up           (moyenne simple)
-uc_wflux = np.zeros(n_z)   # <w u>_up/<w>_up  (pondere flux de masse)  <-- IDEE 2
-ue_prof  = np.zeros(n_z)   # u_bar region
-
+flux_rey = np.zeros(n_z); fm_updn = np.zeros(n_z); compens = np.zeros(n_z)
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
 for iz in range(n_z):
-    a_r=a_m=a_us=a_uw=a_ue=0.0; n=0
+    a_re=a_fm=a_cp=0.0; n=0
     for it in range(t_stat, n_t):
-        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
-        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
-        ub=u.mean(); wb=w.mean()
-        ws=max(W0_MIN, C_SIGMA*w.std()); up = w>ws
-        a_r += ((u-ub)*(w-wb)).mean()
-        a_m += (w*up).mean()
-        if up.any():
-            uu=u[up]; ww=w[up]
-            a_us += uu.mean()
-            a_uw += (ww*uu).sum()/ww.sum() if ww.sum()!=0 else uu.mean()  # pondere w
-        else:
-            a_us += ub; a_uw += ub
-        a_ue += ub
-        n+=1; del u,w,up
-    flux_rey[iz]=rho0[iz]*a_r/n; Mc_up[iz]=rho0[iz]*a_m/n
-    uc_simple[iz]=a_us/n; uc_wflux[iz]=a_uw/n; ue_prof[iz]=a_ue/n
+        u = ds_u['ua'].isel({dim_t:it,dim_z:iz}).values[reg]
+        w = ds_w['wa'].isel({dim_t:it,dim_z:iz}).values[reg]
+        ub=u.mean(); wb=w.mean(); N=u.size
+        ws=max(W0_MIN, C_SIGMA*w.std()); up=w>ws; dn=w<-ws
+        a_re += ((u-ub)*(w-wb)).mean()
+        if up.any() and dn.any():
+            uc=u[up].mean(); ud=u[dn].mean()
+            # flux de masse ascendant (compensé : on prend |M| commun via up)
+            Mc_up = (w*up).mean()              # >0
+            a_fm += Mc_up*(uc-ud)              # Phi = Mc (u_c - u_d)
+            a_cp += (w*up).mean() + (w*dn).mean()   # doit ~0 (compensation)
+        n+=1; del u,w,up,dn
+    flux_rey[iz]=rho0[iz]*a_re/n; fm_updn[iz]=rho0[iz]*a_fm/n; compens[iz]=rho0[iz]*a_cp/n
     gc.collect()
 ds_u.close(); ds_w.close(); del ds_u,ds_w; gc.collect()
 
-s=slice(np.searchsorted(alt,2000), np.searchsorted(alt,18000)); zf=alt[s]; sc=1e3
-
-# les deux versions du flux de masse
-fm_simple = Mc_up*(uc_simple - ue_prof)          # top-hat naif
-fm_wflux  = Mc_up*(uc_wflux  - ue_prof)          # IDEE 2 : contraste pondere
-
-# IDEE 1 : Du effectif
-Du_eff = np.where(np.abs(Mc_up)>1e-8, flux_rey/Mc_up, np.nan)
-Du_top = uc_simple - ue_prof
-
+s=slice(np.searchsorted(alt,2000),np.searchsorted(alt,18000))
 def nse(t,p):
     a,b=t[s],p[s]; ok=np.isfinite(a)&np.isfinite(b)
     return 1-np.nansum((a[ok]-b[ok])**2)/np.nansum((a[ok]-np.nanmean(a[ok]))**2)
-print(f'top-hat simple   : NSE={nse(flux_rey,fm_simple):+.3f}')
-print(f'contraste pondere: NSE={nse(flux_rey,fm_wflux):+.3f}   <-- IDEE 2')
-print(f'ratio Du_eff/Du_top median = {np.nanmedian((Du_eff/Du_top)[s]):.2f}')
+print(f'flux masse up/down : NSE={nse(flux_rey,fm_updn):+.3f}')
+print(f'compensation masse <M+ + M-> median = {np.nanmedian(compens[s])*1e3:+.3f} x1e-3 (doit ~0)')
 
-fig,axes=plt.subplots(1,2,figsize=(13,8),sharey=True)
-ax=axes[0]
+zf=alt[s]; sc=1e3
+fig,ax=plt.subplots(figsize=(8,8))
 ax.plot(flux_rey[s]*sc, zf,'k',lw=2.5,label="ρ₀⟨u'w'⟩ vrai")
-ax.plot(fm_simple[s]*sc, zf,'r--',lw=1.8,label='Mc·(u_c−u_e) simple')
-ax.plot(fm_wflux[s]*sc, zf,'b-.',lw=2,label='Mc·(u_c^M−u_e) pondéré w')
+ax.plot(fm_updn[s]*sc, zf,'r--',lw=2,label='Mc(u_c − u_d) up/down')
 ax.axvline(0,color='grey',alpha=0.4)
 ax.set_xlabel('flux (×10⁻³)'); ax.set_ylabel('Altitude (m)')
-ax.set_title('Flux de masse : simple vs pondéré flux de masse',fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3)
-
-ax=axes[1]
-ax.plot(Du_eff[s], zf,'g',lw=2.5,label='Δu effectif = Φ_rey/M_c')
-ax.plot(Du_top[s], zf,'r--',lw=2,label='Δu top-hat = u_c−u_e')
-ax.axvline(0,color='grey',alpha=0.4)
-ax.set_xlabel('Δu (m/s)')
-ax.set_title('Δu effectif vs Δu top-hat',fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3)
-plt.tight_layout(); plt.show()
+ax.set_title('Flux de masse à deux courants (up vs down)',fontweight='bold')
+ax.legend(); ax.grid(alpha=0.3); plt.tight_layout(); plt.show()
