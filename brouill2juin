@@ -1,73 +1,11 @@
-# verifier : Mc(uc-ud) au seuil C colle-t-il au Reynolds TOTAL (fixe)
-#            ou seulement au Reynolds restreint au meme seuil ?
-reg=mh; W0_MIN=0.001
-flux_rey_total = np.zeros(n_z)        # NE depend PAS du seuil
-for C in [0.5, 1.0, 1.5, 2.0]:
-    fm = np.zeros(n_z); rey_seuil = np.zeros(n_z); flux_rey_total*=0
-    ds_u=xr.open_dataset(path3d('ua')); ds_w=xr.open_dataset(path3d('wa'))
-    for iz in range(n_z):
-        a_fm=a_rt=a_rs=0.0; n=0
-        for it in range(t_stat,n_t):
-            u=ds_u['ua'].isel({dim_t:it,dim_z:iz}).values[reg]
-            w=ds_w['wa'].isel({dim_t:it,dim_z:iz}).values[reg]
-            ub=u.mean(); wb=w.mean(); N=u.size
-            a_rt += ((u-ub)*(w-wb)).mean()                 # Reynolds TOTAL (fixe)
-            ws=max(W0_MIN, C*w.std()); up=w>ws; dn=w<-ws
-            if up.any() and dn.any():
-                uc=u[up].mean(); ud=u[dn].mean()
-                a_fm += (w*up).mean()*(uc-ud)              # Mc(uc-ud)
-                # Reynolds restreint aux points seuilles (up U dn)
-                msk=up|dn
-                a_rs += ((u[msk]-ub)*(w[msk]-wb)).sum()/N
-            n+=1; del u,w
-        fm[iz]=rho0[iz]*a_fm/n; rey_seuil[iz]=rho0[iz]*a_rs/n; flux_rey_total[iz]=rho0[iz]*a_rt/n
-        gc.collect()
-    ds_u.close(); ds_w.close(); del ds_u,ds_w; gc.collect()
-    s=slice(np.searchsorted(alt,2000),np.searchsorted(alt,18000))
-    def nse(t,p):
-        a,b=t[s],p[s]; ok=np.isfinite(a)&np.isfinite(b)
-        return 1-np.nansum((a[ok]-b[ok])**2)/np.nansum((a[ok]-np.nanmean(a[ok]))**2)
-    print(f'C={C}: NSE(fm vs Reynolds TOTAL)={nse(flux_rey_total,fm):+.3f}  '
-          f'NSE(fm vs Reynolds seuillé)={nse(rey_seuil,fm):+.3f}')
-
-
-
-# Flux de masse up/down compensé : Phi = Mc * (u_c - u_d)
-#   u_c = <u>_up , u_d = <u>_dn , et on verifie la compensation de masse
-reg = mh; W0_MIN, C_SIGMA = 0.001, 0.9
-flux_rey = np.zeros(n_z); fm_updn = np.zeros(n_z); compens = np.zeros(n_z)
-ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
-for iz in range(n_z):
-    a_re=a_fm=a_cp=0.0; n=0
-    for it in range(t_stat, n_t):
-        u = ds_u['ua'].isel({dim_t:it,dim_z:iz}).values[reg]
-        w = ds_w['wa'].isel({dim_t:it,dim_z:iz}).values[reg]
-        ub=u.mean(); wb=w.mean(); N=u.size
-        ws=max(W0_MIN, C_SIGMA*w.std()); up=w>ws; dn=w<-ws
-        a_re += ((u-ub)*(w-wb)).mean()
-        if up.any() and dn.any():
-            uc=u[up].mean(); ud=u[dn].mean()
-            # flux de masse ascendant (compensé : on prend |M| commun via up)
-            Mc_up = (w*up).mean()              # >0
-            a_fm += Mc_up*(uc-ud)              # Phi = Mc (u_c - u_d)
-            a_cp += (w*up).mean() + (w*dn).mean()   # doit ~0 (compensation)
-        n+=1; del u,w,up,dn
-    flux_rey[iz]=rho0[iz]*a_re/n; fm_updn[iz]=rho0[iz]*a_fm/n; compens[iz]=rho0[iz]*a_cp/n
-    gc.collect()
-ds_u.close(); ds_w.close(); del ds_u,ds_w; gc.collect()
-
-s=slice(np.searchsorted(alt,2000),np.searchsorted(alt,18000))
-def nse(t,p):
-    a,b=t[s],p[s]; ok=np.isfinite(a)&np.isfinite(b)
-    return 1-np.nansum((a[ok]-b[ok])**2)/np.nansum((a[ok]-np.nanmean(a[ok]))**2)
-print(f'flux masse up/down : NSE={nse(flux_rey,fm_updn):+.3f}')
-print(f'compensation masse <M+ + M-> median = {np.nanmedian(compens[s])*1e3:+.3f} x1e-3 (doit ~0)')
-
-zf=alt[s]; sc=1e3
-fig,ax=plt.subplots(figsize=(8,8))
-ax.plot(flux_rey[s]*sc, zf,'k',lw=2.5,label="ρ₀⟨u'w'⟩ vrai")
-ax.plot(fm_updn[s]*sc, zf,'r--',lw=2,label='Mc(u_c − u_d) up/down')
-ax.axvline(0,color='grey',alpha=0.4)
-ax.set_xlabel('flux (×10⁻³)'); ax.set_ylabel('Altitude (m)')
-ax.set_title('Flux de masse à deux courants (up vs down)',fontweight='bold')
-ax.legend(); ax.grid(alpha=0.3); plt.tight_layout(); plt.show()
+C=0.001: NSE(fm vs Reynolds TOTAL)=-0.461  NSE(fm vs Reynolds seuillé)=-0.460
+C=0.01: NSE(fm vs Reynolds TOTAL)=-0.430  NSE(fm vs Reynolds seuillé)=-0.429
+C=0.1: NSE(fm vs Reynolds TOTAL)=-0.067  NSE(fm vs Reynolds seuillé)=-0.061
+C=0.2: NSE(fm vs Reynolds TOTAL)=+0.246  NSE(fm vs Reynolds seuillé)=+0.273
+C=0.3: NSE(fm vs Reynolds TOTAL)=+0.456  NSE(fm vs Reynolds seuillé)=+0.517
+C=0.5: NSE(fm vs Reynolds TOTAL)=+0.674  NSE(fm vs Reynolds seuillé)=+0.791
+C=0.8: NSE(fm vs Reynolds TOTAL)=+0.785  NSE(fm vs Reynolds seuillé)=+0.911
+C=1.0: NSE(fm vs Reynolds TOTAL)=+0.807  NSE(fm vs Reynolds seuillé)=+0.899
+C=1.2: NSE(fm vs Reynolds TOTAL)=+0.811  NSE(fm vs Reynolds seuillé)=+0.857
+C=1.5: NSE(fm vs Reynolds TOTAL)=+0.809  NSE(fm vs Reynolds seuillé)=+0.756
+C=2.0: NSE(fm vs Reynolds TOTAL)=+0.784  NSE(fm vs Reynolds seuillé)=+0.517
