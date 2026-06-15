@@ -1,7 +1,67 @@
-### Interprétation S35
+# ============================================================================
+# S35 — Dependance en longueur d'onde (Romps 2014, eqs. 9-10)
+#   tau(lambda) = (rho/M)(eps^2+m^2)/(eps m^2)   [temps d'amortissement]
+#   w(lambda)   = (M/rho) m^2/(eps^2+m^2)         [vitesse de descente]
+#   + spectre vertical du vent moyen : energie et tau par mode.
+# ============================================================================
 
-La théorie de Romps (éq. 9-10) appliquée avec **tes** valeurs ($M/\rho=3.4$ cm/s, $\varepsilon=0.32$ km⁻¹) place le temps d'amortissement entre **1.0 et 1.5 jour** sur 2–12 km — dans la fourchette historique 1–10 jours, côté rapide.
+sl   = slice(iz_lo, iz_top+1)
+zf   = alt[sl].astype(float)
+SDAY = 86400.0
 
-Le **spectre vertical du vent moyen** est le résultat le plus parlant : l'énergie se concentre sur les modes **4–6 km** (75 % de l'énergie), et le $\tau$ théorique croît bien avec $\lambda$ — les modes courts s'amortissent plus vite, **exactement la prédiction de Romps**. C'est la confirmation qualitative recherchée.
+# --- parametres effectifs (depuis tes donnees) ---
+M_rho = np.nanmean((Mc_up_h / rho0)[sl])          # m/s
+eps   = abs(eps_glob_h) if np.isfinite(eps_glob_h) and eps_glob_h != 0 else 1.5e-3
+print(f'M/rho = {M_rho*100:.2f} cm/s   eps = {eps*1000:.2f} km-1')
 
-⚠️ Réserve : $\varepsilon=0.32$ km⁻¹ vient du S30 (où il sortait négatif, ici pris en valeur absolue) et correspond plutôt au $\varepsilon$ *traceur* de Romps qu'au $\varepsilon$ *vent* (1.5 km⁻¹). Avec $\varepsilon=1.5$, les $\tau$ s'étaleraient davantage (jusqu'à ~5 j aux grandes $\lambda$), plus conforme. À tester en sensibilité.
+# --- courbes theoriques tau(lambda), w(lambda) ---
+lam = np.linspace(2000., 12000., 200)
+m   = 2*np.pi/lam
+tau = (1/M_rho)*(eps**2 + m**2)/(eps*m**2)/SDAY   # jours
+w   = M_rho * m**2/(eps**2 + m**2)                # m/s
+
+# --- spectre de Fourier vertical du vent moyen ---
+u   = ubar_h_prof[sl] - np.nanmean(ubar_h_prof[sl])
+Lz  = zf[-1] - zf[0]
+z0  = zf - zf[0]
+k       = np.arange(1, 9)
+lam_k   = 2*Lz/k
+amp_k   = np.array([2/len(z0)*np.nansum(u*np.sin(np.pi*kk*z0/Lz)) for kk in k])
+power_k = amp_k**2
+m_k     = 2*np.pi/lam_k
+tau_k   = (1/M_rho)*(eps**2 + m_k**2)/(eps*m_k**2)/SDAY
+
+# --- figures ---
+fig, axes = plt.subplots(1, 3, figsize=(16, 6))
+
+axes[0].plot(lam/1000, tau, color='royalblue', lw=2.5)
+axes[0].set_xlabel("longueur d'onde lambda (km)")
+axes[0].set_ylabel('tau (jours)')
+axes[0].set_title("Temps d'amortissement tau(lambda)", fontweight='bold')
+axes[0].grid(alpha=0.3)
+
+axes[1].plot(lam/1000, w*100, color='crimson', lw=2.5)
+axes[1].set_xlabel("longueur d'onde lambda (km)")
+axes[1].set_ylabel('|w| (cm/s)')
+axes[1].set_title('Vitesse de descente |w|(lambda)', fontweight='bold')
+axes[1].grid(alpha=0.3)
+
+ax = axes[2]
+ax.bar(lam_k/1000, power_k/np.nansum(power_k), width=0.4,
+       color='steelblue', alpha=0.8, label='énergie du vent')
+ax2 = ax.twinx()
+ax2.plot(lam_k/1000, tau_k, 'o-', color='darkorange', lw=2, label='tau du mode')
+ax2.set_ylabel('tau (jours)', color='darkorange')
+ax.set_xlabel("longueur d'onde lambda (km)")
+ax.set_ylabel('énergie spectrale (norm.)')
+ax.set_title('Spectre du vent vs tau', fontweight='bold')
+ax.legend(fontsize=8, loc='upper left'); ax.grid(alpha=0.3)
+
+plt.suptitle("S35 — Dépendance en longueur d'onde (Romps 2014)",
+             fontsize=13, fontweight='bold')
+plt.tight_layout(); plt.show()
+
+# --- bilan chiffre ---
+for i in range(len(k)):
+    print(f'lambda={lam_k[i]/1000:5.2f} km : energie={power_k[i]/np.nansum(power_k)*100:5.1f}%'
+          f'  tau={tau_k[i]:.2f} j')
