@@ -1,75 +1,31 @@
-# ============================================================================
-# Flux de Reynolds SANS SEUIL : partition par signe de w' seulement
-#   up = w' > 0 (ascendant) , dn = w' < 0 (descendant)
-#   -> up + dn = total exactement (pas d'environnement)
-# ============================================================================
-reg = mh
-
-flux_rey = np.zeros(n_z)   # total rho0 <u'w'>
-flux_up  = np.zeros(n_z)   # contribution w' > 0
-flux_dn  = np.zeros(n_z)   # contribution w' < 0
-Mc_up    = np.zeros(n_z)   # rho0 <w' 1_{w'>0}>   (flux de masse ascendant)
-Mc_dn    = np.zeros(n_z)   # rho0 <w' 1_{w'<0}>   (descendant)
-uc_p     = np.zeros(n_z)   # <u>_up
-ud_p     = np.zeros(n_z)   # <u>_dn
-
-ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
-for iz in range(n_z):
-    a_re=a_up=a_dn=a_mu=a_md=a_uc=a_ud=0.0; n=0
-    for it in range(t_stat, n_t):
-        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
-        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
-        ub=u.mean(); wb=w.mean()
-        up_ = u - ub; wp = w - wb               # anomalies / region
-        up = wp > 0                              # ascendant (sans seuil)
-        dn = ~up                                 # descendant
-        N = u.size
-
-        a_re += (up_*wp).mean()                  # total
-        a_up += (up_[up]*wp[up]).sum()/N         # contribution up
-        a_dn += (up_[dn]*wp[dn]).sum()/N         # contribution dn
-        a_mu += (wp*up).mean()                   # <w' 1_up> = M+/rho0
-        a_md += (wp*dn).mean()                   # <w' 1_dn> = M-/rho0
-        a_uc += u[up].mean()
-        a_ud += u[dn].mean()
-        n+=1; del u,w,up_,wp,up,dn
-    flux_rey[iz]=rho0[iz]*a_re/n
-    flux_up[iz] =rho0[iz]*a_up/n
-    flux_dn[iz] =rho0[iz]*a_dn/n
-    Mc_up[iz]   =rho0[iz]*a_mu/n
-    Mc_dn[iz]   =rho0[iz]*a_md/n
-    uc_p[iz]=a_uc/n; ud_p[iz]=a_ud/n
-    gc.collect()
-ds_u.close(); ds_w.close(); del ds_u,ds_w; gc.collect()
-
-# controle : up + dn doit = total (exact, plus d'environnement)
-s=slice(np.searchsorted(alt,2000), np.searchsorted(alt,18000))
-residu = np.nanmax(np.abs((flux_up+flux_dn-flux_rey)[s]))
-print(f'residu |up+dn - total| max = {residu:.2e}  (doit etre ~0, sans seuil)')
-
-# flux de masse a deux courants : Mc(u_c - u_d)
-fm_updn = Mc_up*(uc_p - ud_p)
-def nse(t,p):
-    a,b=t[s],p[s]; ok=np.isfinite(a)&np.isfinite(b)
-    return 1-np.nansum((a[ok]-b[ok])**2)/np.nansum((a[ok]-np.nanmean(a[ok]))**2)
-print(f'flux masse up/down  : NSE={nse(flux_rey,fm_updn):+.3f}')
-
-zf=alt[s]; sc=1e3
-fig,axes=plt.subplots(1,2,figsize=(13,8),sharey=True)
-ax=axes[0]
-ax.plot(flux_rey[s]*sc, zf,'k',lw=2.5,label='total')
-ax.plot(flux_up[s]*sc, zf,color='royalblue',lw=2,label="w'>0 (ascendant)")
-ax.plot(flux_dn[s]*sc, zf,color='crimson',lw=2,label="w'<0 (descendant)")
-ax.axvline(0,color='grey',alpha=0.4)
-ax.set_xlabel('flux (×10⁻³)'); ax.set_ylabel('Altitude (m)')
-ax.set_title('Reynolds sans seuil (up+dn=total)',fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3)
-
-ax=axes[1]
-ax.plot(flux_rey[s]*sc, zf,'k',lw=2.5,label="ρ₀⟨u'w'⟩ vrai")
-ax.plot(fm_updn[s]*sc, zf,'r--',lw=2,label='Mc(u_c−u_d)')
-ax.axvline(0,color='grey',alpha=0.4)
-ax.set_xlabel('flux (×10⁻³)')
-ax.set_title('vs flux de masse à deux courants',fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3)
-plt.tight_layout(); plt.show()
+# verifier : Mc(uc-ud) au seuil C colle-t-il au Reynolds TOTAL (fixe)
+#            ou seulement au Reynolds restreint au meme seuil ?
+reg=mh; W0_MIN=0.001
+flux_rey_total = np.zeros(n_z)        # NE depend PAS du seuil
+for C in [0.5, 1.0, 1.5, 2.0]:
+    fm = np.zeros(n_z); rey_seuil = np.zeros(n_z); flux_rey_total*=0
+    ds_u=xr.open_dataset(path3d('ua')); ds_w=xr.open_dataset(path3d('wa'))
+    for iz in range(n_z):
+        a_fm=a_rt=a_rs=0.0; n=0
+        for it in range(t_stat,n_t):
+            u=ds_u['ua'].isel({dim_t:it,dim_z:iz}).values[reg]
+            w=ds_w['wa'].isel({dim_t:it,dim_z:iz}).values[reg]
+            ub=u.mean(); wb=w.mean(); N=u.size
+            a_rt += ((u-ub)*(w-wb)).mean()                 # Reynolds TOTAL (fixe)
+            ws=max(W0_MIN, C*w.std()); up=w>ws; dn=w<-ws
+            if up.any() and dn.any():
+                uc=u[up].mean(); ud=u[dn].mean()
+                a_fm += (w*up).mean()*(uc-ud)              # Mc(uc-ud)
+                # Reynolds restreint aux points seuilles (up U dn)
+                msk=up|dn
+                a_rs += ((u[msk]-ub)*(w[msk]-wb)).sum()/N
+            n+=1; del u,w
+        fm[iz]=rho0[iz]*a_fm/n; rey_seuil[iz]=rho0[iz]*a_rs/n; flux_rey_total[iz]=rho0[iz]*a_rt/n
+        gc.collect()
+    ds_u.close(); ds_w.close(); del ds_u,ds_w; gc.collect()
+    s=slice(np.searchsorted(alt,2000),np.searchsorted(alt,18000))
+    def nse(t,p):
+        a,b=t[s],p[s]; ok=np.isfinite(a)&np.isfinite(b)
+        return 1-np.nansum((a[ok]-b[ok])**2)/np.nansum((a[ok]-np.nanmean(a[ok]))**2)
+    print(f'C={C}: NSE(fm vs Reynolds TOTAL)={nse(flux_rey_total,fm):+.3f}  '
+          f'NSE(fm vs Reynolds seuillé)={nse(rey_seuil,fm):+.3f}')
