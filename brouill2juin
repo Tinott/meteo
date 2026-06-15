@@ -1,39 +1,75 @@
-# Flux de masse up/down compensé : Phi = Mc * (u_c - u_d)
-#   u_c = <u>_up , u_d = <u>_dn , et on verifie la compensation de masse
-reg = mh; W0_MIN, C_SIGMA = 0.001, 0.5
-flux_rey = np.zeros(n_z); fm_updn = np.zeros(n_z); compens = np.zeros(n_z)
+# ============================================================================
+# Flux de Reynolds SANS SEUIL : partition par signe de w' seulement
+#   up = w' > 0 (ascendant) , dn = w' < 0 (descendant)
+#   -> up + dn = total exactement (pas d'environnement)
+# ============================================================================
+reg = mh
+
+flux_rey = np.zeros(n_z)   # total rho0 <u'w'>
+flux_up  = np.zeros(n_z)   # contribution w' > 0
+flux_dn  = np.zeros(n_z)   # contribution w' < 0
+Mc_up    = np.zeros(n_z)   # rho0 <w' 1_{w'>0}>   (flux de masse ascendant)
+Mc_dn    = np.zeros(n_z)   # rho0 <w' 1_{w'<0}>   (descendant)
+uc_p     = np.zeros(n_z)   # <u>_up
+ud_p     = np.zeros(n_z)   # <u>_dn
+
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
 for iz in range(n_z):
-    a_re=a_fm=a_cp=0.0; n=0
+    a_re=a_up=a_dn=a_mu=a_md=a_uc=a_ud=0.0; n=0
     for it in range(t_stat, n_t):
-        u = ds_u['ua'].isel({dim_t:it,dim_z:iz}).values[reg]
-        w = ds_w['wa'].isel({dim_t:it,dim_z:iz}).values[reg]
-        ub=u.mean(); wb=w.mean(); N=u.size
-        ws=max(W0_MIN, C_SIGMA*w.std()); up=w>ws; dn=w<-ws
-        a_re += ((u-ub)*(w-wb)).mean()
-        if up.any() and dn.any():
-            uc=u[up].mean(); ud=u[dn].mean()
-            # flux de masse ascendant (compensé : on prend |M| commun via up)
-            Mc_up = (w*up).mean()              # >0
-            a_fm += Mc_up*(uc-ud)              # Phi = Mc (u_c - u_d)
-            a_cp += (w*up).mean() + (w*dn).mean()   # doit ~0 (compensation)
-        n+=1; del u,w,up,dn
-    flux_rey[iz]=rho0[iz]*a_re/n; fm_updn[iz]=rho0[iz]*a_fm/n; compens[iz]=rho0[iz]*a_cp/n
+        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
+        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
+        ub=u.mean(); wb=w.mean()
+        up_ = u - ub; wp = w - wb               # anomalies / region
+        up = wp > 0                              # ascendant (sans seuil)
+        dn = ~up                                 # descendant
+        N = u.size
+
+        a_re += (up_*wp).mean()                  # total
+        a_up += (up_[up]*wp[up]).sum()/N         # contribution up
+        a_dn += (up_[dn]*wp[dn]).sum()/N         # contribution dn
+        a_mu += (wp*up).mean()                   # <w' 1_up> = M+/rho0
+        a_md += (wp*dn).mean()                   # <w' 1_dn> = M-/rho0
+        a_uc += u[up].mean()
+        a_ud += u[dn].mean()
+        n+=1; del u,w,up_,wp,up,dn
+    flux_rey[iz]=rho0[iz]*a_re/n
+    flux_up[iz] =rho0[iz]*a_up/n
+    flux_dn[iz] =rho0[iz]*a_dn/n
+    Mc_up[iz]   =rho0[iz]*a_mu/n
+    Mc_dn[iz]   =rho0[iz]*a_md/n
+    uc_p[iz]=a_uc/n; ud_p[iz]=a_ud/n
     gc.collect()
 ds_u.close(); ds_w.close(); del ds_u,ds_w; gc.collect()
 
-s=slice(np.searchsorted(alt,2000),np.searchsorted(alt,18000))
+# controle : up + dn doit = total (exact, plus d'environnement)
+s=slice(np.searchsorted(alt,2000), np.searchsorted(alt,18000))
+residu = np.nanmax(np.abs((flux_up+flux_dn-flux_rey)[s]))
+print(f'residu |up+dn - total| max = {residu:.2e}  (doit etre ~0, sans seuil)')
+
+# flux de masse a deux courants : Mc(u_c - u_d)
+fm_updn = Mc_up*(uc_p - ud_p)
 def nse(t,p):
     a,b=t[s],p[s]; ok=np.isfinite(a)&np.isfinite(b)
     return 1-np.nansum((a[ok]-b[ok])**2)/np.nansum((a[ok]-np.nanmean(a[ok]))**2)
-print(f'flux masse up/down : NSE={nse(flux_rey,fm_updn):+.3f}')
-print(f'compensation masse <M+ + M-> median = {np.nanmedian(compens[s])*1e3:+.3f} x1e-3 (doit ~0)')
+print(f'flux masse up/down  : NSE={nse(flux_rey,fm_updn):+.3f}')
 
 zf=alt[s]; sc=1e3
-fig,ax=plt.subplots(figsize=(8,8))
-ax.plot(flux_rey[s]*sc, zf,'k',lw=2.5,label="ρ₀⟨u'w'⟩ vrai")
-ax.plot(fm_updn[s]*sc, zf,'r--',lw=2,label='Mc(u_c − u_d) up/down')
+fig,axes=plt.subplots(1,2,figsize=(13,8),sharey=True)
+ax=axes[0]
+ax.plot(flux_rey[s]*sc, zf,'k',lw=2.5,label='total')
+ax.plot(flux_up[s]*sc, zf,color='royalblue',lw=2,label="w'>0 (ascendant)")
+ax.plot(flux_dn[s]*sc, zf,color='crimson',lw=2,label="w'<0 (descendant)")
 ax.axvline(0,color='grey',alpha=0.4)
 ax.set_xlabel('flux (×10⁻³)'); ax.set_ylabel('Altitude (m)')
-ax.set_title('Flux de masse à deux courants (up vs down)',fontweight='bold')
-ax.legend(); ax.grid(alpha=0.3); plt.tight_layout(); plt.show()
+ax.set_title('Reynolds sans seuil (up+dn=total)',fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
+
+ax=axes[1]
+ax.plot(flux_rey[s]*sc, zf,'k',lw=2.5,label="ρ₀⟨u'w'⟩ vrai")
+ax.plot(fm_updn[s]*sc, zf,'r--',lw=2,label='Mc(u_c−u_d)')
+ax.axvline(0,color='grey',alpha=0.4)
+ax.set_xlabel('flux (×10⁻³)')
+ax.set_title('vs flux de masse à deux courants',fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
+plt.tight_layout(); plt.show()
