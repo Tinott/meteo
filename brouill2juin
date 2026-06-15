@@ -1,34 +1,39 @@
 # ============================================================================
-# S35 — Dependance en longueur d'onde (Romps 2014, eqs. 9-10) — k = 1 à 30
+# S35 — Spectre a longueurs d'onde imposees : lambda = 1, 2, ..., 30 km
 # ============================================================================
 
 sl   = slice(iz_lo, iz_top+1)
 zf   = alt[sl].astype(float)
 SDAY = 86400.0
 
-# --- parametres effectifs ---
 M_rho = np.nanmean((Mc_up_h / rho0)[sl])
 eps   = abs(eps_glob_h) if np.isfinite(eps_glob_h) and eps_glob_h != 0 else 1.5e-3
 print(f'M/rho = {M_rho*100:.2f} cm/s   eps = {eps*1000:.2f} km-1')
 
-# --- courbes theoriques tau(lambda), w(lambda) ---
-lam = np.linspace(500., 12000., 300)
+# courbes theoriques
+lam = np.linspace(500., 30000., 400)
 m   = 2*np.pi/lam
 tau = (1/M_rho)*(eps**2 + m**2)/(eps*m**2)/SDAY
 w   = M_rho * m**2/(eps**2 + m**2)
 
-# --- spectre vertical : k = 1 a 30 ---
+# --- vent centre ---
 u   = ubar_h_prof[sl] - np.nanmean(ubar_h_prof[sl])
-Lz  = zf[-1] - zf[0]
 z0  = zf - zf[0]
 N   = len(z0)
 
-k       = np.arange(1, 31)                  # k = 1,2,...,30
-lam_k   = 2*Lz/k
-amp_k   = np.array([2/N*np.nansum(u*np.sin(np.pi*kk*z0/Lz)) for kk in k])
-power_k = amp_k**2
-m_k     = 2*np.pi/lam_k
-tau_k   = (1/M_rho)*(eps**2 + m_k**2)/(eps*m_k**2)/SDAY
+# --- longueurs d'onde imposees : 1 a 30 km, un point par km ---
+lam_km = np.arange(1, 31)                    # 1,2,...,30 km
+lam_m  = lam_km * 1000.0
+m_l    = 2*np.pi/lam_m
+
+# projection du vent sur sin ET cos de chaque lambda (energie = a^2 + b^2)
+#   -> insensible a la phase, vraie "puissance" a cette longueur d'onde
+a = np.array([2/N*np.nansum(u*np.sin(mm*z0)) for mm in m_l])
+b = np.array([2/N*np.nansum(u*np.cos(mm*z0)) for mm in m_l])
+power = a**2 + b**2
+
+# tau theorique a chaque lambda imposee
+tau_l = (1/M_rho)*(eps**2 + m_l**2)/(eps*m_l**2)/SDAY
 
 # --- figures ---
 fig, axes = plt.subplots(1, 3, figsize=(16, 6))
@@ -46,23 +51,21 @@ axes[1].set_title('Vitesse de descente |w|(lambda)', fontweight='bold')
 axes[1].grid(alpha=0.3)
 
 ax = axes[2]
-ax.bar(lam_k/1000, power_k/np.nansum(power_k), width=0.15,
+ax.bar(lam_km, power/np.nansum(power), width=0.7,
        color='steelblue', alpha=0.8, label='énergie du vent')
 ax2 = ax.twinx()
-ax2.plot(lam_k/1000, tau_k, 'o-', color='darkorange', lw=1.5, ms=3, label='tau du mode')
+ax2.plot(lam_km, tau_l, 'o-', color='darkorange', lw=1.5, ms=3, label='tau')
 ax2.set_ylabel('tau (jours)', color='darkorange')
 ax.set_xlabel("longueur d'onde lambda (km)")
 ax.set_ylabel('énergie spectrale (norm.)')
-ax.set_title('Spectre du vent vs tau (30 modes)', fontweight='bold')
+ax.set_title('Spectre du vent (lambda = 1 à 30 km)', fontweight='bold')
 ax.legend(fontsize=8, loc='upper right'); ax.grid(alpha=0.3)
+ax.set_xticks(np.arange(0, 31, 5))
 
 plt.suptitle("S35 — Dépendance en longueur d'onde (Romps 2014)",
              fontsize=13, fontweight='bold')
 plt.tight_layout(); plt.show()
 
-# --- bilan : 10 modes les plus energetiques ---
-order = np.argsort(power_k)[::-1]
-print('-- modes dominants (energie decroissante) --')
-for i in order[:10]:
-    print(f'lambda={lam_k[i]/1000:5.2f} km : energie={power_k[i]/np.nansum(power_k)*100:5.1f}%'
-          f'  tau={tau_k[i]:.2f} j')
+print('-- energie par longueur d\'onde --')
+for i in range(len(lam_km)):
+    print(f'lambda={lam_km[i]:2d} km : energie={power[i]/np.nansum(power)*100:5.1f}%  tau={tau_l[i]:.2f} j')
