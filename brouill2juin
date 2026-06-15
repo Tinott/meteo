@@ -1,60 +1,7 @@
-### Interprétation S31
+### Interprétation S35
 
-Le test de Romps $\langle u'w'\rangle \propto (M_c/\rho_0)\,Du$ donne **R²=0.48** (forme complète avec contraste) contre seulement **R²=0.18** sans le contraste $Du$. L'écart est instructif : **le contraste de vent $Du$ porte l'essentiel de l'information** — le flux de masse seul ne suffit pas, il faut le moduler par $u_c-u_e$. C'est cohérent avec S27 (terme B dominant).
+La théorie de Romps (éq. 9-10) appliquée avec **tes** valeurs ($M/\rho=3.4$ cm/s, $\varepsilon=0.32$ km⁻¹) place le temps d'amortissement entre **1.0 et 1.5 jour** sur 2–12 km — dans la fourchette historique 1–10 jours, côté rapide.
 
-Le coefficient $k\approx1.15$ n'est toutefois **pas** le coefficient sans dimension de Romps : la régression mélange $\rho_0\langle u'w'\rangle$ et $(M_c/\rho_0)Du$, donc $k$ contient un facteur densité. Pour un test propre il faut régresser le flux **spécifique** $\langle u'w'\rangle=\Phi_{rey}/\rho_0$ contre $(M_c/\rho_0)Du$.
+Le **spectre vertical du vent moyen** est le résultat le plus parlant : l'énergie se concentre sur les modes **4–6 km** (75 % de l'énergie), et le $\tau$ théorique croît bien avec $\lambda$ — les modes courts s'amortissent plus vite, **exactement la prédiction de Romps**. C'est la confirmation qualitative recherchée.
 
-Le profil paramétré (rouge) est bien plus oscillant que le Reynolds (bleu) : R²=0.48 capture la tendance d'ensemble mais pas les détails. La piste flux de masse **explique ~la moitié de la variance** du flux CMT — résultat encourageant mais partiel.
-
-
-
-
-# ============================================================================
-# S31 — Test Romps : Phi_rey ≈ k · (M_c · Du)
-#   On balaye k, on retient celui qui maximise le R², on ne trace que lui.
-#   Forme fidele au papier (eq.2) : flux_glob = rho0<u'w'>  vs  M_c·Du.
-# ============================================================================
-
-sl = slice(iz_lo, iz_top+1)
-zf = alt[sl].astype(float)
-
-# prediction de base (sans k) : M_c · Du   -> meme dimension que flux_glob (rho0<u'w'>)
-phi_base = (Mc_up_h * duc_h_loc)[sl]
-Y        = flux_glob_h[sl]
-ok       = np.isfinite(phi_base) & np.isfinite(Y)
-Xb, Yb   = phi_base[ok], Y[ok]
-
-# --- balayage de k : R²(k) = 1 - SS_res/SS_tot ---
-SS_tot = np.sum((Yb - Yb.mean())**2)
-ks  = np.linspace(0.0, 5.0, 501)
-r2s = np.array([1 - np.sum((Yb - k*Xb)**2)/SS_tot for k in ks])
-
-k_best  = ks[np.argmax(r2s)]
-r2_best = r2s.max()
-# (rappel : le k optimal analytique est la projection X·Y / X·X ; le balayage le retrouve)
-print(f'k optimal = {k_best:.3f}   R2 = {r2_best:.3f}')
-
-# --- figure : profil seul du meilleur k ---
-fig, axes = plt.subplots(1, 2, figsize=(13, 7),
-                         gridspec_kw={'width_ratios':[1.4,1]}, sharey=False)
-
-ax = axes[0]
-ax.plot(flux_glob_h[sl]*sc, zf, color='royalblue', lw=2.5, label="Φ_rey = ρ₀⟨u'w'⟩")
-ax.plot(k_best*phi_base*sc, zf, color='red', lw=2, ls='--',
-        label=f'{k_best:.2f} · M_c·Du')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('flux  (×10⁻³)'); ax.set_ylabel('Altitude (m)')
-ax.set_title(f'Meilleur ajustement (k={k_best:.2f}, R²={r2_best:.2f})', fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3)
-
-ax = axes[1]
-ax.plot(ks, r2s, color='darkorange', lw=2)
-ax.axvline(k_best, color='red', ls='--', lw=1.5, label=f'k* = {k_best:.2f}')
-ax.scatter([k_best],[r2_best], color='red', zorder=5)
-ax.set_xlabel('k'); ax.set_ylabel('R²')
-ax.set_title('R²(k)', fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3)
-
-plt.suptitle('S31 — Calibration de Φ_rey ≈ k·M_c·Du (région humide)',
-             fontsize=13, fontweight='bold')
-plt.tight_layout(); plt.show()
+⚠️ Réserve : $\varepsilon=0.32$ km⁻¹ vient du S30 (où il sortait négatif, ici pris en valeur absolue) et correspond plutôt au $\varepsilon$ *traceur* de Romps qu'au $\varepsilon$ *vent* (1.5 km⁻¹). Avec $\varepsilon=1.5$, les $\tau$ s'étaleraient davantage (jusqu'à ~5 j aux grandes $\lambda$), plus conforme. À tester en sensibilité.
