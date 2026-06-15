@@ -34,3 +34,113 @@ Décomposition $\partial_z(M_c Du) = \underbrace{(\partial_z M_c)Du}_{A} + \unde
 L'identité $\partial_z(M_c Du) = M_c[(\varepsilon-\delta)Du + \partial_z Du]$ est vérifiée au zéro machine (RMS ~10⁻¹⁹) : la réécriture est exacte, c'est un contrôle de cohérence interne réussi.
 
 Caractérisation de $Du = u_c - u_e$ : **moyenne négative** (−0.35 m/s en humide), donc les updrafts portent un vent *plus faible* que l'environnement → transport descendant de quantité de mouvement. Le ratio $\sigma/|moy|=0.57$ en humide indique un $Du$ assez régulier (paramétrable) ; en sec il vaut 1.14, $Du$ y est dominé par le bruit (peu exploitable).
+
+
+
+# ============================================================================
+# S29 — Diagnostic de epsilon (entrainement) via les eq. bulk-plume de Romps
+#   eq.(3) :  eps = dz(phi_c) / (phi_e - phi_c)        [phi conserve]
+#   On l'applique a un traceur (hus) ET au vent (u), comme Romps (eqs 17/18).
+#   Precautions : moyenne phi_c ponderee par le flux de masse, masquage des
+#   niveaux ou |phi_e - phi_c| est trop petit (singularites de l'eq. 3).
+# ============================================================================
+
+# --- 1) profils c/e ponderes flux de masse, pour un traceur conserve (hus) ---
+#   phi_c = moyenne dans les updrafts (w>ws), ponderee par rho*w (flux de masse)
+#   phi_e = moyenne sur l'environnement
+qc_h = np.full(n_z, np.nan); qe_h = np.full(n_z, np.nan)   # traceur (humidite)
+uc_h = np.full(n_z, np.nan); ue_h = np.full(n_z, np.nan)   # vent
+
+ds_u = xr.open_dataset(path3d('ua'))
+ds_w = xr.open_dataset(path3d('wa'))
+ds_q = xr.open_dataset(path3d('hus'))
+
+for iz in range(n_z):
+    a_qc = a_qe = a_uc = a_ue = 0.0; n = 0
+    for it in range(t_stat, n_t):
+        u_r = ds_u['ua'].isel({dim_t: it, dim_z: iz}).values[mh]
+        w_r = ds_w['wa'].isel({dim_t: it, dim_z: iz}).values[mh]
+        q_r = ds_q['hus'].isel({dim_t: it, dim_z: iz}).values[mh]
+
+        ws = max(W0_BEST, C_BEST * w_r.std())
+        up = w_r > ws                       # cœurs convectifs
+
+        if up.any():
+            # ponderation flux de masse rho*w dans les updrafts (def. Romps : qc = <q>_M)
+            wgt = rho0[iz] * w_r[up]
+            sw  = wgt.sum()
+            a_qc += (q_r[up] * wgt).sum()/sw if sw != 0 else q_r[up].mean()
+            a_uc += (u_r[up] * wgt).sum()/sw if sw != 0 else u_r[up].mean()
+        else:
+            a_qc += q_r.mean(); a_uc += u_r.mean()
+
+        # environnement = complement
+        if (~up).any():
+            a_qe += q_r[~up].mean(); a_ue += u_r[~up].mean()
+        else:
+            a_qe += q_r.mean(); a_ue += u_r.mean()
+
+        n += 1
+        del u_r, w_r, q_r, up
+    qc_h[iz] = a_qc/n; qe_h[iz] = a_qe/n
+    uc_h[iz] = a_uc/n; ue_h[iz] = a_ue/n
+    gc.collect()
+
+ds_u.close(); ds_w.close(); ds_q.close()
+del ds_u, ds_w, ds_q; gc.collect()
+
+# --- 2) eps via eq.(3), avec masquage des singularites phi_e - phi_c ~ 0 ------
+def eps_bulk(phi_c, phi_e, seuil_rel=0.15):
+    """eps = dz(phi_c)/(phi_e - phi_c), masque ou le denominateur est trop petit."""
+    dphic = np.gradient(phi_c, alt)
+    denom = phi_e - phi_c
+    # seuil : on garde seulement |denom| > seuil_rel * amplitude typique du contraste
+    s = seuil_rel * np.nanmax(np.abs(denom))
+    return np.where(np.abs(denom) > s, dphic / denom, np.nan)
+
+eps_tracer = eps_bulk(qc_h, qe_h)     # entrainement "traceur" (ref Romps ~0.4 km-1)
+eps_wind   = eps_bulk(uc_h, ue_h)     # entrainement "vent"    (ref Romps ~1.5 km-1)
+
+# --- 3) delta = eps - (eps-delta), avec (eps-delta) du flux de masse ----------
+emd_h   = np.gradient(Mc_up_h, alt) / Mc_up_h        # = eps - delta (eq.1 de masse)
+delta_tracer = eps_tracer - emd_h
+delta_wind   = eps_wind   - emd_h
+
+# --- 4) moyennes sur la couche convective (base conv. -> sommet Mc) -----------
+sl = slice(iz_lo, iz_top+1)
+def moy(x): 
+    v = x[sl]; return np.nanmean(v[np.isfinite(v)])
+print('-- Entrainement diagnostique (eq.3 bulk-plume, region humide) --')
+print(f'  eps_tracer moyen = {moy(eps_tracer)*1000:+.2f} km-1   (ref Romps ~0.4)')
+print(f'  eps_wind   moyen = {moy(eps_wind)*1000:+.2f} km-1   (ref Romps ~1.5)')
+print(f'  ratio eps_wind/eps_tracer = {moy(eps_wind)/moy(eps_tracer):.2f}   (ref Romps ~3.75)')
+print(f'  -> ecart = poids de la force de pression dans le transport de momentum')
+
+# --- 5) figure ----------------------------------------------------------------
+zf = alt[sl]
+fig, axes = plt.subplots(1, 2, figsize=(13, 7), sharey=True)
+
+ax = axes[0]
+ax.plot(eps_tracer[sl]*1000, zf, color='seagreen', lw=2.5, label='eps traceur (hus)')
+ax.plot(eps_wind[sl]*1000,   zf, color='crimson',  lw=2.5, label='eps vent (u)')
+ax.axvline(0.4, color='seagreen', ls=':', alpha=0.6, label='réf. Romps 0.4')
+ax.axvline(1.5, color='crimson',  ls=':', alpha=0.6, label='réf. Romps 1.5')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('eps  (km-1)'); ax.set_ylabel('Altitude (m)')
+ax.set_title('Entrainement eps (eq.3)', fontweight='bold')
+ax.set_xlim(-1, 4); ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+ax = axes[1]
+ax.plot(emd_h[sl]*1000,       zf, color='black',   lw=2.5, label='eps - delta (masse)')
+ax.plot(delta_wind[sl]*1000,  zf, color='orange',  lw=2, ls='--', label='delta (vent)')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('taux  (km-1)')
+ax.set_title('eps-delta et delta', fontweight='bold')
+ax.set_xlim(-3, 3); ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+plt.suptitle('S29 — Diagnostic bulk-plume de l\'entrainement (Romps eqs. 3, 17, 18)',
+             fontsize=12, fontweight='bold')
+plt.tight_layout(); plt.show()
+
+
+
