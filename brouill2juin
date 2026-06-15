@@ -80,3 +80,48 @@ ax.set_title(r'S29 — $\varepsilon$, $\delta$ et $\varepsilon-\delta$ (bulk-plu
 ax.set_xlim(-3, 3)
 ax.legend(fontsize=10); ax.grid(alpha=0.3)
 plt.tight_layout(); plt.show()
+
+
+
+
+
+
+
+
+## §29 — Séparation de l'entraînement $\varepsilon$ et du détraînement $\delta$
+
+### Cadre : les équations bulk-plume
+
+Le modèle de panache en masse (bulk-plume) décrit la convection par deux équations. La première est le **bilan de masse** du panache : le flux de masse convectif $M$ varie verticalement sous l'effet de l'entraînement (aspiration d'air environnemental, taux $\varepsilon$) et du détraînement (éjection vers l'environnement, taux $\delta$),
+
+$$\partial_z M = (\varepsilon - \delta)\,M. \tag{1}$$
+
+La seconde est l'**équation du vent dans le cœur** $u_c$. L'air entraîné apporte la vitesse environnementale $u_e$ et tire $u_c$ vers $u_e$ ; l'air détraîné, lui, quitte le cœur **avec** la valeur $u_c$ et ne modifie donc pas $u_c$. En régime stationnaire, seul l'entraînement apparaît :
+
+$$\partial_z u_c = \varepsilon\,(u_e - u_c). \tag{3}$$
+
+### Extraction des deux taux
+
+L'équation (3) ne contient que $\varepsilon$, qui s'isole directement :
+
+$$\varepsilon = \frac{\partial_z u_c}{u_e - u_c}. $$
+
+L'équation (1) donne la **différence** des deux taux, comme dérivée logarithmique du flux de masse :
+
+$$\varepsilon - \delta = \frac{\partial_z M}{M} = \partial_z(\ln M). $$
+
+Le détraînement seul s'obtient par soustraction :
+
+$$\delta = \varepsilon - (\varepsilon - \delta) = \frac{\partial_z u_c}{u_e - u_c} - \frac{\partial_z M}{M}. $$
+
+Les trois quantités se calculent donc à partir des seuls profils $u_c$, $u_e$ et $M_c$ — sans traceur additionnel.
+
+### Précaution numérique
+
+L'expression de $\varepsilon$ diverge aux niveaux où le contraste de vent s'annule, $u_e - u_c \to 0$ (racines du dénominateur). Ces niveaux sont masqués : on ne conserve $\varepsilon$ que là où $|u_e - u_c|$ dépasse une fraction de son amplitude typique. Les trous correspondants dans les profils de $\varepsilon$ et $\delta$ sont une limite physique de la méthode, pas une erreur de calcul.
+
+### Lecture attendue
+
+- Là où $M_c$ varie peu (troposphère libre, ~2–12 km), $\varepsilon - \delta \approx 0$ : les deux taux sont **quasi égaux** ($\delta \approx \varepsilon$), régime exploité par Romps pour poser $\varepsilon = \delta$.
+- Aux bords, $\varepsilon - \delta$ doit **changer de signe** : entraînement dominant à la base ($\varepsilon > \delta$, $M_c$ croît), détraînement dominant au sommet convectif ($\delta > \varepsilon$, $M_c$ s'effondre).
+- Cohérence interne : par construction, la courbe $\varepsilon - \delta$ est exactement l'écart entre $\varepsilon$ et $\delta$.
