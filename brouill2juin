@@ -1,42 +1,122 @@
-# Flux de masse à deux courants SÉPARÉS : Phi = Mc_up(u_c - u_e) + Mc_dn(u_d - u_e)
-#   u_c = <u>_up , u_d = <u>_dn , u_e = <u>_env (|w| <= ws)
-#   Mc_dn est négatif (w<0 sur les downdrafts) -> pas de signe à ajouter
-reg = mh; W0_MIN, C_SIGMA = 0.001, 1.2
-flux_rey = np.zeros(n_z); fm_updn = np.zeros(n_z); compens = np.zeros(n_z)
+# ============================================================================
+# Étape 6 — Décomposition de base : Reynolds vs flux de masse, par branche
+#   Reynolds   : <w+ u'>  +  <w- u'>                    = rho0^-1 · Φ_rey (up+dn)
+#   Flux masse : <w+>(u_c - u_e)   (ascendant)
+#                <w->(u_d - u_e)   (descendant)
+#   Références cohérentes : u' = u - u_bar_région ; diviseur N ;
+#                           u_e = <u>_env  avec env = |w| <= ws  (MÊME pour up et dn)
+# ============================================================================
+reg = mh
+W0_MIN, C_SIGMA = 0.001, 1.2
+
+T_wp_u   = np.zeros(n_z)   # <w+ u'>          (Reynolds, branche updraft)
+T_wm_u   = np.zeros(n_z)   # <w- u'>          (Reynolds, branche downdraft)
+T_wp_uc  = np.zeros(n_z)   # <w+> · u_c
+T_wp_ue  = np.zeros(n_z)   # <w+> · u_e
+T_wm_ud  = np.zeros(n_z)   # <w-> · u_d
+T_wm_ue  = np.zeros(n_z)   # <w-> · u_e
+
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
 for iz in range(n_z):
-    a_re=a_fm=a_cp=0.0; n=0
+    a1=a2=a3=a4=a5=a6=0.0; n=0
     for it in range(t_stat, n_t):
-        u = ds_u['ua'].isel({dim_t:it,dim_z:iz}).values[reg]
-        w = ds_w['wa'].isel({dim_t:it,dim_z:iz}).values[reg]
-        ub=u.mean(); wb=w.mean(); N=u.size
-        ws=max(W0_MIN, C_SIGMA*w.std()); up=w>ws; dn=w<-ws
-        env=~(up|dn)                                    # environnement strict
-        a_re += ((u-ub)*(w-wb)).mean()
-        if up.any() and dn.any():
-            uc=u[up].mean(); ud=u[dn].mean()
-            ue=u[env].mean() if env.any() else ub       # u_e = environnement
-            Mc_up=(w*up).mean()                         # >0
-            Mc_dn=(w*dn).mean()                         # <0 (naturellement)
-            a_fm += Mc_up*(uc-ue) + Mc_dn*(ud-ue)       # Phi = Mc_up(u_c-u_e)+Mc_dn(u_d-u_e)
-            a_cp += Mc_up + Mc_dn                       # doit ~0 (compensation)
-        n+=1; del u,w,up,dn,env
-    flux_rey[iz]=rho0[iz]*a_re/n; fm_updn[iz]=rho0[iz]*a_fm/n; compens[iz]=rho0[iz]*a_cp/n
+        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
+        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
+        ub  = u.mean()
+        up_ = u - ub                              # u' (anomalie / région)
+        ws  = max(W0_MIN, C_SIGMA*w.std())
+        up   = w >  ws
+        down = w < -ws
+        env  = np.abs(w) <= ws                    # ni up ni down
+
+        wp = np.where(up,   w, 0.0)               # w+ (0 hors updraft)
+        wm = np.where(down, w, 0.0)               # w- (0 hors downdraft)
+
+        # --- paire Reynolds : <w+ u'> et <w- u'>  (diviseur N) ---
+        a1 += (wp*up_).mean()                     # <w+ u'>
+        a2 += (wm*up_).mean()                     # <w- u'>
+
+        # --- vitesses conditionnelles ---
+        wp_mean = (w*up).mean()                   # <w+> = sigma_up · w_c
+        wm_mean = (w*down).mean()                 # <w-> = sigma_dn · w_d  (<0)
+        uc = u[up].mean()   if up.any()   else ub # u_c = <u>_up
+        ud = u[down].mean() if down.any() else ub # u_d = <u>_dn
+        ue = u[env].mean()  if env.any()  else ub # u_e = <u>_env  (commun aux 2 branches)
+
+        # --- paire flux de masse ascendant : <w+> u_c  et  <w+> u_e ---
+        a3 += wp_mean * uc
+        a4 += wp_mean * ue
+        # --- paire flux de masse descendant : <w-> u_d  et  <w-> u_e ---
+        a5 += wm_mean * ud
+        a6 += wm_mean * ue
+        n += 1; del u,w,up_,wp,wm,up,down,env
+    T_wp_u[iz]  = rho0[iz]*a1/n
+    T_wm_u[iz]  = rho0[iz]*a2/n
+    T_wp_uc[iz] = rho0[iz]*a3/n
+    T_wp_ue[iz] = rho0[iz]*a4/n
+    T_wm_ud[iz] = rho0[iz]*a5/n
+    T_wm_ue[iz] = rho0[iz]*a6/n
+    if iz%10==0: print(f'  iz={iz}/{n_z-1}')
     gc.collect()
 ds_u.close(); ds_w.close(); del ds_u,ds_w; gc.collect()
 
-s=slice(np.searchsorted(alt,2000),np.searchsorted(alt,18000))
-def nse(t,p):
-    a,b=t[s],p[s]; ok=np.isfinite(a)&np.isfinite(b)
-    return 1-np.nansum((a[ok]-b[ok])**2)/np.nansum((a[ok]-np.nanmean(a[ok]))**2)
-print(f'flux masse up+dn séparés : NSE={nse(flux_rey,fm_updn):+.3f}')
-print(f'compensation masse <M+ + M-> median = {np.nanmedian(compens[s])*1e3:+.3f} x1e-3 (doit ~0)')
+# --- combinaisons ---
+flux_reynolds  = T_wp_u + T_wm_u          # Reynolds up + down
+flux_masse     = T_wp_uc - T_wp_ue        # flux de masse ascendant  = <w+>(u_c-u_e)
+flux_masse_d   = T_wm_ud - T_wm_ue        # flux de masse descendant = <w->(u_d-u_e)
+flux_masse_tot = flux_masse + flux_masse_d
+print('Termes calculés.')
 
-zf=alt[s]; sc=1e3
-fig,ax=plt.subplots(figsize=(8,8))
-ax.plot(flux_rey[s]*sc, zf,'k',lw=2.5,label="ρ₀⟨u'w'⟩ vrai")
-ax.plot(fm_updn[s]*sc, zf,'r--',lw=2,label='Mc_up(u_c−u_e)+Mc_dn(u_d−u_e)')
-ax.axvline(0,color='grey',alpha=0.4)
-ax.set_xlabel('flux (×10⁻³)'); ax.set_ylabel('Altitude (m)')
-ax.set_title('Flux de masse à deux courants séparés',fontweight='bold')
-ax.legend(); ax.grid(alpha=0.3); plt.tight_layout(); plt.show()
+# ============================================================================
+# Figure : branches séparées puis assemblées
+# ============================================================================
+iz_lo = np.searchsorted(alt, 2000); iz_hi = np.searchsorted(alt, 18000)
+sl = slice(iz_lo, iz_hi); zf = alt[sl]; sc = 1e3
+
+fig, axes = plt.subplots(1, 5, figsize=(20, 8), sharey=True)
+
+# (a) paire Reynolds
+ax = axes[0]
+ax.plot(T_wp_u[sl]*sc, zf, color='royalblue', lw=2, label="⟨w⁺u'⟩")
+ax.plot(T_wm_u[sl]*sc, zf, color='crimson',  lw=2, label="⟨w⁻u'⟩")
+ax.plot(flux_reynolds[sl]*sc, zf, 'k', lw=2.5, label="somme = Φ_rey")
+ax.axvline(0, color='grey', alpha=0.4); ax.set_ylabel('Altitude (m)')
+ax.set_xlabel('flux (×10⁻³)'); ax.set_title('(a) Reynolds (à sommer)', fontweight='bold')
+ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+# (b) paire flux de masse ascendant
+ax = axes[1]
+ax.plot(T_wp_uc[sl]*sc, zf, color='seagreen', lw=2, label='⟨w⁺⟩u_c')
+ax.plot(T_wp_ue[sl]*sc, zf, color='darkorange', lw=2, label='⟨w⁺⟩u_e')
+ax.plot(flux_masse[sl]*sc, zf, 'k--', lw=2.5, label='fm ascendant')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('flux (×10⁻³)'); ax.set_title('(b) fm ascendant', fontweight='bold')
+ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+# (c) Reynolds up vs fm ascendant
+ax = axes[2]
+ax.plot(T_wp_u[sl]*sc, zf, 'k', lw=2.5, label="⟨w⁺u'⟩")
+ax.plot(flux_masse[sl]*sc, zf, 'r--', lw=2, label='fm ascendant')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('flux (×10⁻³)'); ax.set_title('(c) UP : Reynolds vs masse', fontweight='bold')
+ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+# (d) Reynolds down vs fm descendant
+ax = axes[3]
+ax.plot(T_wm_u[sl]*sc, zf, 'k', lw=2.5, label="⟨w⁻u'⟩")
+ax.plot(flux_masse_d[sl]*sc, zf, 'r--', lw=2, label='fm descendant')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('flux (×10⁻³)'); ax.set_title('(d) DOWN : Reynolds vs masse', fontweight='bold')
+ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+# (e) total assemblé
+ax = axes[4]
+ax.plot(flux_reynolds[sl]*sc, zf, 'k', lw=2.5, label="⟨w⁺u'⟩+⟨w⁻u'⟩")
+ax.plot(flux_masse_tot[sl]*sc, zf, 'r--', lw=2, label='fm total (up+dn)')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('flux (×10⁻³)'); ax.set_title('(e) TOTAL : Reynolds vs masse', fontweight='bold')
+ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+plt.suptitle('Étape 6 — Décomposition Reynolds vs flux de masse, branches séparées puis assemblées',
+             fontsize=13, fontweight='bold')
+plt.tight_layout(); plt.show()
