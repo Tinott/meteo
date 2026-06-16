@@ -1,5 +1,6 @@
-# Flux de masse à deux courants : Mc = flux de masse de TOUTES les structures (up+dn)
-#   utilisées dans le contraste (u_c - u_d)
+# Flux de masse à deux courants SÉPARÉS : Phi = Mc_up(u_c - u_e) + Mc_dn(u_d - u_e)
+#   u_c = <u>_up , u_d = <u>_dn , u_e = <u>_env (|w| <= ws)
+#   Mc_dn est négatif (w<0 sur les downdrafts) -> pas de signe à ajouter
 reg = mh; W0_MIN, C_SIGMA = 0.001, 1.2
 flux_rey = np.zeros(n_z); fm_updn = np.zeros(n_z); compens = np.zeros(n_z)
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
@@ -10,14 +11,16 @@ for iz in range(n_z):
         w = ds_w['wa'].isel({dim_t:it,dim_z:iz}).values[reg]
         ub=u.mean(); wb=w.mean(); N=u.size
         ws=max(W0_MIN, C_SIGMA*w.std()); up=w>ws; dn=w<-ws
+        env=~(up|dn)                                    # environnement strict
         a_re += ((u-ub)*(w-wb)).mean()
         if up.any() and dn.any():
             uc=u[up].mean(); ud=u[dn].mean()
-            conv = up | dn                       # toutes les structures convectives
-            Mc = (np.abs(w)*conv).mean()         # <|w| 1_{up U dn}>  -> flux de masse total
-            a_fm += Mc*(uc-ud)                   # Phi = Mc_total (u_c - u_d)
-            a_cp += (w*up).mean() + (w*dn).mean()
-        n+=1; del u,w,up,dn
+            ue=u[env].mean() if env.any() else ub       # u_e = environnement
+            Mc_up=(w*up).mean()                         # >0
+            Mc_dn=(w*dn).mean()                         # <0 (naturellement)
+            a_fm += Mc_up*(uc-ue) + Mc_dn*(ud-ue)       # Phi = Mc_up(u_c-u_e)+Mc_dn(u_d-u_e)
+            a_cp += Mc_up + Mc_dn                       # doit ~0 (compensation)
+        n+=1; del u,w,up,dn,env
     flux_rey[iz]=rho0[iz]*a_re/n; fm_updn[iz]=rho0[iz]*a_fm/n; compens[iz]=rho0[iz]*a_cp/n
     gc.collect()
 ds_u.close(); ds_w.close(); del ds_u,ds_w; gc.collect()
@@ -26,14 +29,14 @@ s=slice(np.searchsorted(alt,2000),np.searchsorted(alt,18000))
 def nse(t,p):
     a,b=t[s],p[s]; ok=np.isfinite(a)&np.isfinite(b)
     return 1-np.nansum((a[ok]-b[ok])**2)/np.nansum((a[ok]-np.nanmean(a[ok]))**2)
-print(f'flux masse (Mc total up+dn) : NSE={nse(flux_rey,fm_updn):+.3f}')
-print(f'compensation masse <M+ + M-> median = {np.nanmedian(compens[s])*1e3:+.3f} x1e-3')
+print(f'flux masse up+dn séparés : NSE={nse(flux_rey,fm_updn):+.3f}')
+print(f'compensation masse <M+ + M-> median = {np.nanmedian(compens[s])*1e3:+.3f} x1e-3 (doit ~0)')
 
 zf=alt[s]; sc=1e3
 fig,ax=plt.subplots(figsize=(8,8))
 ax.plot(flux_rey[s]*sc, zf,'k',lw=2.5,label="ρ₀⟨u'w'⟩ vrai")
-ax.plot(fm_updn[s]*sc, zf,'r--',lw=2,label='Mc_total(u_c − u_d)')
+ax.plot(fm_updn[s]*sc, zf,'r--',lw=2,label='Mc_up(u_c−u_e)+Mc_dn(u_d−u_e)')
 ax.axvline(0,color='grey',alpha=0.4)
 ax.set_xlabel('flux (×10⁻³)'); ax.set_ylabel('Altitude (m)')
-ax.set_title('Flux de masse à deux courants (Mc total)',fontweight='bold')
+ax.set_title('Flux de masse à deux courants séparés',fontweight='bold')
 ax.legend(); ax.grid(alpha=0.3); plt.tight_layout(); plt.show()
