@@ -1,98 +1,73 @@
 # ============================================================================
-# Rapport flux_masse/Reynolds ET covariance/Reynolds, niveau par niveau
-# DEF ANCIENNE : Mc(u_c - u_e) avec u_e = <u>_{non-updraft}
-# Plage complète 0 - 30000 m, gestion robuste des niveaux indéfinis
+# Diagnostic des 2 termes encadres : transport par moyennes conditionnelles
+#   vs covariance sous-maille, sur 3 categories (up / down / env)
+#   Phi_rey = SUM_cat sigma_cat * (u_cat - u_bar)(w_cat - w_bar)   [TERME 1]
+#           + SUM_cat sigma_cat * <(u-u_cat)(w-w_cat)>_cat          [TERME 2]
 # ============================================================================
-reg = mh; W0_MIN = 0.001
-Cs = np.array([0.3, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0])
+reg = mh; W0_MIN = 0.001; C = 1.0
 
-rey    = np.full(n_z, np.nan)
-fm_C   = {C: np.full(n_z, np.nan) for C in Cs}
-cov_C  = {C: np.full(n_z, np.nan) for C in Cs}
+rey      = np.full(n_z, np.nan)
+T1_up    = np.full(n_z, np.nan); T1_dn = np.full(n_z, np.nan); T1_env = np.full(n_z, np.nan)
+T2_up    = np.full(n_z, np.nan); T2_dn = np.full(n_z, np.nan); T2_env = np.full(n_z, np.nan)
 
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
 for iz in range(n_z):
-    a_re = 0.0; a_fm = {C:0.0 for C in Cs}; a_cv = {C:0.0 for C in Cs}
-    n_fm = {C:0 for C in Cs}; n = 0
+    a_re=0.0
+    a1u=a1d=a1e=a2u=a2d=a2e=0.0; n=0
     for it in range(t_stat, n_t):
         u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
         w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
-        ub = u.mean(); wb = w.mean(); sw = w.std(); N = u.size
+        ub=u.mean(); wb=w.mean(); N=u.size
         a_re += ((u-ub)*(w-wb)).mean()
-        for C in Cs:
-            ws = max(W0_MIN, C*sw); up = w > ws
-            if up.any() and (~up).any():
-                uu = u[up]; ww = w[up]; uc = uu.mean(); wc = ww.mean()
-                ue = u[~up].mean()                                 # <-- u_e = non-updraft
-                a_fm[C] += (w*up).mean()*(uc - ue)                 # Mc(u_c - u_e)
-                a_cv[C] += (up.sum()/N)*((uu-uc)*(ww-wc)).mean()   # covariance interne
-                n_fm[C] += 1
-        n += 1; del u, w
-    if n > 0:
-        rey[iz] = rho0[iz]*a_re/n
-        for C in Cs:
-            if n_fm[C] > 0:
-                fm_C[C][iz]  = rho0[iz]*a_fm[C]/n
-                cov_C[C][iz] = rho0[iz]*a_cv[C]/n
-    if iz % 20 == 0: print(f'  iz={iz}/{n_z-1} ({alt[iz]:.0f} m)')
+        ws=max(W0_MIN, C*w.std())
+        cats = {'up': w>ws, 'dn': w<-ws, 'env': np.abs(w)<=ws}
+        for name,msk in cats.items():
+            if not msk.any(): continue
+            sig = msk.sum()/N
+            uu=u[msk]; ww=w[msk]; uc=uu.mean(); wc=ww.mean()
+            t1 = sig*(uc-ub)*(wc-wb)                 # transport par moyenne conditionnelle
+            t2 = sig*((uu-uc)*(ww-wc)).mean()        # covariance interne categorie
+            if name=='up':  a1u+=t1; a2u+=t2
+            if name=='dn':  a1d+=t1; a2d+=t2
+            if name=='env': a1e+=t1; a2e+=t2
+        n+=1; del u,w
+    if n>0:
+        rey[iz]=rho0[iz]*a_re/n
+        T1_up[iz]=rho0[iz]*a1u/n; T1_dn[iz]=rho0[iz]*a1d/n; T1_env[iz]=rho0[iz]*a1e/n
+        T2_up[iz]=rho0[iz]*a2u/n; T2_dn[iz]=rho0[iz]*a2d/n; T2_env[iz]=rho0[iz]*a2e/n
     gc.collect()
-ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
+ds_u.close(); ds_w.close(); del ds_u,ds_w; gc.collect()
 
-iz_hi = np.searchsorted(alt, 30000)
-s = slice(0, iz_hi); zf = alt[s]
-rey_floor = 0.05 * np.nanmax(np.abs(rey[s]))
-def safe_ratio(num, s=s):
-    r = rey[s]; out = np.full(len(zf), np.nan)
-    v = np.isfinite(r) & np.isfinite(num[s]) & (np.abs(r) > rey_floor)
-    out[v] = num[s][v] / r[v]
-    return out
+T1 = T1_up+T1_dn+T1_env      # transport organise total (= flux de masse generalise)
+T2 = T2_up+T2_dn+T2_env      # covariance sous-maille totale
+s=slice(np.searchsorted(alt,2000), np.searchsorted(alt,18000)); zf=alt[s]; sc=1e3
+resid = rey - (T1+T2)
+print(f'controle |rey-(T1+T2)| max = {np.nanmax(np.abs(resid[s])):.2e} (doit ~0)')
+print(f'part T1 (organise)   median = {np.nanmedian((T1/rey)[s]):.2f}')
+print(f'part T2 (sous-maille) median = {np.nanmedian((T2/rey)[s]):.2f}')
 
-ratio_fm  = np.full((len(Cs), len(zf)), np.nan)
-ratio_cov = np.full((len(Cs), len(zf)), np.nan)
-for i,C in enumerate(Cs):
-    ratio_fm[i]  = safe_ratio(fm_C[C])
-    ratio_cov[i] = safe_ratio(cov_C[C])
+fig,axes=plt.subplots(1,3,figsize=(16,8),sharey=True)
+ax=axes[0]
+ax.plot(rey[s]*sc, zf,'k',lw=2.5,label='Φ_rey total')
+ax.plot(T1[s]*sc, zf,'r--',lw=2,label='T1 : transport organisé')
+ax.plot(T2[s]*sc, zf,'b-.',lw=2,label='T2 : covariance sous-maille')
+ax.axvline(0,color='grey',alpha=0.4)
+ax.set_xlabel('flux (×10⁻³)'); ax.set_ylabel('Altitude (m)')
+ax.set_title('Décomposition en 2 termes',fontweight='bold'); ax.legend(fontsize=9); ax.grid(alpha=0.3)
 
-fig, axes = plt.subplots(2, 2, figsize=(15, 13))
+ax=axes[1]
+ax.plot(T1_up[s]*sc, zf,color='royalblue',lw=2,label='T1 up')
+ax.plot(T1_dn[s]*sc, zf,color='crimson',lw=2,label='T1 down')
+ax.plot(T1_env[s]*sc, zf,color='seagreen',lw=2,label='T1 env')
+ax.axvline(0,color='grey',alpha=0.4)
+ax.set_xlabel('flux (×10⁻³)'); ax.set_title('Terme 1 par catégorie',fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
 
-ax = axes[0,0]
-im = ax.pcolormesh(zf/1000, Cs, ratio_fm, cmap='RdBu_r', vmin=0, vmax=2, shading='nearest')
-ax.axhline(1.2, color='black', ls='--', lw=1.5, label='C*=1.2')
-plt.colorbar(im, ax=ax, label='Mc(u_c−u_e) / Φ_rey')
-ax.set_xlabel('Altitude (km)'); ax.set_ylabel('C'); ax.legend()
-ax.set_title('Part flux de masse u_c−u_e (idéal = 1, blanc)', fontweight='bold')
-
-ax = axes[0,1]
-im = ax.pcolormesh(zf/1000, Cs, ratio_cov, cmap='PuOr_r', vmin=-0.5, vmax=0.5, shading='nearest')
-ax.axhline(1.2, color='black', ls='--', lw=1.5)
-plt.colorbar(im, ax=ax, label='cov_interne / Φ_rey')
-ax.set_xlabel('Altitude (km)'); ax.set_ylabel('C')
-ax.set_title('Part covariance interne (idéal = 0, blanc)', fontweight='bold')
-
-ax = axes[1,0]
-for C in [0.5, 1.0, 1.2, 1.5, 2.0]:
-    ax.plot(safe_ratio(fm_C[C]), zf/1000, lw=2, label=f'C={C}')
-ax.axvline(1, color='black', ls=':', lw=1.5)
-ax.set_xlabel('Mc(u_c−u_e) / Φ_rey'); ax.set_ylabel('Altitude (km)')
-ax.set_xlim(0, 2.5); ax.legend(fontsize=9); ax.grid(alpha=0.3)
-ax.set_title('Profil part flux de masse', fontweight='bold')
-
-ax = axes[1,1]
-for C in [0.5, 1.0, 1.2, 1.5, 2.0]:
-    ax.plot(safe_ratio(cov_C[C]), zf/1000, lw=2, label=f'C={C}')
-ax.axvline(0, color='black', ls=':', lw=1.5)
-ax.set_xlabel('cov_interne / Φ_rey'); ax.set_ylabel('Altitude (km)')
-ax.set_xlim(-0.6, 0.6); ax.legend(fontsize=9); ax.grid(alpha=0.3)
-ax.set_title('Profil part covariance', fontweight='bold')
-
+ax=axes[2]
+ax.plot(T2_up[s]*sc, zf,color='royalblue',lw=2,label='T2 up')
+ax.plot(T2_dn[s]*sc, zf,color='crimson',lw=2,label='T2 down')
+ax.plot(T2_env[s]*sc, zf,color='seagreen',lw=2,label='T2 env')
+ax.axvline(0,color='grey',alpha=0.4)
+ax.set_xlabel('flux (×10⁻³)'); ax.set_title('Terme 2 par catégorie',fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
 plt.tight_layout(); plt.show()
-
-print("C    | médiane fm/rey | médiane cov/rey | % niv fm∈[0.8,1.2]")
-for C in Cs:
-    rf = safe_ratio(fm_C[C]);  rf = rf[np.isfinite(rf)]
-    rc = safe_ratio(cov_C[C]); rc = rc[np.isfinite(rc)]
-    if rf.size:
-        pct = np.mean((rf>0.8)&(rf<1.2))*100
-        print(f"{C:4.1f} |   {np.median(rf):+.3f}      |   {np.median(rc):+.3f}       |   {pct:.0f}%")
-    else:
-        print(f"{C:4.1f} |   (aucun niveau défini)")
