@@ -31,6 +31,17 @@ ds_w.close(); ds_u.close(); del ds_w,ds_u; gc.collect()
 
 
 
+
+Pour ne pas te raconter d'histoire, trace à chaque niveau (pas seulement 5 km) le rapport Mc(uc−ud)/ΦreyM_c(u_c-u_d)/\Phi_{rey}
+Mc​(uc​−ud​)/Φrey​ en fonction de C. Si l'optimum global C≈1.2 correspond à ce rapport ≈1 à tous les niveaux simultanément, c'est physique. Si certains niveaux sont à 0.7 et d'autres à 1.3 et que ça se moyenne à NSE 0.81, alors le bon accord est partiellement un effet de compensation verticale — moins solide, à dire honnêtement dans le rapport.
+Donc : ton résultat à C≈1.2 / NSE 0.81 reste bon et présentable, mais la justification correcte n'est pas « grand seuil = capture du Reynolds » (le tableau la contredit), c'est « il existe un seuil physique de cohérence convective où le top-hat à deux courants devient une bonne approximation, ni trop bas — covariance — ni trop haut — contraste dégénéré ». Tu veux le code du rapport niveau-par-niveau pour vérifier que C≈1.2 donne bien ≈1 partout ?
+
+
+
+
+
+
+
 NSE (C=1.2) = +0.811
 corr(residu, -∂z u_bar) = -0.325   (si eleve -> down-gradient complementaire)
 K diffusif calibre = -0.4 m2/s   (ref Romps 10-30)
