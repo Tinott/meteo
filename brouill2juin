@@ -1,19 +1,102 @@
-# Les composantes sont-elles toutes proportionnelles a Phi_rey (ratio constant en z) ?
-s=slice(np.searchsorted(alt,2000),np.searchsorted(alt,18000)); zf=alt[s]
-rok = np.abs(rey[s])>0.05*np.nanmax(np.abs(rey[s]))
+# ============================================================================
+# FIGURE DE SYNTHESE — décomposition du flux de Reynolds (CMT, RCE humide)
+#   Phi_rey = T1 (mass-flux up+down) + T2_env + T2_up + T2_dn
+# ============================================================================
+s   = slice(np.searchsorted(alt,2000), np.searchsorted(alt,18000))
+zf  = alt[s]; sc = 1e3
+T2  = T2_env + T2_up + T2_dn
 
-for nom,comp in [('T1',T1),('T2_env',T2_env),('T2_up',T2_up)]:
-    ratio = (comp[s]/rey[s])[rok]
-    print(f'{nom}/rey : median={np.median(ratio):+.3f}  std={np.std(ratio):.3f}  '
-          f'(CV={np.std(ratio)/abs(np.median(ratio))*100:.0f}%)')
+def L2(x): return np.sqrt(np.nansum(x[s]**2))
+def nse(t,p):
+    a,b=t[s],p[s]; ok=np.isfinite(a)&np.isfinite(b)
+    return 1-np.nansum((a[ok]-b[ok])**2)/np.nansum((a[ok]-np.nanmean(a[ok]))**2)
 
-# si T1/rey est ~constant -> Phi_rey = T1 / cste, fermeture exacte SANS k ajuste
-#   car la cste est PHYSIQUE (fraction du transport portee par les coeurs)
-fig,ax=plt.subplots(figsize=(7,8))
-for nom,comp,col in [('T1',T1,'red'),('T2_env',T2_env,'green'),('T2_up',T2_up,'purple')]:
-    r=np.full(len(zf),np.nan); r[rok]=(comp[s]/rey[s])[rok]
-    ax.plot(r, zf, lw=2, color=col, label=f'{nom}/Φ_rey')
+# poids relatifs
+w_T1  = L2(T1)/L2(rey)*100
+w_env = L2(T2_env)/L2(rey)*100
+w_up  = L2(T2_up)/L2(rey)*100
+w_dn  = L2(T2_dn)/L2(rey)*100
+
+# correlations cles
+dudz = np.gradient(ubar, alt)
+cor = {
+    'Φ_rey'       : np.corrcoef(T2_env[s], rey[s])[0,1],
+    'σ_w²'        : np.corrcoef(T2_env[s], sigw2[s])[0,1],
+    '−∂z u̅ (DG)'  : np.corrcoef(T2_env[s], -dudz[s])[0,1],
+}
+
+fig = plt.figure(figsize=(16, 9))
+gs = fig.add_gridspec(2, 3, height_ratios=[1.4,1], hspace=0.35, wspace=0.3)
+
+# --- (a) les 4 termes + total ---
+ax = fig.add_subplot(gs[:,0])
+ax.plot(rey[s]*sc,    zf,'k',  lw=3,  label='Φ_rey (total)')
+ax.plot(T1[s]*sc,     zf,'r',  lw=2,  label=f'T1 mass-flux ({w_T1:.0f}%)')
+ax.plot(T2_env[s]*sc, zf,'g',  lw=2,  label=f'T2 env ({w_env:.0f}%)')
+ax.plot(T2_up[s]*sc,  zf,color='purple', lw=1.8, label=f'T2 up ({w_up:.0f}%)')
+ax.plot(T2_dn[s]*sc,  zf,color='orange', lw=1.5, ls='--', label=f'T2 down ({w_dn:.0f}%)')
 ax.axvline(0,color='grey',alpha=0.4)
-ax.set_xlabel('fraction de Φ_rey'); ax.set_ylabel('Altitude (m)')
-ax.set_title('Chaque composante / Φ_rey (plate = proportionnelle)',fontweight='bold')
-ax.set_xlim(-0.5,1.5); ax.legend(); ax.grid(alpha=0.3); plt.tight_layout(); plt.show())
+ax.set_xlabel("flux ρ₀⟨u'w'⟩ (×10⁻³)"); ax.set_ylabel('Altitude (m)')
+ax.set_title('(a) Décomposition du transport de momentum', fontweight='bold')
+ax.legend(fontsize=9, loc='lower left'); ax.grid(alpha=0.3)
+
+# --- (b) controle : T1+T2 reconstruit le total ---
+ax = fig.add_subplot(gs[0,1])
+ax.plot(rey[s]*sc, zf,'k',lw=2.5,label='Φ_rey')
+ax.plot((T1+T2)[s]*sc, zf,'--',color='red',lw=1.5,label='T1+T2 (contrôle)')
+ax.axvline(0,color='grey',alpha=0.4)
+ax.set_xlabel('flux (×10⁻³)'); ax.set_ylabel('Altitude (m)')
+ax.set_title('(b) Identité exacte', fontweight='bold')
+ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+# --- (c) poids relatifs (barres) ---
+ax = fig.add_subplot(gs[0,2])
+labels=['T1\nmass-flux','T2 env\nsillage','T2 up\ncœurs','T2 dn']
+vals=[w_T1,w_env,w_up,w_dn]
+cols=['red','green','purple','orange']
+ax.bar(labels, vals, color=cols, alpha=0.8)
+for i,v in enumerate(vals): ax.text(i, v+1, f'{v:.0f}%', ha='center', fontsize=10, fontweight='bold')
+ax.set_ylabel('% du flux total (L2)')
+ax.set_title('(c) Poids des composantes', fontweight='bold')
+ax.grid(alpha=0.3, axis='y'); ax.set_ylim(0,75)
+
+# --- (d) correlations de T2_env (barres horizontales) ---
+ax = fig.add_subplot(gs[1,1])
+noms=list(cor.keys()); rs=list(cor.values())
+ccol=['steelblue' if abs(r)>0.5 else 'lightgrey' for r in rs]
+ax.barh(noms, rs, color=ccol, alpha=0.85)
+for i,r in enumerate(rs): ax.text(r+np.sign(r)*0.03, i, f'{r:+.2f}', va='center', fontsize=10)
+ax.axvline(0,color='grey'); ax.set_xlim(-1.1,1.1)
+ax.set_xlabel('corrélation'); ax.set_title('(d) T2 env corrèle avec…', fontweight='bold')
+ax.grid(alpha=0.3, axis='x')
+
+# --- (e) message synthese (texte) ---
+ax = fig.add_subplot(gs[1,2]); ax.axis('off')
+msg = (f"NSE(T1 seul) = {nse(rey,T1):+.2f}\n\n"
+       f"• mass-flux up/down : {w_T1:.0f}%\n"
+       f"• sillage env (≠ diffusif) : {w_env:.0f}%\n"
+       f"• cisaillement cœurs : {w_up:.0f}%\n\n"
+       f"T2_env ∝ Φ_rey (r={cor['Φ_rey']:+.2f})\n"
+       f"mais PAS down-gradient (r={cor['−∂z u̅ (DG)']:+.2f})\n\n"
+       f"→ transport sous-maille convectif,\n   ni mass-flux pur ni diffusif")
+ax.text(0.02,0.98,msg, va='top', fontsize=10.5, family='monospace',
+        bbox=dict(boxstyle='round', facecolor='#f5f5f5', edgecolor='grey'))
+
+plt.suptitle("Décomposition du transport convectif de momentum — RCE Méso-NH (région humide, 2–18 km)",
+             fontsize=13, fontweight='bold', y=0.98)
+plt.savefig('synthese_CMT.png', dpi=150, bbox_inches='tight')
+plt.show()
+
+# --- tableau texte pour le rapport ---
+print("="*52)
+print(" Décomposition Φ_rey = T1 + T2_env + T2_up + T2_dn")
+print("="*52)
+print(f" T1  mass-flux (up+down)  : {w_T1:5.1f}%")
+print(f" T2  environnement (sillage): {w_env:5.1f}%")
+print(f" T2  updrafts (cisaillt)  : {w_up:5.1f}%")
+print(f" T2  downdrafts           : {w_dn:5.1f}%")
+print("-"*52)
+print(f" corr(T2_env, Φ_rey)      = {cor['Φ_rey']:+.3f}")
+print(f" corr(T2_env, σ_w²)       = {cor['σ_w²']:+.3f}")
+print(f" corr(T2_env, -∂z u̅)      = {cor['−∂z u̅ (DG)']:+.3f}")
+print("="*52)
