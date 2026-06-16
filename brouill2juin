@@ -144,3 +144,77 @@ C=2.0: NSE(fm vs Reynolds TOTAL)=+0.784  NSE(fm vs Reynolds seuillé)=+0.517
 Pour ne pas te raconter d'histoire, trace à chaque niveau (pas seulement 5 km) le rapport Mc(uc−ud)/ΦreyM_c(u_c-u_d)/\Phi_{rey}
 Mc​(uc​−ud​)/Φrey​ en fonction de C. Si l'optimum global C≈1.2 correspond à ce rapport ≈1 à tous les niveaux simultanément, c'est physique. Si certains niveaux sont à 0.7 et d'autres à 1.3 et que ça se moyenne à NSE 0.81, alors le bon accord est partiellement un effet de compensation verticale — moins solide, à dire honnêtement dans le rapport.
 Donc : ton résultat à C≈1.2 / NSE 0.81 reste bon et présentable, mais la justification correcte n'est pas « grand seuil = capture du Reynolds » (le tableau la contredit), c'est « il existe un seuil physique de cohérence convective où le top-hat à deux courants devient une bonne approximation, ni trop bas — covariance — ni trop haut — contraste dégénéré ». Tu veux le code du rapport niveau-par-niveau pour vérifier que C≈1.2 donne bien ≈1 partout ?
+
+
+
+
+
+
+
+
+# ============================================================================
+# Rapport flux_masse / flux_reynolds NIVEAU PAR NIVEAU, en fonction de C
+#   ideal = 1 partout. Heatmap (z, C) + profils pour C autour de l'optimum.
+# ============================================================================
+reg = mh; W0_MIN = 0.001
+Cs = np.array([0.3, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0])
+
+rey   = np.zeros(n_z)                      # Reynolds total (independant de C)
+fm_C  = {C: np.zeros(n_z) for C in Cs}     # Mc(uc-ud) par seuil
+
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    a_re = 0.0; a_fm = {C: 0.0 for C in Cs}; n = 0
+    for it in range(t_stat, n_t):
+        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
+        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
+        ub = u.mean(); wb = w.mean(); sw = w.std()
+        a_re += ((u-ub)*(w-wb)).mean()
+        for C in Cs:
+            ws = max(W0_MIN, C*sw); up = w > ws; dn = w < -ws
+            if up.any() and dn.any():
+                a_fm[C] += (w*up).mean()*(u[up].mean() - u[dn].mean())
+        n += 1; del u, w
+    rey[iz] = rho0[iz]*a_re/n
+    for C in Cs: fm_C[C][iz] = rho0[iz]*a_fm[C]/n
+    gc.collect()
+ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
+
+# fenetre + rapport (on masque les niveaux ou le Reynolds est ~0, rapport instable)
+s = slice(np.searchsorted(alt,2000), np.searchsorted(alt,18000))
+zf = alt[s]
+rey_floor = 0.05*np.nanmax(np.abs(rey[s]))     # seuil sous lequel le rapport n'a pas de sens
+ratio = np.full((len(Cs), len(zf)), np.nan)
+for i,C in enumerate(Cs):
+    r = rey[s].copy()
+    valid = np.abs(r) > rey_floor
+    ratio[i, valid] = fm_C[C][s][valid] / r[valid]
+
+# ---- heatmap (C en y, altitude en x) ----
+fig, axes = plt.subplots(1, 2, figsize=(15, 7))
+ax = axes[0]
+im = ax.pcolormesh(zf/1000, Cs, ratio, cmap='RdBu_r', vmin=0, vmax=2, shading='nearest')
+ax.axhline(1.2, color='black', ls='--', lw=1.5, label='C*=1.2')
+cb = plt.colorbar(im, ax=ax); cb.set_label('Mc(u_c−u_d) / Φ_rey  (idéal = 1)')
+ax.set_xlabel('Altitude (km)'); ax.set_ylabel('C (seuil = C·σ_w)')
+ax.set_title('Rapport flux masse / Reynolds par niveau', fontweight='bold')
+ax.legend()
+
+# ---- profils du rapport pour C autour de l'optimum ----
+ax = axes[1]
+for C in [0.5, 1.0, 1.2, 1.5, 2.0]:
+    r = fm_C[C][s] / np.where(np.abs(rey[s])>rey_floor, rey[s], np.nan)
+    ax.plot(r, zf/1000, lw=2, label=f'C={C}')
+ax.axvline(1, color='black', ls=':', lw=1.5, label='idéal = 1')
+ax.set_xlabel('rapport Mc(u_c−u_d) / Φ_rey'); ax.set_ylabel('Altitude (km)')
+ax.set_title('Profil du rapport (idéal = ligne verticale à 1)', fontweight='bold')
+ax.set_xlim(0, 2.5); ax.legend(fontsize=9); ax.grid(alpha=0.3)
+plt.tight_layout(); plt.show()
+
+# ---- diagnostic chiffre : dispersion du rapport autour de 1 ----
+print("C    | rapport médian | écart-type | % niveaux dans [0.8,1.2]")
+for C in Cs:
+    r = fm_C[C][s] / np.where(np.abs(rey[s])>rey_floor, rey[s], np.nan)
+    r = r[np.isfinite(r)]
+    pct = np.mean((r>0.8)&(r<1.2))*100
+    print(f"{C:4.1f} |   {np.median(r):+.3f}      |   {np.std(r):.3f}    |   {pct:.0f}%")
