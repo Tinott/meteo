@@ -1,132 +1,15 @@
-# ============================================================================
-# Robustesse de C* : balayage en region humide ET seche, sur 2 fenetres
-# ============================================================================
-W0_MIN = 0.001
-Cs = np.array([0.3,0.5,0.8,1.0,1.2,1.5,2.0])
-
-# fenetres d'altitude
-fen = {'2-18km': (2000,18000), '2-12km': (2000,12000)}
-iz_f = {k:(np.searchsorted(alt,a), np.searchsorted(alt,b)) for k,(a,b) in fen.items()}
-
-def nse(t,p,s):
-    a,b=t[s],p[s]; ok=np.isfinite(a)&np.isfinite(b)
-    return 1-np.nansum((a[ok]-b[ok])**2)/np.nansum((a[ok]-np.nanmean(a[ok]))**2)
-
-results = {}   # (region, fenetre) -> liste NSE par C
-for rname, reg in [('humide', mh), ('seche', ms)]:
-    rey = np.zeros(n_z)
-    fm_byC = {C: np.zeros(n_z) for C in Cs}
-    ds_u=xr.open_dataset(path3d('ua')); ds_w=xr.open_dataset(path3d('wa'))
-    for iz in range(n_z):
-        a_re=0.0; a_fm={C:0.0 for C in Cs}; n=0
-        for it in range(t_stat,n_t):
-            u=ds_u['ua'].isel({dim_t:it,dim_z:iz}).values[reg]
-            w=ds_w['wa'].isel({dim_t:it,dim_z:iz}).values[reg]
-            ub=u.mean(); wb=w.mean(); sw=w.std()
-            a_re += ((u-ub)*(w-wb)).mean()
-            for C in Cs:
-                ws=max(W0_MIN, C*sw); up=w>ws; dn=w<-ws
-                if up.any() and dn.any():
-                    a_fm[C]+=(w*up).mean()*(u[up].mean()-u[dn].mean())
-            n+=1; del u,w
-        rey[iz]=rho0[iz]*a_re/n
-        for C in Cs: fm_byC[C][iz]=rho0[iz]*a_fm[C]/n
-        gc.collect()
-    ds_u.close(); ds_w.close(); del ds_u,ds_w; gc.collect()
-    for fn,(lo,hi) in iz_f.items():
-        s=slice(lo,hi)
-        results[(rname,fn)] = [nse(rey, fm_byC[C], s) for C in Cs]
-
-# affichage tableau
-print(f"{'C':>5} | " + " | ".join(f"{r}/{f}" for (r,f) in results))
-for i,C in enumerate(Cs):
-    print(f"{C:5.1f} | " + " | ".join(f"{results[k][i]:+.3f}      " for k in results))
-
-# figure
-fig,ax=plt.subplots(figsize=(9,6))
-for (r,f),nses in results.items():
-    ls = '-' if r=='humide' else '--'
-    ax.plot(Cs, nses, ls, marker='o', label=f'{r} {f}')
-ax.axvline(1.2, color='grey', ls=':', label='C*=1.2')
-ax.set_xlabel('C (seuil = C·σ_w)'); ax.set_ylabel('NSE vs Reynolds total')
-ax.set_title('Robustesse de C* : région × fenêtre', fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3); ax.set_ylim(-0.2,1)
-plt.tight_layout(); plt.show()
-
-# C* optimal par cas
-for k,nses in results.items():
-    print(f'{k}: C*={Cs[np.argmax(nses)]:.1f}  NSE_max={max(nses):+.3f}')
-
-
-
-
-
-
-# ============================================================================
-# C* = 1.2 : profil flux de masse vs Reynolds + localisation du residu
-#   le residu correle-t-il avec le cisaillement -∂z u_bar (down-gradient) ?
-# ============================================================================
-C_STAR = 1.2; W0_MIN = 0.001; reg = mh
-
-rey = np.zeros(n_z); fm = np.zeros(n_z); ubar = np.zeros(n_z)
-Mc_up = np.zeros(n_z); uc_p=np.zeros(n_z); ud_p=np.zeros(n_z)
-ds_u=xr.open_dataset(path3d('ua')); ds_w=xr.open_dataset(path3d('wa'))
-for iz in range(n_z):
-    a_re=a_fm=a_ub=a_mc=a_uc=a_ud=0.0; n=0
+# Mc et ses deux facteurs en fonction du seuil, a un niveau donne
+iz0 = np.searchsorted(alt, 5000); reg = mh
+ds_w=xr.open_dataset(path3d('wa')); ds_u=xr.open_dataset(path3d('ua'))
+print(f"{'C':>5} {'sigma':>8} {'<w>_up':>8} {'Mc=σ<w>up':>11} {'(uc-ud)':>9} {'produit':>9}")
+for C in [0.2,0.5,1.0,1.5,2.0,3.0]:
+    a_sig=a_wup=a_mc=a_d=0.0; n=0
     for it in range(t_stat,n_t):
-        u=ds_u['ua'].isel({dim_t:it,dim_z:iz}).values[reg]
-        w=ds_w['wa'].isel({dim_t:it,dim_z:iz}).values[reg]
-        ub=u.mean(); wb=w.mean()
-        a_re += ((u-ub)*(w-wb)).mean(); a_ub += ub
-        ws=max(W0_MIN, C_STAR*w.std()); up=w>ws; dn=w<-ws
+        w=ds_w['wa'].isel({dim_t:it,dim_z:iz0}).values[reg]
+        u=ds_u['ua'].isel({dim_t:it,dim_z:iz0}).values[reg]
+        ws=max(0.001, C*w.std()); up=w>ws; dn=w<-ws
         if up.any() and dn.any():
-            uc=u[up].mean(); ud=u[dn].mean(); mc=(w*up).mean()
-            a_fm += mc*(uc-ud); a_mc+=mc; a_uc+=uc; a_ud+=ud
-        n+=1; del u,w
-    rey[iz]=rho0[iz]*a_re/n; fm[iz]=rho0[iz]*a_fm/n; ubar[iz]=a_ub/n
-    Mc_up[iz]=rho0[iz]*a_mc/n; uc_p[iz]=a_uc/n; ud_p[iz]=a_ud/n
-    gc.collect()
-ds_u.close(); ds_w.close(); del ds_u,ds_w; gc.collect()
-
-s=slice(np.searchsorted(alt,2000),np.searchsorted(alt,18000)); zf=alt[s]; sc=1e3
-def nse(t,p):
-    a,b=t[s],p[s]; ok=np.isfinite(a)&np.isfinite(b)
-    return 1-np.nansum((a[ok]-b[ok])**2)/np.nansum((a[ok]-np.nanmean(a[ok]))**2)
-
-resid = rey - fm                          # ce que le flux de masse rate
-dudz  = np.gradient(ubar, alt)            # cisaillement grande echelle
-r_dg  = np.corrcoef(resid[s], -dudz[s])[0,1]
-print(f'NSE (C=1.2) = {nse(rey,fm):+.3f}')
-print(f'corr(residu, -∂z u_bar) = {r_dg:+.3f}   (si eleve -> down-gradient complementaire)')
-
-# closure mixte : fm + diffusion -K ∂z u_bar  (K calibre sur le residu)
-K = (resid[s] @ (-dudz[s])) / ((-dudz[s]) @ (-dudz[s])) if np.any(dudz[s]) else 0.0
-fm_mixte = fm - K*dudz
-print(f'K diffusif calibre = {K:.1f} m2/s   (ref Romps 10-30)')
-print(f'NSE closure mixte (fm + diffusion) = {nse(rey, fm_mixte):+.3f}')
-
-fig,axes=plt.subplots(1,3,figsize=(16,8),sharey=True)
-ax=axes[0]
-ax.plot(rey[s]*sc, zf,'k',lw=2.5,label="ρ₀⟨u'w'⟩ vrai")
-ax.plot(fm[s]*sc, zf,'r--',lw=2,label=f'Mc(u_c−u_d), C={C_STAR}')
-ax.axvline(0,color='grey',alpha=0.4)
-ax.set_xlabel('flux (×10⁻³)'); ax.set_ylabel('Altitude (m)')
-ax.set_title(f'Profil final (NSE={nse(rey,fm):.2f})',fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3)
-
-ax=axes[1]
-ax.plot(resid[s]*sc, zf,color='purple',lw=2,label='résidu = vrai − fm')
-ax.plot((-K*dudz)[s]*sc, zf,color='seagreen',lw=2,ls='--',label=f'−K∂z u_bar (K={K:.0f})')
-ax.axvline(0,color='grey',alpha=0.4)
-ax.set_xlabel('flux (×10⁻³)')
-ax.set_title(f'Résidu vs down-gradient (r={r_dg:+.2f})',fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3)
-
-ax=axes[2]
-ax.plot(rey[s]*sc, zf,'k',lw=2.5,label='vrai')
-ax.plot(fm_mixte[s]*sc, zf,color='royalblue',lw=2,ls='--',label='fm + diffusion')
-ax.axvline(0,color='grey',alpha=0.4)
-ax.set_xlabel('flux (×10⁻³)')
-ax.set_title(f'Closure mixte (NSE={nse(rey,fm_mixte):.2f})',fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3)
-plt.tight_layout(); plt.show()
+            a_sig+=up.mean(); a_wup+=w[up].mean(); a_mc+=(w*up).mean()
+            a_d+=u[up].mean()-u[dn].mean(); n+=1
+    print(f"{C:5.1f} {a_sig/n:8.4f} {a_wup/n:8.3f} {a_mc/n:11.4f} {a_d/n:9.3f} {a_mc/n*a_d/n*1e3:9.3f}")
+ds_w.close(); ds_u.close(); del ds_w,ds_u; gc.collect()
