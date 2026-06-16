@@ -73,3 +73,49 @@ plt.tight_layout(); plt.show()
   Mc (=T1 proxy)   : r = +0.975
   ∂z(rey)          : r = +0.294
   rey lui-meme     : r = +0.989
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# T2_env suit T1 : si on elargit la categorie convective (seuil plus bas pour
+# les moyennes conditionnelles), le sillage rentre dans T1 sans facteur correctif.
+reg = mh; W0_MIN = 0.001
+for C in [1.0, 0.5, 0.3, 0.2, 0.1]:
+    rey=np.full(n_z,np.nan); T1=np.full(n_z,np.nan); T2=np.full(n_z,np.nan)
+    ds_u=xr.open_dataset(path3d('ua')); ds_w=xr.open_dataset(path3d('wa'))
+    for iz in range(n_z):
+        a_re=a1=a2=0.0;n=0
+        for it in range(t_stat,n_t):
+            u=ds_u['ua'].isel({dim_t:it,dim_z:iz}).values[reg]
+            w=ds_w['wa'].isel({dim_t:it,dim_z:iz}).values[reg]
+            ub=u.mean();wb=w.mean();N=u.size
+            a_re+=((u-ub)*(w-wb)).mean()
+            ws=max(W0_MIN,C*w.std())
+            for msk in [w>ws, w<-ws, np.abs(w)<=ws]:
+                if not msk.any(): continue
+                sig=msk.sum()/N; uu=u[msk]; ww=w[msk]; uc=uu.mean(); wc=ww.mean()
+                a1+=sig*(uc-ub)*(wc-wb)
+                a2+=sig*((uu-uc)*(ww-wc)).mean()
+            n+=1; del u,w
+        if n>0: rey[iz]=rho0[iz]*a_re/n; T1[iz]=rho0[iz]*a1/n; T2[iz]=rho0[iz]*a2/n
+        gc.collect()
+    ds_u.close(); ds_w.close(); del ds_u,ds_w; gc.collect()
+    s=slice(np.searchsorted(alt,2000),np.searchsorted(alt,18000))
+    def L2(x): return np.sqrt(np.nansum(x[s]**2))
+    def nse(t,p):
+        a,b=t[s],p[s];ok=np.isfinite(a)&np.isfinite(b)
+        return 1-np.nansum((a[ok]-b[ok])**2)/np.nansum((a[ok]-np.nanmean(a[ok]))**2)
+    print(f'C={C}: T1/rey={L2(T1)/L2(rey)*100:4.1f}%  T2/rey={L2(T2)/L2(rey)*100:4.1f}%  NSE(T1)={nse(rey,T1):+.3f}')
