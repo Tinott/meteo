@@ -1,73 +1,39 @@
-# ============================================================================
-# Diagnostic des 2 termes encadres : transport par moyennes conditionnelles
-#   vs covariance sous-maille, sur 3 categories (up / down / env)
-#   Phi_rey = SUM_cat sigma_cat * (u_cat - u_bar)(w_cat - w_bar)   [TERME 1]
-#           + SUM_cat sigma_cat * <(u-u_cat)(w-w_cat)>_cat          [TERME 2]
-# ============================================================================
-reg = mh; W0_MIN = 0.001; C = 1.0
-
-rey      = np.full(n_z, np.nan)
-T1_up    = np.full(n_z, np.nan); T1_dn = np.full(n_z, np.nan); T1_env = np.full(n_z, np.nan)
-T2_up    = np.full(n_z, np.nan); T2_dn = np.full(n_z, np.nan); T2_env = np.full(n_z, np.nan)
-
-ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+# T2_env est-il du down-gradient ? (le test qui validerait la closure EDMF)
+ubar = np.full(n_z, np.nan)
+ds_u=xr.open_dataset(path3d('ua'))
 for iz in range(n_z):
-    a_re=0.0
-    a1u=a1d=a1e=a2u=a2d=a2e=0.0; n=0
-    for it in range(t_stat, n_t):
-        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
-        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
-        ub=u.mean(); wb=w.mean(); N=u.size
-        a_re += ((u-ub)*(w-wb)).mean()
-        ws=max(W0_MIN, C*w.std())
-        cats = {'up': w>ws, 'dn': w<-ws, 'env': np.abs(w)<=ws}
-        for name,msk in cats.items():
-            if not msk.any(): continue
-            sig = msk.sum()/N
-            uu=u[msk]; ww=w[msk]; uc=uu.mean(); wc=ww.mean()
-            t1 = sig*(uc-ub)*(wc-wb)                 # transport par moyenne conditionnelle
-            t2 = sig*((uu-uc)*(ww-wc)).mean()        # covariance interne categorie
-            if name=='up':  a1u+=t1; a2u+=t2
-            if name=='dn':  a1d+=t1; a2d+=t2
-            if name=='env': a1e+=t1; a2e+=t2
-        n+=1; del u,w
-    if n>0:
-        rey[iz]=rho0[iz]*a_re/n
-        T1_up[iz]=rho0[iz]*a1u/n; T1_dn[iz]=rho0[iz]*a1d/n; T1_env[iz]=rho0[iz]*a1e/n
-        T2_up[iz]=rho0[iz]*a2u/n; T2_dn[iz]=rho0[iz]*a2d/n; T2_env[iz]=rho0[iz]*a2e/n
-    gc.collect()
-ds_u.close(); ds_w.close(); del ds_u,ds_w; gc.collect()
+    acc=0.0;n=0
+    for it in range(t_stat,n_t):
+        acc+=ds_u['ua'].isel({dim_t:it,dim_z:iz}).values[reg].mean();n+=1
+    ubar[iz]=acc/n; gc.collect()
+ds_u.close(); del ds_u; gc.collect()
 
-T1 = T1_up+T1_dn+T1_env      # transport organise total (= flux de masse generalise)
-T2 = T2_up+T2_dn+T2_env      # covariance sous-maille totale
-s=slice(np.searchsorted(alt,2000), np.searchsorted(alt,18000)); zf=alt[s]; sc=1e3
-resid = rey - (T1+T2)
-print(f'controle |rey-(T1+T2)| max = {np.nanmax(np.abs(resid[s])):.2e} (doit ~0)')
-print(f'part T1 (organise)   median = {np.nanmedian((T1/rey)[s]):.2f}')
-print(f'part T2 (sous-maille) median = {np.nanmedian((T2/rey)[s]):.2f}')
+s=slice(np.searchsorted(alt,2000),np.searchsorted(alt,18000)); zf=alt[s]; sc=1e3
+dudz = np.gradient(ubar, alt)
 
-fig,axes=plt.subplots(1,3,figsize=(16,8),sharey=True)
-ax=axes[0]
-ax.plot(rey[s]*sc, zf,'k',lw=2.5,label='Φ_rey total')
-ax.plot(T1[s]*sc, zf,'r--',lw=2,label='T1 : transport organisé')
-ax.plot(T2[s]*sc, zf,'b-.',lw=2,label='T2 : covariance sous-maille')
+# correlation T2_env avec -du/dz, et K diagnostique
+r_env = np.corrcoef(T2_env[s], -dudz[s])[0,1]
+K_env = (T2_env[s]@(-rho0[s]*dudz[s]))/((rho0[s]*dudz[s])@(rho0[s]*dudz[s]))
+print(f'corr(T2_env, -∂z u_bar) = {r_env:+.3f}')
+print(f'K diagnostique (env)    = {K_env:.1f} m2/s   (ref Romps 10-30)')
+
+# closure complete : T1 + diffusion env, et on regarde le residu T2_up
+phi_T1   = T1                                   # deja calcule (mass-flux 2 courants)
+phi_diff = -K_env*rho0*dudz                     # eddy-diffusivity sur env
+phi_edmf = phi_T1 + phi_diff
+def nse(t,p):
+    a,b=t[s],p[s];ok=np.isfinite(a)&np.isfinite(b)
+    return 1-np.nansum((a[ok]-b[ok])**2)/np.nansum((a[ok]-np.nanmean(a[ok]))**2)
+print(f'NSE T1 seul          = {nse(rey,phi_T1):+.3f}')
+print(f'NSE T1 + diffusion   = {nse(rey,phi_edmf):+.3f}   <-- EDMF')
+print(f'reste T2_up / rey median = {np.nanmedian((T2_up/rey)[s]):.2f}')
+
+fig,ax=plt.subplots(figsize=(8,9))
+ax.plot(rey[s]*sc, zf,'k',lw=3,label='Φ_rey vrai')
+ax.plot(phi_T1[s]*sc, zf,'r--',lw=1.8,label='T1 mass-flux (up+down)')
+ax.plot(phi_edmf[s]*sc, zf,'b-.',lw=2,label='T1 + diffusion env (EDMF)')
+ax.plot(T2_up[s]*sc, zf,color='purple',lw=1.5,ls=':',label='T2_up (résiduel cœurs)')
 ax.axvline(0,color='grey',alpha=0.4)
 ax.set_xlabel('flux (×10⁻³)'); ax.set_ylabel('Altitude (m)')
-ax.set_title('Décomposition en 2 termes',fontweight='bold'); ax.legend(fontsize=9); ax.grid(alpha=0.3)
-
-ax=axes[1]
-ax.plot(T1_up[s]*sc, zf,color='royalblue',lw=2,label='T1 up')
-ax.plot(T1_dn[s]*sc, zf,color='crimson',lw=2,label='T1 down')
-ax.plot(T1_env[s]*sc, zf,color='seagreen',lw=2,label='T1 env')
-ax.axvline(0,color='grey',alpha=0.4)
-ax.set_xlabel('flux (×10⁻³)'); ax.set_title('Terme 1 par catégorie',fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3)
-
-ax=axes[2]
-ax.plot(T2_up[s]*sc, zf,color='royalblue',lw=2,label='T2 up')
-ax.plot(T2_dn[s]*sc, zf,color='crimson',lw=2,label='T2 down')
-ax.plot(T2_env[s]*sc, zf,color='seagreen',lw=2,label='T2 env')
-ax.axvline(0,color='grey',alpha=0.4)
-ax.set_xlabel('flux (×10⁻³)'); ax.set_title('Terme 2 par catégorie',fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3)
-plt.tight_layout(); plt.show()
+ax.set_title('Closure EDMF : mass-flux + eddy-diffusivity',fontweight='bold')
+ax.legend(fontsize=10); ax.grid(alpha=0.3); plt.tight_layout(); plt.show()
