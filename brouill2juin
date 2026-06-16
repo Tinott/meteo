@@ -1,15 +1,24 @@
-# Mc et ses deux facteurs en fonction du seuil, a un niveau donne
+# Mc et ses deux facteurs + covariance interne, en fonction du seuil (niveau fixe)
 iz0 = np.searchsorted(alt, 5000); reg = mh
 ds_w=xr.open_dataset(path3d('wa')); ds_u=xr.open_dataset(path3d('ua'))
-print(f"{'C':>5} {'sigma':>8} {'<w>_up':>8} {'Mc=σ<w>up':>11} {'(uc-ud)':>9} {'produit':>9}")
+print(f"{'C':>5} {'sigma':>8} {'<w>_up':>8} {'Mc=σ<w>up':>11} {'(uc-ud)':>9} {'tophat':>9} {'cov_int':>9} {'rey_tot':>9}")
 for C in [0.2,0.5,1.0,1.5,2.0,3.0]:
-    a_sig=a_wup=a_mc=a_d=0.0; n=0
+    a_sig=a_wup=a_mc=a_d=a_cov=a_rey=0.0; n=0
     for it in range(t_stat,n_t):
         w=ds_w['wa'].isel({dim_t:it,dim_z:iz0}).values[reg]
         u=ds_u['ua'].isel({dim_t:it,dim_z:iz0}).values[reg]
+        ub=u.mean(); wb=w.mean(); N=u.size
+        a_rey += ((u-ub)*(w-wb)).mean()                    # Reynolds total (fixe)
         ws=max(0.001, C*w.std()); up=w>ws; dn=w<-ws
         if up.any() and dn.any():
-            a_sig+=up.mean(); a_wup+=w[up].mean(); a_mc+=(w*up).mean()
-            a_d+=u[up].mean()-u[dn].mean(); n+=1
-    print(f"{C:5.1f} {a_sig/n:8.4f} {a_wup/n:8.3f} {a_mc/n:11.4f} {a_d/n:9.3f} {a_mc/n*a_d/n*1e3:9.3f}")
+            uu=u[up]; ww=w[up]
+            uc=uu.mean(); wc=ww.mean()
+            a_sig+=up.mean(); a_wup+=wc; a_mc+=(w*up).mean()
+            a_d+=uc-u[dn].mean()
+            # covariance interne aux updrafts (ponderee sigma)
+            a_cov += (up.sum()/N)*((uu-uc)*(ww-wc)).mean()
+            n+=1
+    sig=a_sig/n; wup=a_wup/n; mc=a_mc/n; d=a_d/n
+    th=mc*d; cov=rho0[iz0]*a_cov/n; rey=rho0[iz0]*a_rey/n
+    print(f"{C:5.1f} {sig:8.4f} {wup:8.3f} {mc:11.4f} {d:9.3f} {th*1e3:9.3f} {cov*1e3:9.3f} {rey*1e3:9.3f}")
 ds_w.close(); ds_u.close(); del ds_w,ds_u; gc.collect()
