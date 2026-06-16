@@ -22,3 +22,104 @@ for C in [0.2,0.5,1.0,1.5,2.0,3.0]:
     th=mc*d; cov=rho0[iz0]*a_cov/n; rey=rho0[iz0]*a_rey/n
     print(f"{C:5.1f} {sig:8.4f} {wup:8.3f} {mc:11.4f} {d:9.3f} {th*1e3:9.3f} {cov*1e3:9.3f} {rey*1e3:9.3f}")
 ds_w.close(); ds_u.close(); del ds_w,ds_u; gc.collect()
+
+
+
+
+
+
+
+
+
+NSE (C=1.2) = +0.811
+corr(residu, -∂z u_bar) = -0.325   (si eleve -> down-gradient complementaire)
+K diffusif calibre = -0.4 m2/s   (ref Romps 10-30)
+NSE closure mixte (fm + diffusion) = +0.812
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+Pret.
+100 t x 74 z   |  altitude 0-32500 m   |  t_stat=66
+Humide 42.3%   Sec 57.7%
+rho0 surface 1.183  ~10km 0.410 kg/m3
+  iz=0/73
+  iz=10/73
+  iz=20/73
+  iz=30/73
+  iz=40/73
+  iz=50/73
+  iz=60/73
+  iz=70/73
+Termes calcules.
+-- moyennes sur 2-18 km (x1e-3) --
+  <w+u'>          = -9.447
+  <w-u'>          = -4.429
+  flux Reynolds   = -13.876
+  <w+>u_c         = -6.354
+  <w+>u_e         = +0.424
+  flux masse      = -6.778
+DEF 1 (u_e=u_bar)        k=+6.320  corr=+0.976
+DEF 2 (u_e=complement)   k=+1.962  corr=+0.868
+DEF 3 (u_e=env strict)   k=+1.643  corr=+0.880
+DEF 1 (u_bar)       k=+6.320 r=+0.976
+DEF 2 (complément)  k=+1.962 r=+0.868
+DEF 3 (env strict)  k=+1.643 r=+0.880
+-> meilleure def = celle dont k est le plus proche de 1 avec r eleve
+corr(erreur_creneau, covariance_interne) = +1.000
+residu |flux_up - (tophat+cov_int)| max   = 7.03e-10  (doit etre ~0)
+Calcul termine.
+UPDRAFT   : rey ~ k*fm   k=+0.951  corr=+0.929
+DOWNDRAFT : rey ~ k*fm   k=+1.586  corr=+0.998
+flux masse up/down : NSE=+0.811
+compensation masse <M+ + M-> median = +6.638 x1e-3 (doit ~0)
+C=0.001: NSE(fm vs Reynolds TOTAL)=-0.461  NSE(fm vs Reynolds seuillé)=-0.460
+C=0.01: NSE(fm vs Reynolds TOTAL)=-0.430  NSE(fm vs Reynolds seuillé)=-0.429
+C=0.1: NSE(fm vs Reynolds TOTAL)=-0.067  NSE(fm vs Reynolds seuillé)=-0.061
+C=0.2: NSE(fm vs Reynolds TOTAL)=+0.246  NSE(fm vs Reynolds seuillé)=+0.273
+C=0.3: NSE(fm vs Reynolds TOTAL)=+0.456  NSE(fm vs Reynolds seuillé)=+0.517
+C=0.5: NSE(fm vs Reynolds TOTAL)=+0.674  NSE(fm vs Reynolds seuillé)=+0.791
+C=0.8: NSE(fm vs Reynolds TOTAL)=+0.785  NSE(fm vs Reynolds seuillé)=+0.911
+C=1.0: NSE(fm vs Reynolds TOTAL)=+0.807  NSE(fm vs Reynolds seuillé)=+0.899
+C=1.2: NSE(fm vs Reynolds TOTAL)=+0.811  NSE(fm vs Reynolds seuillé)=+0.857
+C=1.5: NSE(fm vs Reynolds TOTAL)=+0.809  NSE(fm vs Reynolds seuillé)=+0.756
+C=2.0: NSE(fm vs Reynolds TOTAL)=+0.784  NSE(fm vs Reynolds seuillé)=+0.517
+    C | humide/2-18km | humide/2-12km | seche/2-18km | seche/2-12km
+  0.3 | +0.456       | -2.277       | +0.736       | +0.661      
+  0.5 | +0.674       | -0.941       | +0.786       | +0.722      
+  0.8 | +0.785       | -0.250       | +0.764       | +0.703      
+  1.0 | +0.807       | -0.115       | +0.693       | +0.625      
+  1.2 | +0.811       | -0.085       | +0.583       | +0.506      
+  1.5 | +0.809       | -0.096       | +0.360       | +0.268      
+  2.0 | +0.784       | -0.243       | -0.024       | -0.140      
+('humide', '2-18km'): C*=1.2  NSE_max=+0.811
+('humide', '2-12km'): C*=1.2  NSE_max=-0.085
+('seche', '2-18km'): C*=0.5  NSE_max=+0.786
+('seche', '2-12km'): C*=0.5  NSE_max=+0.722
+    C    sigma   <w>_up   Mc=σ<w>up   (uc-ud)   produit
+  0.2   0.1672    0.267      0.0436    -0.474   -20.672
+  0.5   0.0494    0.651      0.0312    -0.943   -29.401
+  1.0   0.0177    1.376      0.0238    -1.460   -34.757
+  1.5   0.0104    2.038      0.0208    -1.726   -35.827
+  2.0   0.0073    2.617      0.0190    -1.943   -36.840
+  3.0   0.0047    3.574      0.0168    -2.254   -37.790
+14809
+    C    sigma   <w>_up   Mc=σ<w>up   (uc-ud)    tophat   cov_int   rey_tot
+  0.2   0.1672    0.267      0.0436    -0.474   -20.672    -8.563   -30.193
+  0.5   0.0494    0.651      0.0312    -0.943   -29.401    -5.661   -30.193
+  1.0   0.0177    1.376      0.0238    -1.460   -34.757    -2.670   -30.193
+  1.5   0.0104    2.038      0.0208    -1.726   -35.827    -1.382   -30.193
+  2.0   0.0073    2.617      0.0190    -1.943   -36.840    -0.425   -30.193
+  3.0   0.0047    3.574      0.0168    -2.254   -37.790     0.038   -30.193
