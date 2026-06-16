@@ -1,16 +1,18 @@
 # ============================================================================
-# Rapport flux_masse/Reynolds ET covariance_interne/Reynolds, niveau par niveau
+# Rapport flux_masse/Reynolds ET covariance/Reynolds, niveau par niveau
+# Plage complète 0 - 30000 m, gestion robuste des niveaux indéfinis
 # ============================================================================
 reg = mh; W0_MIN = 0.001
 Cs = np.array([0.3, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0])
 
-rey    = np.zeros(n_z)                       # Reynolds total (independant de C)
-fm_C   = {C: np.zeros(n_z) for C in Cs}      # Mc(uc-ud)
-cov_C  = {C: np.zeros(n_z) for C in Cs}      # covariance interne updrafts
+rey    = np.full(n_z, np.nan)
+fm_C   = {C: np.full(n_z, np.nan) for C in Cs}
+cov_C  = {C: np.full(n_z, np.nan) for C in Cs}
 
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
 for iz in range(n_z):
-    a_re = 0.0; a_fm = {C:0.0 for C in Cs}; a_cv = {C:0.0 for C in Cs}; n = 0
+    a_re = 0.0; a_fm = {C:0.0 for C in Cs}; a_cv = {C:0.0 for C in Cs}
+    n_fm = {C:0 for C in Cs}; n = 0
     for it in range(t_stat, n_t):
         u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
         w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
@@ -20,33 +22,42 @@ for iz in range(n_z):
             ws = max(W0_MIN, C*sw); up = w > ws; dn = w < -ws
             if up.any() and dn.any():
                 uu = u[up]; ww = w[up]; uc = uu.mean(); wc = ww.mean()
-                a_fm[C] += (w*up).mean()*(uc - u[dn].mean())          # top-hat
-                a_cv[C] += (up.sum()/N)*((uu-uc)*(ww-wc)).mean()      # covariance interne
+                a_fm[C] += (w*up).mean()*(uc - u[dn].mean())
+                a_cv[C] += (up.sum()/N)*((uu-uc)*(ww-wc)).mean()
+                n_fm[C] += 1
         n += 1; del u, w
-    rey[iz] = rho0[iz]*a_re/n
-    for C in Cs:
-        fm_C[C][iz]  = rho0[iz]*a_fm[C]/n
-        cov_C[C][iz] = rho0[iz]*a_cv[C]/n
+    if n > 0:
+        rey[iz] = rho0[iz]*a_re/n
+        for C in Cs:
+            # on ne definit fm/cov que si des updrafts ET downdrafts existaient
+            if n_fm[C] > 0:
+                fm_C[C][iz]  = rho0[iz]*a_fm[C]/n
+                cov_C[C][iz] = rho0[iz]*a_cv[C]/n
+    if iz % 20 == 0: print(f'  iz={iz}/{n_z-1} ({alt[iz]:.0f} m)')
     gc.collect()
 ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
 
-s = slice(np.searchsorted(alt,2000), np.searchsorted(alt,18000))
-zf = alt[s]
-rey_floor = 0.05*np.nanmax(np.abs(rey[s]))
-def safe_ratio(num, C):
-    r = rey[s].copy(); v = np.abs(r) > rey_floor
-    out = np.full(len(zf), np.nan); out[v] = num[s][v]/r[v]; return out
+# fenetre complete 0 - 30 km
+iz_hi = np.searchsorted(alt, 30000)
+s = slice(0, iz_hi); zf = alt[s]
+
+# seuil sous lequel le Reynolds est trop faible -> rapport non defini (NaN)
+rey_floor = 0.05 * np.nanmax(np.abs(rey[s]))
+def safe_ratio(num, s=s):
+    r = rey[s]; out = np.full(len(zf), np.nan)
+    v = np.isfinite(r) & np.isfinite(num[s]) & (np.abs(r) > rey_floor)
+    out[v] = num[s][v] / r[v]
+    return out
 
 ratio_fm  = np.full((len(Cs), len(zf)), np.nan)
 ratio_cov = np.full((len(Cs), len(zf)), np.nan)
 for i,C in enumerate(Cs):
-    ratio_fm[i]  = safe_ratio(fm_C[C],  C)
-    ratio_cov[i] = safe_ratio(cov_C[C], C)
+    ratio_fm[i]  = safe_ratio(fm_C[C])
+    ratio_cov[i] = safe_ratio(cov_C[C])
 
 # ---- 2 heatmaps + 2 profils ----
 fig, axes = plt.subplots(2, 2, figsize=(15, 13))
 
-# heatmap flux de masse
 ax = axes[0,0]
 im = ax.pcolormesh(zf/1000, Cs, ratio_fm, cmap='RdBu_r', vmin=0, vmax=2, shading='nearest')
 ax.axhline(1.2, color='black', ls='--', lw=1.5, label='C*=1.2')
@@ -54,7 +65,6 @@ plt.colorbar(im, ax=ax, label='Mc(u_c−u_d) / Φ_rey')
 ax.set_xlabel('Altitude (km)'); ax.set_ylabel('C'); ax.legend()
 ax.set_title('Part flux de masse (idéal = 1, blanc)', fontweight='bold')
 
-# heatmap covariance
 ax = axes[0,1]
 im = ax.pcolormesh(zf/1000, Cs, ratio_cov, cmap='PuOr_r', vmin=-0.5, vmax=0.5, shading='nearest')
 ax.axhline(1.2, color='black', ls='--', lw=1.5)
@@ -62,19 +72,17 @@ plt.colorbar(im, ax=ax, label='cov_interne / Φ_rey')
 ax.set_xlabel('Altitude (km)'); ax.set_ylabel('C')
 ax.set_title('Part covariance interne (idéal = 0, blanc)', fontweight='bold')
 
-# profils flux de masse
 ax = axes[1,0]
 for C in [0.5, 1.0, 1.2, 1.5, 2.0]:
-    ax.plot(safe_ratio(fm_C[C], C), zf/1000, lw=2, label=f'C={C}')
+    ax.plot(safe_ratio(fm_C[C]), zf/1000, lw=2, label=f'C={C}')
 ax.axvline(1, color='black', ls=':', lw=1.5)
 ax.set_xlabel('Mc(u_c−u_d) / Φ_rey'); ax.set_ylabel('Altitude (km)')
 ax.set_xlim(0, 2.5); ax.legend(fontsize=9); ax.grid(alpha=0.3)
 ax.set_title('Profil part flux de masse', fontweight='bold')
 
-# profils covariance
 ax = axes[1,1]
 for C in [0.5, 1.0, 1.2, 1.5, 2.0]:
-    ax.plot(safe_ratio(cov_C[C], C), zf/1000, lw=2, label=f'C={C}')
+    ax.plot(safe_ratio(cov_C[C]), zf/1000, lw=2, label=f'C={C}')
 ax.axvline(0, color='black', ls=':', lw=1.5)
 ax.set_xlabel('cov_interne / Φ_rey'); ax.set_ylabel('Altitude (km)')
 ax.set_xlim(-0.6, 0.6); ax.legend(fontsize=9); ax.grid(alpha=0.3)
@@ -82,10 +90,13 @@ ax.set_title('Profil part covariance', fontweight='bold')
 
 plt.tight_layout(); plt.show()
 
-# ---- tableau : part mediane de chaque terme ----
+# ---- tableau ----
 print("C    | médiane fm/rey | médiane cov/rey | % niv fm∈[0.8,1.2]")
 for C in Cs:
-    rf = safe_ratio(fm_C[C], C);  rf = rf[np.isfinite(rf)]
-    rc = safe_ratio(cov_C[C], C); rc = rc[np.isfinite(rc)]
-    pct = np.mean((rf>0.8)&(rf<1.2))*100
-    print(f"{C:4.1f} |   {np.median(rf):+.3f}      |   {np.median(rc):+.3f}       |   {pct:.0f}%")
+    rf = safe_ratio(fm_C[C]);  rf = rf[np.isfinite(rf)]
+    rc = safe_ratio(cov_C[C]); rc = rc[np.isfinite(rc)]
+    if rf.size:
+        pct = np.mean((rf>0.8)&(rf<1.2))*100
+        print(f"{C:4.1f} |   {np.median(rf):+.3f}      |   {np.median(rc):+.3f}       |   {pct:.0f}%")
+    else:
+        print(f"{C:4.1f} |   (aucun niveau défini)")
