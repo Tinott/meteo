@@ -1,121 +1,19 @@
-# ============================================================================
-# Que vaut T2_env, et a quoi correle-t-il si ce n'est pas le down-gradient ?
-# ============================================================================
-s=slice(np.searchsorted(alt,2000),np.searchsorted(alt,18000)); zf=alt[s]; sc=1e3
+# Les composantes sont-elles toutes proportionnelles a Phi_rey (ratio constant en z) ?
+s=slice(np.searchsorted(alt,2000),np.searchsorted(alt,18000)); zf=alt[s]
+rok = np.abs(rey[s])>0.05*np.nanmax(np.abs(rey[s]))
 
-# 1) taille relative de chaque morceau
-def L2(x): return np.sqrt(np.nansum(x[s]**2))
-print('-- poids L2 relatif au Reynolds total --')
-print(f'  T1 (mass-flux)   : {L2(T1)/L2(rey)*100:5.1f}%')
-print(f'  T2_env           : {L2(T2_env)/L2(rey)*100:5.1f}%')
-print(f'  T2_up            : {L2(T2_up)/L2(rey)*100:5.1f}%')
-print(f'  T2_dn            : {L2(T2_dn)/L2(rey)*100:5.1f}%')
+for nom,comp in [('T1',T1),('T2_env',T2_env),('T2_up',T2_up)]:
+    ratio = (comp[s]/rey[s])[rok]
+    print(f'{nom}/rey : median={np.median(ratio):+.3f}  std={np.std(ratio):.3f}  '
+          f'(CV={np.std(ratio)/abs(np.median(ratio))*100:.0f}%)')
 
-# 2) si T2_env est gros, contre quoi correle-t-il ?
-#    candidats : sigma_w^2 (TKE verticale), Mc, gradient vertical de Mc, gradient de Phi
-sigw2 = np.full(n_z, np.nan)
-ds_w=xr.open_dataset(path3d('wa'))
-for iz in range(n_z):
-    acc=0.0;n=0
-    for it in range(t_stat,n_t):
-        w=ds_w['wa'].isel({dim_t:it,dim_z:iz}).values[reg]
-        acc+=w.var();n+=1
-    sigw2[iz]=acc/n; gc.collect()
-ds_w.close(); del ds_w; gc.collect()
-
-candidats = {
-    '-∂z u_bar'      : -np.gradient(ubar, alt),
-    'sigma_w^2'      : sigw2,
-    'Mc (=T1 proxy)' : T1,
-    '∂z(rey)'        : np.gradient(rey, alt),
-    'rey lui-meme'   : rey,
-}
-print('\n-- correlation de T2_env avec divers candidats --')
-for nom,c in candidats.items():
-    r=np.corrcoef(T2_env[s], c[s])[0,1]
-    print(f'  {nom:16s} : r = {r:+.3f}')
-
-fig,axes=plt.subplots(1,2,figsize=(13,8),sharey=True)
-ax=axes[0]
-ax.plot(rey[s]*sc, zf,'k',lw=2.5,label='Φ_rey')
-ax.plot(T1[s]*sc, zf,'r--',lw=2,label='T1 mass-flux')
-ax.plot(T2_env[s]*sc, zf,color='seagreen',lw=2,label='T2_env')
-ax.plot(T2_up[s]*sc, zf,color='purple',lw=1.5,ls=':',label='T2_up')
+# si T1/rey est ~constant -> Phi_rey = T1 / cste, fermeture exacte SANS k ajuste
+#   car la cste est PHYSIQUE (fraction du transport portee par les coeurs)
+fig,ax=plt.subplots(figsize=(7,8))
+for nom,comp,col in [('T1',T1,'red'),('T2_env',T2_env,'green'),('T2_up',T2_up,'purple')]:
+    r=np.full(len(zf),np.nan); r[rok]=(comp[s]/rey[s])[rok]
+    ax.plot(r, zf, lw=2, color=col, label=f'{nom}/Φ_rey')
 ax.axvline(0,color='grey',alpha=0.4)
-ax.set_xlabel('flux (×10⁻³)'); ax.set_ylabel('Altitude (m)')
-ax.set_title('Tailles relatives',fontweight='bold'); ax.legend(fontsize=9); ax.grid(alpha=0.3)
-
-ax=axes[1]
-# normalise pour comparer les formes
-def nrm(x): return x/np.nanmax(np.abs(x[s]))
-ax.plot(nrm(T2_env)[s], zf,color='seagreen',lw=2.5,label='T2_env (normalisé)')
-ax.plot(nrm(sigw2)[s], zf,color='orange',lw=2,ls='--',label='σ_w² (normalisé)')
-ax.plot(nrm(T1)[s], zf,color='red',lw=1.5,ls=':',label='T1 (normalisé)')
-ax.axvline(0,color='grey',alpha=0.4)
-ax.set_xlabel('profils normalisés'); ax.set_title('Forme de T2_env vs candidats',fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3)
-plt.tight_layout(); plt.show()
-
-
-
-
-
-
--- poids L2 relatif au Reynolds total --
-  T1 (mass-flux)   :  60.5%
-  T2_env           :  29.1%
-  T2_up            :  15.4%
-  T2_dn            :   3.7%
-
--- correlation de T2_env avec divers candidats --
-  -∂z u_bar        : r = -0.189
-  sigma_w^2        : r = -0.903
-  Mc (=T1 proxy)   : r = +0.975
-  ∂z(rey)          : r = +0.294
-  rey lui-meme     : r = +0.989
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# T2_env suit T1 : si on elargit la categorie convective (seuil plus bas pour
-# les moyennes conditionnelles), le sillage rentre dans T1 sans facteur correctif.
-reg = mh; W0_MIN = 0.001
-for C in [1.0, 0.5, 0.3, 0.2, 0.1]:
-    rey=np.full(n_z,np.nan); T1=np.full(n_z,np.nan); T2=np.full(n_z,np.nan)
-    ds_u=xr.open_dataset(path3d('ua')); ds_w=xr.open_dataset(path3d('wa'))
-    for iz in range(n_z):
-        a_re=a1=a2=0.0;n=0
-        for it in range(t_stat,n_t):
-            u=ds_u['ua'].isel({dim_t:it,dim_z:iz}).values[reg]
-            w=ds_w['wa'].isel({dim_t:it,dim_z:iz}).values[reg]
-            ub=u.mean();wb=w.mean();N=u.size
-            a_re+=((u-ub)*(w-wb)).mean()
-            ws=max(W0_MIN,C*w.std())
-            for msk in [w>ws, w<-ws, np.abs(w)<=ws]:
-                if not msk.any(): continue
-                sig=msk.sum()/N; uu=u[msk]; ww=w[msk]; uc=uu.mean(); wc=ww.mean()
-                a1+=sig*(uc-ub)*(wc-wb)
-                a2+=sig*((uu-uc)*(ww-wc)).mean()
-            n+=1; del u,w
-        if n>0: rey[iz]=rho0[iz]*a_re/n; T1[iz]=rho0[iz]*a1/n; T2[iz]=rho0[iz]*a2/n
-        gc.collect()
-    ds_u.close(); ds_w.close(); del ds_u,ds_w; gc.collect()
-    s=slice(np.searchsorted(alt,2000),np.searchsorted(alt,18000))
-    def L2(x): return np.sqrt(np.nansum(x[s]**2))
-    def nse(t,p):
-        a,b=t[s],p[s];ok=np.isfinite(a)&np.isfinite(b)
-        return 1-np.nansum((a[ok]-b[ok])**2)/np.nansum((a[ok]-np.nanmean(a[ok]))**2)
-    print(f'C={C}: T1/rey={L2(T1)/L2(rey)*100:4.1f}%  T2/rey={L2(T2)/L2(rey)*100:4.1f}%  NSE(T1)={nse(rey,T1):+.3f}')
+ax.set_xlabel('fraction de Φ_rey'); ax.set_ylabel('Altitude (m)')
+ax.set_title('Chaque composante / Φ_rey (plate = proportionnelle)',fontweight='bold')
+ax.set_xlim(-0.5,1.5); ax.legend(); ax.grid(alpha=0.3); plt.tight_layout(); plt.show())
