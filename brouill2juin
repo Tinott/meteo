@@ -1,39 +1,57 @@
-# T2_env est-il du down-gradient ? (le test qui validerait la closure EDMF)
-ubar = np.full(n_z, np.nan)
-ds_u=xr.open_dataset(path3d('ua'))
+# ============================================================================
+# Que vaut T2_env, et a quoi correle-t-il si ce n'est pas le down-gradient ?
+# ============================================================================
+s=slice(np.searchsorted(alt,2000),np.searchsorted(alt,18000)); zf=alt[s]; sc=1e3
+
+# 1) taille relative de chaque morceau
+def L2(x): return np.sqrt(np.nansum(x[s]**2))
+print('-- poids L2 relatif au Reynolds total --')
+print(f'  T1 (mass-flux)   : {L2(T1)/L2(rey)*100:5.1f}%')
+print(f'  T2_env           : {L2(T2_env)/L2(rey)*100:5.1f}%')
+print(f'  T2_up            : {L2(T2_up)/L2(rey)*100:5.1f}%')
+print(f'  T2_dn            : {L2(T2_dn)/L2(rey)*100:5.1f}%')
+
+# 2) si T2_env est gros, contre quoi correle-t-il ?
+#    candidats : sigma_w^2 (TKE verticale), Mc, gradient vertical de Mc, gradient de Phi
+sigw2 = np.full(n_z, np.nan)
+ds_w=xr.open_dataset(path3d('wa'))
 for iz in range(n_z):
     acc=0.0;n=0
     for it in range(t_stat,n_t):
-        acc+=ds_u['ua'].isel({dim_t:it,dim_z:iz}).values[reg].mean();n+=1
-    ubar[iz]=acc/n; gc.collect()
-ds_u.close(); del ds_u; gc.collect()
+        w=ds_w['wa'].isel({dim_t:it,dim_z:iz}).values[reg]
+        acc+=w.var();n+=1
+    sigw2[iz]=acc/n; gc.collect()
+ds_w.close(); del ds_w; gc.collect()
 
-s=slice(np.searchsorted(alt,2000),np.searchsorted(alt,18000)); zf=alt[s]; sc=1e3
-dudz = np.gradient(ubar, alt)
+candidats = {
+    '-∂z u_bar'      : -np.gradient(ubar, alt),
+    'sigma_w^2'      : sigw2,
+    'Mc (=T1 proxy)' : T1,
+    '∂z(rey)'        : np.gradient(rey, alt),
+    'rey lui-meme'   : rey,
+}
+print('\n-- correlation de T2_env avec divers candidats --')
+for nom,c in candidats.items():
+    r=np.corrcoef(T2_env[s], c[s])[0,1]
+    print(f'  {nom:16s} : r = {r:+.3f}')
 
-# correlation T2_env avec -du/dz, et K diagnostique
-r_env = np.corrcoef(T2_env[s], -dudz[s])[0,1]
-K_env = (T2_env[s]@(-rho0[s]*dudz[s]))/((rho0[s]*dudz[s])@(rho0[s]*dudz[s]))
-print(f'corr(T2_env, -∂z u_bar) = {r_env:+.3f}')
-print(f'K diagnostique (env)    = {K_env:.1f} m2/s   (ref Romps 10-30)')
-
-# closure complete : T1 + diffusion env, et on regarde le residu T2_up
-phi_T1   = T1                                   # deja calcule (mass-flux 2 courants)
-phi_diff = -K_env*rho0*dudz                     # eddy-diffusivity sur env
-phi_edmf = phi_T1 + phi_diff
-def nse(t,p):
-    a,b=t[s],p[s];ok=np.isfinite(a)&np.isfinite(b)
-    return 1-np.nansum((a[ok]-b[ok])**2)/np.nansum((a[ok]-np.nanmean(a[ok]))**2)
-print(f'NSE T1 seul          = {nse(rey,phi_T1):+.3f}')
-print(f'NSE T1 + diffusion   = {nse(rey,phi_edmf):+.3f}   <-- EDMF')
-print(f'reste T2_up / rey median = {np.nanmedian((T2_up/rey)[s]):.2f}')
-
-fig,ax=plt.subplots(figsize=(8,9))
-ax.plot(rey[s]*sc, zf,'k',lw=3,label='Φ_rey vrai')
-ax.plot(phi_T1[s]*sc, zf,'r--',lw=1.8,label='T1 mass-flux (up+down)')
-ax.plot(phi_edmf[s]*sc, zf,'b-.',lw=2,label='T1 + diffusion env (EDMF)')
-ax.plot(T2_up[s]*sc, zf,color='purple',lw=1.5,ls=':',label='T2_up (résiduel cœurs)')
+fig,axes=plt.subplots(1,2,figsize=(13,8),sharey=True)
+ax=axes[0]
+ax.plot(rey[s]*sc, zf,'k',lw=2.5,label='Φ_rey')
+ax.plot(T1[s]*sc, zf,'r--',lw=2,label='T1 mass-flux')
+ax.plot(T2_env[s]*sc, zf,color='seagreen',lw=2,label='T2_env')
+ax.plot(T2_up[s]*sc, zf,color='purple',lw=1.5,ls=':',label='T2_up')
 ax.axvline(0,color='grey',alpha=0.4)
 ax.set_xlabel('flux (×10⁻³)'); ax.set_ylabel('Altitude (m)')
-ax.set_title('Closure EDMF : mass-flux + eddy-diffusivity',fontweight='bold')
-ax.legend(fontsize=10); ax.grid(alpha=0.3); plt.tight_layout(); plt.show()
+ax.set_title('Tailles relatives',fontweight='bold'); ax.legend(fontsize=9); ax.grid(alpha=0.3)
+
+ax=axes[1]
+# normalise pour comparer les formes
+def nrm(x): return x/np.nanmax(np.abs(x[s]))
+ax.plot(nrm(T2_env)[s], zf,color='seagreen',lw=2.5,label='T2_env (normalisé)')
+ax.plot(nrm(sigw2)[s], zf,color='orange',lw=2,ls='--',label='σ_w² (normalisé)')
+ax.plot(nrm(T1)[s], zf,color='red',lw=1.5,ls=':',label='T1 (normalisé)')
+ax.axvline(0,color='grey',alpha=0.4)
+ax.set_xlabel('profils normalisés'); ax.set_title('Forme de T2_env vs candidats',fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
+plt.tight_layout(); plt.show()
