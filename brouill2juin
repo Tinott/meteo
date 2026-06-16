@@ -1,220 +1,91 @@
-# Mc et ses deux facteurs + covariance interne, en fonction du seuil (niveau fixe)
-iz0 = np.searchsorted(alt, 5000); reg = mh
-ds_w=xr.open_dataset(path3d('wa')); ds_u=xr.open_dataset(path3d('ua'))
-print(f"{'C':>5} {'sigma':>8} {'<w>_up':>8} {'Mc=σ<w>up':>11} {'(uc-ud)':>9} {'tophat':>9} {'cov_int':>9} {'rey_tot':>9}")
-for C in [0.2,0.5,1.0,1.5,2.0,3.0]:
-    a_sig=a_wup=a_mc=a_d=a_cov=a_rey=0.0; n=0
-    for it in range(t_stat,n_t):
-        w=ds_w['wa'].isel({dim_t:it,dim_z:iz0}).values[reg]
-        u=ds_u['ua'].isel({dim_t:it,dim_z:iz0}).values[reg]
-        ub=u.mean(); wb=w.mean(); N=u.size
-        a_rey += ((u-ub)*(w-wb)).mean()                    # Reynolds total (fixe)
-        ws=max(0.001, C*w.std()); up=w>ws; dn=w<-ws
-        if up.any() and dn.any():
-            uu=u[up]; ww=w[up]
-            uc=uu.mean(); wc=ww.mean()
-            a_sig+=up.mean(); a_wup+=wc; a_mc+=(w*up).mean()
-            a_d+=uc-u[dn].mean()
-            # covariance interne aux updrafts (ponderee sigma)
-            a_cov += (up.sum()/N)*((uu-uc)*(ww-wc)).mean()
-            n+=1
-    sig=a_sig/n; wup=a_wup/n; mc=a_mc/n; d=a_d/n
-    th=mc*d; cov=rho0[iz0]*a_cov/n; rey=rho0[iz0]*a_rey/n
-    print(f"{C:5.1f} {sig:8.4f} {wup:8.3f} {mc:11.4f} {d:9.3f} {th*1e3:9.3f} {cov*1e3:9.3f} {rey*1e3:9.3f}")
-ds_w.close(); ds_u.close(); del ds_w,ds_u; gc.collect()
-
-
-
-
-
-
-
-
-
-
-Pour ne pas te raconter d'histoire, trace à chaque niveau (pas seulement 5 km) le rapport Mc(uc−ud)/ΦreyM_c(u_c-u_d)/\Phi_{rey}
-Mc​(uc​−ud​)/Φrey​ en fonction de C. Si l'optimum global C≈1.2 correspond à ce rapport ≈1 à tous les niveaux simultanément, c'est physique. Si certains niveaux sont à 0.7 et d'autres à 1.3 et que ça se moyenne à NSE 0.81, alors le bon accord est partiellement un effet de compensation verticale — moins solide, à dire honnêtement dans le rapport.
-Donc : ton résultat à C≈1.2 / NSE 0.81 reste bon et présentable, mais la justification correcte n'est pas « grand seuil = capture du Reynolds » (le tableau la contredit), c'est « il existe un seuil physique de cohérence convective où le top-hat à deux courants devient une bonne approximation, ni trop bas — covariance — ni trop haut — contraste dégénéré ». Tu veux le code du rapport niveau-par-niveau pour vérifier que C≈1.2 donne bien ≈1 partout ?
-
-
-
-
-
-
-
-NSE (C=1.2) = +0.811
-corr(residu, -∂z u_bar) = -0.325   (si eleve -> down-gradient complementaire)
-K diffusif calibre = -0.4 m2/s   (ref Romps 10-30)
-NSE closure mixte (fm + diffusion) = +0.812
- 
- 
- 
- 
- 
- 
- 
-
-
- 
- 
- 
- 
- 
- 
- 
-Pret.
-100 t x 74 z   |  altitude 0-32500 m   |  t_stat=66
-Humide 42.3%   Sec 57.7%
-rho0 surface 1.183  ~10km 0.410 kg/m3
-  iz=0/73
-  iz=10/73
-  iz=20/73
-  iz=30/73
-  iz=40/73
-  iz=50/73
-  iz=60/73
-  iz=70/73
-Termes calcules.
--- moyennes sur 2-18 km (x1e-3) --
-  <w+u'>          = -9.447
-  <w-u'>          = -4.429
-  flux Reynolds   = -13.876
-  <w+>u_c         = -6.354
-  <w+>u_e         = +0.424
-  flux masse      = -6.778
-DEF 1 (u_e=u_bar)        k=+6.320  corr=+0.976
-DEF 2 (u_e=complement)   k=+1.962  corr=+0.868
-DEF 3 (u_e=env strict)   k=+1.643  corr=+0.880
-DEF 1 (u_bar)       k=+6.320 r=+0.976
-DEF 2 (complément)  k=+1.962 r=+0.868
-DEF 3 (env strict)  k=+1.643 r=+0.880
--> meilleure def = celle dont k est le plus proche de 1 avec r eleve
-corr(erreur_creneau, covariance_interne) = +1.000
-residu |flux_up - (tophat+cov_int)| max   = 7.03e-10  (doit etre ~0)
-Calcul termine.
-UPDRAFT   : rey ~ k*fm   k=+0.951  corr=+0.929
-DOWNDRAFT : rey ~ k*fm   k=+1.586  corr=+0.998
-flux masse up/down : NSE=+0.811
-compensation masse <M+ + M-> median = +6.638 x1e-3 (doit ~0)
-C=0.001: NSE(fm vs Reynolds TOTAL)=-0.461  NSE(fm vs Reynolds seuillé)=-0.460
-C=0.01: NSE(fm vs Reynolds TOTAL)=-0.430  NSE(fm vs Reynolds seuillé)=-0.429
-C=0.1: NSE(fm vs Reynolds TOTAL)=-0.067  NSE(fm vs Reynolds seuillé)=-0.061
-C=0.2: NSE(fm vs Reynolds TOTAL)=+0.246  NSE(fm vs Reynolds seuillé)=+0.273
-C=0.3: NSE(fm vs Reynolds TOTAL)=+0.456  NSE(fm vs Reynolds seuillé)=+0.517
-C=0.5: NSE(fm vs Reynolds TOTAL)=+0.674  NSE(fm vs Reynolds seuillé)=+0.791
-C=0.8: NSE(fm vs Reynolds TOTAL)=+0.785  NSE(fm vs Reynolds seuillé)=+0.911
-C=1.0: NSE(fm vs Reynolds TOTAL)=+0.807  NSE(fm vs Reynolds seuillé)=+0.899
-C=1.2: NSE(fm vs Reynolds TOTAL)=+0.811  NSE(fm vs Reynolds seuillé)=+0.857
-C=1.5: NSE(fm vs Reynolds TOTAL)=+0.809  NSE(fm vs Reynolds seuillé)=+0.756
-C=2.0: NSE(fm vs Reynolds TOTAL)=+0.784  NSE(fm vs Reynolds seuillé)=+0.517
-    C | humide/2-18km | humide/2-12km | seche/2-18km | seche/2-12km
-  0.3 | +0.456       | -2.277       | +0.736       | +0.661      
-  0.5 | +0.674       | -0.941       | +0.786       | +0.722      
-  0.8 | +0.785       | -0.250       | +0.764       | +0.703      
-  1.0 | +0.807       | -0.115       | +0.693       | +0.625      
-  1.2 | +0.811       | -0.085       | +0.583       | +0.506      
-  1.5 | +0.809       | -0.096       | +0.360       | +0.268      
-  2.0 | +0.784       | -0.243       | -0.024       | -0.140      
-('humide', '2-18km'): C*=1.2  NSE_max=+0.811
-('humide', '2-12km'): C*=1.2  NSE_max=-0.085
-('seche', '2-18km'): C*=0.5  NSE_max=+0.786
-('seche', '2-12km'): C*=0.5  NSE_max=+0.722
-    C    sigma   <w>_up   Mc=σ<w>up   (uc-ud)   produit
-  0.2   0.1672    0.267      0.0436    -0.474   -20.672
-  0.5   0.0494    0.651      0.0312    -0.943   -29.401
-  1.0   0.0177    1.376      0.0238    -1.460   -34.757
-  1.5   0.0104    2.038      0.0208    -1.726   -35.827
-  2.0   0.0073    2.617      0.0190    -1.943   -36.840
-  3.0   0.0047    3.574      0.0168    -2.254   -37.790
-14809
-    C    sigma   <w>_up   Mc=σ<w>up   (uc-ud)    tophat   cov_int   rey_tot
-  0.2   0.1672    0.267      0.0436    -0.474   -20.672    -8.563   -30.193
-  0.5   0.0494    0.651      0.0312    -0.943   -29.401    -5.661   -30.193
-  1.0   0.0177    1.376      0.0238    -1.460   -34.757    -2.670   -30.193
-  1.5   0.0104    2.038      0.0208    -1.726   -35.827    -1.382   -30.193
-  2.0   0.0073    2.617      0.0190    -1.943   -36.840    -0.425   -30.193
-  3.0   0.0047    3.574      0.0168    -2.254   -37.790     0.038   -30.193
-
-
-
-
-
-
-
-Pour ne pas te raconter d'histoire, trace à chaque niveau (pas seulement 5 km) le rapport Mc(uc−ud)/ΦreyM_c(u_c-u_d)/\Phi_{rey}
-Mc​(uc​−ud​)/Φrey​ en fonction de C. Si l'optimum global C≈1.2 correspond à ce rapport ≈1 à tous les niveaux simultanément, c'est physique. Si certains niveaux sont à 0.7 et d'autres à 1.3 et que ça se moyenne à NSE 0.81, alors le bon accord est partiellement un effet de compensation verticale — moins solide, à dire honnêtement dans le rapport.
-Donc : ton résultat à C≈1.2 / NSE 0.81 reste bon et présentable, mais la justification correcte n'est pas « grand seuil = capture du Reynolds » (le tableau la contredit), c'est « il existe un seuil physique de cohérence convective où le top-hat à deux courants devient une bonne approximation, ni trop bas — covariance — ni trop haut — contraste dégénéré ». Tu veux le code du rapport niveau-par-niveau pour vérifier que C≈1.2 donne bien ≈1 partout ?
-
-
-
-
-
-
-
-
 # ============================================================================
-# Rapport flux_masse / flux_reynolds NIVEAU PAR NIVEAU, en fonction de C
-#   ideal = 1 partout. Heatmap (z, C) + profils pour C autour de l'optimum.
+# Rapport flux_masse/Reynolds ET covariance_interne/Reynolds, niveau par niveau
 # ============================================================================
 reg = mh; W0_MIN = 0.001
 Cs = np.array([0.3, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0])
 
-rey   = np.zeros(n_z)                      # Reynolds total (independant de C)
-fm_C  = {C: np.zeros(n_z) for C in Cs}     # Mc(uc-ud) par seuil
+rey    = np.zeros(n_z)                       # Reynolds total (independant de C)
+fm_C   = {C: np.zeros(n_z) for C in Cs}      # Mc(uc-ud)
+cov_C  = {C: np.zeros(n_z) for C in Cs}      # covariance interne updrafts
 
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
 for iz in range(n_z):
-    a_re = 0.0; a_fm = {C: 0.0 for C in Cs}; n = 0
+    a_re = 0.0; a_fm = {C:0.0 for C in Cs}; a_cv = {C:0.0 for C in Cs}; n = 0
     for it in range(t_stat, n_t):
         u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
         w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
-        ub = u.mean(); wb = w.mean(); sw = w.std()
+        ub = u.mean(); wb = w.mean(); sw = w.std(); N = u.size
         a_re += ((u-ub)*(w-wb)).mean()
         for C in Cs:
             ws = max(W0_MIN, C*sw); up = w > ws; dn = w < -ws
             if up.any() and dn.any():
-                a_fm[C] += (w*up).mean()*(u[up].mean() - u[dn].mean())
+                uu = u[up]; ww = w[up]; uc = uu.mean(); wc = ww.mean()
+                a_fm[C] += (w*up).mean()*(uc - u[dn].mean())          # top-hat
+                a_cv[C] += (up.sum()/N)*((uu-uc)*(ww-wc)).mean()      # covariance interne
         n += 1; del u, w
     rey[iz] = rho0[iz]*a_re/n
-    for C in Cs: fm_C[C][iz] = rho0[iz]*a_fm[C]/n
+    for C in Cs:
+        fm_C[C][iz]  = rho0[iz]*a_fm[C]/n
+        cov_C[C][iz] = rho0[iz]*a_cv[C]/n
     gc.collect()
 ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
 
-# fenetre + rapport (on masque les niveaux ou le Reynolds est ~0, rapport instable)
 s = slice(np.searchsorted(alt,2000), np.searchsorted(alt,18000))
 zf = alt[s]
-rey_floor = 0.05*np.nanmax(np.abs(rey[s]))     # seuil sous lequel le rapport n'a pas de sens
-ratio = np.full((len(Cs), len(zf)), np.nan)
+rey_floor = 0.05*np.nanmax(np.abs(rey[s]))
+def safe_ratio(num, C):
+    r = rey[s].copy(); v = np.abs(r) > rey_floor
+    out = np.full(len(zf), np.nan); out[v] = num[s][v]/r[v]; return out
+
+ratio_fm  = np.full((len(Cs), len(zf)), np.nan)
+ratio_cov = np.full((len(Cs), len(zf)), np.nan)
 for i,C in enumerate(Cs):
-    r = rey[s].copy()
-    valid = np.abs(r) > rey_floor
-    ratio[i, valid] = fm_C[C][s][valid] / r[valid]
+    ratio_fm[i]  = safe_ratio(fm_C[C],  C)
+    ratio_cov[i] = safe_ratio(cov_C[C], C)
 
-# ---- heatmap (C en y, altitude en x) ----
-fig, axes = plt.subplots(1, 2, figsize=(15, 7))
-ax = axes[0]
-im = ax.pcolormesh(zf/1000, Cs, ratio, cmap='RdBu_r', vmin=0, vmax=2, shading='nearest')
+# ---- 2 heatmaps + 2 profils ----
+fig, axes = plt.subplots(2, 2, figsize=(15, 13))
+
+# heatmap flux de masse
+ax = axes[0,0]
+im = ax.pcolormesh(zf/1000, Cs, ratio_fm, cmap='RdBu_r', vmin=0, vmax=2, shading='nearest')
 ax.axhline(1.2, color='black', ls='--', lw=1.5, label='C*=1.2')
-cb = plt.colorbar(im, ax=ax); cb.set_label('Mc(u_c−u_d) / Φ_rey  (idéal = 1)')
-ax.set_xlabel('Altitude (km)'); ax.set_ylabel('C (seuil = C·σ_w)')
-ax.set_title('Rapport flux masse / Reynolds par niveau', fontweight='bold')
-ax.legend()
+plt.colorbar(im, ax=ax, label='Mc(u_c−u_d) / Φ_rey')
+ax.set_xlabel('Altitude (km)'); ax.set_ylabel('C'); ax.legend()
+ax.set_title('Part flux de masse (idéal = 1, blanc)', fontweight='bold')
 
-# ---- profils du rapport pour C autour de l'optimum ----
-ax = axes[1]
+# heatmap covariance
+ax = axes[0,1]
+im = ax.pcolormesh(zf/1000, Cs, ratio_cov, cmap='PuOr_r', vmin=-0.5, vmax=0.5, shading='nearest')
+ax.axhline(1.2, color='black', ls='--', lw=1.5)
+plt.colorbar(im, ax=ax, label='cov_interne / Φ_rey')
+ax.set_xlabel('Altitude (km)'); ax.set_ylabel('C')
+ax.set_title('Part covariance interne (idéal = 0, blanc)', fontweight='bold')
+
+# profils flux de masse
+ax = axes[1,0]
 for C in [0.5, 1.0, 1.2, 1.5, 2.0]:
-    r = fm_C[C][s] / np.where(np.abs(rey[s])>rey_floor, rey[s], np.nan)
-    ax.plot(r, zf/1000, lw=2, label=f'C={C}')
-ax.axvline(1, color='black', ls=':', lw=1.5, label='idéal = 1')
-ax.set_xlabel('rapport Mc(u_c−u_d) / Φ_rey'); ax.set_ylabel('Altitude (km)')
-ax.set_title('Profil du rapport (idéal = ligne verticale à 1)', fontweight='bold')
+    ax.plot(safe_ratio(fm_C[C], C), zf/1000, lw=2, label=f'C={C}')
+ax.axvline(1, color='black', ls=':', lw=1.5)
+ax.set_xlabel('Mc(u_c−u_d) / Φ_rey'); ax.set_ylabel('Altitude (km)')
 ax.set_xlim(0, 2.5); ax.legend(fontsize=9); ax.grid(alpha=0.3)
+ax.set_title('Profil part flux de masse', fontweight='bold')
+
+# profils covariance
+ax = axes[1,1]
+for C in [0.5, 1.0, 1.2, 1.5, 2.0]:
+    ax.plot(safe_ratio(cov_C[C], C), zf/1000, lw=2, label=f'C={C}')
+ax.axvline(0, color='black', ls=':', lw=1.5)
+ax.set_xlabel('cov_interne / Φ_rey'); ax.set_ylabel('Altitude (km)')
+ax.set_xlim(-0.6, 0.6); ax.legend(fontsize=9); ax.grid(alpha=0.3)
+ax.set_title('Profil part covariance', fontweight='bold')
+
 plt.tight_layout(); plt.show()
 
-# ---- diagnostic chiffre : dispersion du rapport autour de 1 ----
-print("C    | rapport médian | écart-type | % niveaux dans [0.8,1.2]")
+# ---- tableau : part mediane de chaque terme ----
+print("C    | médiane fm/rey | médiane cov/rey | % niv fm∈[0.8,1.2]")
 for C in Cs:
-    r = fm_C[C][s] / np.where(np.abs(rey[s])>rey_floor, rey[s], np.nan)
-    r = r[np.isfinite(r)]
-    pct = np.mean((r>0.8)&(r<1.2))*100
-    print(f"{C:4.1f} |   {np.median(r):+.3f}      |   {np.std(r):.3f}    |   {pct:.0f}%")
+    rf = safe_ratio(fm_C[C], C);  rf = rf[np.isfinite(rf)]
+    rc = safe_ratio(cov_C[C], C); rc = rc[np.isfinite(rc)]
+    pct = np.mean((rf>0.8)&(rf<1.2))*100
+    print(f"{C:4.1f} |   {np.median(rf):+.3f}      |   {np.median(rc):+.3f}       |   {pct:.0f}%")
