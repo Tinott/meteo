@@ -55,3 +55,21 @@ ax.axvline(0,color='grey',alpha=0.4)
 ax.set_xlabel('profils normalisés'); ax.set_title('Forme de T2_env vs candidats',fontweight='bold')
 ax.legend(fontsize=9); ax.grid(alpha=0.3)
 plt.tight_layout(); plt.show()
+
+
+
+
+
+
+-- poids L2 relatif au Reynolds total --
+  T1 (mass-flux)   :  60.5%
+  T2_env           :  29.1%
+  T2_up            :  15.4%
+  T2_dn            :   3.7%
+
+-- correlation de T2_env avec divers candidats --
+  -∂z u_bar        : r = -0.189
+  sigma_w^2        : r = -0.903
+  Mc (=T1 proxy)   : r = +0.975
+  ∂z(rey)          : r = +0.294
+  rey lui-meme     : r = +0.989
