@@ -1,122 +1,109 @@
 # ============================================================================
-# Étape 6 — Décomposition de base : Reynolds vs flux de masse, par branche
-#   Reynolds   : <w+ u'>  +  <w- u'>                    = rho0^-1 · Φ_rey (up+dn)
-#   Flux masse : <w+>(u_c - u_e)   (ascendant)
-#                <w->(u_d - u_e)   (descendant)
-#   Références cohérentes : u' = u - u_bar_région ; diviseur N ;
-#                           u_e = <u>_env  avec env = |w| <= ws  (MÊME pour up et dn)
+# §6 — Mc(uc-ue) ascendant + Mc(ud-ue) descendant, assemblés (def étape 2)
+#   flux_masse_total = (T_wp_uc - T_wp_ue) + (T_wm_uc - T_wm_ue)
+#   colle-t-il au Reynolds TOTAL (fixe) ou seulement au Reynolds seuillé ?
 # ============================================================================
-reg = mh
-W0_MIN, C_SIGMA = 0.001, 1.2
+reg = mh; W0_MIN = 0.001
+flux_rey_total = np.zeros(n_z)        # NE dépend PAS du seuil
+for C in [0.001, 0.01, 0.1, 0.2, 0.3, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0]:
+    fm = np.zeros(n_z); rey_seuil = np.zeros(n_z); flux_rey_total *= 0
+    ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+    for iz in range(n_z):
+        a_fm = a_rt = a_rs = 0.0; n = 0
+        for it in range(t_stat, n_t):
+            u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
+            w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
+            ub = u.mean(); wb = w.mean(); N = u.size
+            a_rt += ((u-ub)*(w-wb)).mean()                 # Reynolds TOTAL (fixe)
+            ws = max(W0_MIN, C*w.std())
+            up = w > ws; dn = w < -ws; env = np.abs(w) <= ws
+            # --- flux de masse PROPRE (séparation puis assemblage, def §2) ---
+            wp_mean = (w*up).mean()                        # ⟨w⁺⟩ = σ⟨w⟩_up
+            wm_mean = (w*dn).mean()                        # ⟨w⁻⟩ = σ⟨w⟩_dn
+            uc = u[up].mean()  if up.any()  else ub        # u_c
+            ucd = u[dn].mean() if dn.any()  else ub        # u_cd
+            ue = u[env].mean() if env.any() else ub        # u_e (environnement)
+            fm_up = wp_mean*uc - wp_mean*ue                # ascendant  = ⟨w⁺⟩(u_c-u_e)
+            fm_dn = wm_mean*ucd - wm_mean*ue               # descendant = ⟨w⁻⟩(u_cd-u_e)
+            a_fm += fm_up + fm_dn                          # flux de masse total
+            # Reynolds restreint aux points seuillés (up ∪ dn)
+            if up.any() or dn.any():
+                msk = up | dn
+                a_rs += ((u[msk]-ub)*(w[msk]-wb)).sum()/N
+            n += 1; del u, w
+        fm[iz] = rho0[iz]*a_fm/n
+        rey_seuil[iz] = rho0[iz]*a_rs/n
+        flux_rey_total[iz] = rho0[iz]*a_rt/n
+        gc.collect()
+    ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
+    s = slice(np.searchsorted(alt,2000), np.searchsorted(alt,18000))
+    def nse(t,p):
+        a,b = t[s],p[s]; ok = np.isfinite(a)&np.isfinite(b)
+        return 1-np.nansum((a[ok]-b[ok])**2)/np.nansum((a[ok]-np.nanmean(a[ok]))**2)
+    print(f'C={C}: NSE(fm vs Reynolds TOTAL)={nse(flux_rey_total,fm):+.3f}  '
+          f'NSE(fm vs Reynolds seuillé)={nse(rey_seuil,fm):+.3f}')
 
-T_wp_u   = np.zeros(n_z)   # <w+ u'>          (Reynolds, branche updraft)
-T_wm_u   = np.zeros(n_z)   # <w- u'>          (Reynolds, branche downdraft)
-T_wp_uc  = np.zeros(n_z)   # <w+> · u_c
-T_wp_ue  = np.zeros(n_z)   # <w+> · u_e
-T_wm_ud  = np.zeros(n_z)   # <w-> · u_d
-T_wm_ue  = np.zeros(n_z)   # <w-> · u_e
 
-ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
-for iz in range(n_z):
-    a1=a2=a3=a4=a5=a6=0.0; n=0
-    for it in range(t_stat, n_t):
-        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
-        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
-        ub  = u.mean()
-        up_ = u - ub                              # u' (anomalie / région)
-        ws  = max(W0_MIN, C_SIGMA*w.std())
-        up   = w >  ws
-        down = w < -ws
-        env  = np.abs(w) <= ws                    # ni up ni down
 
-        wp = np.where(up,   w, 0.0)               # w+ (0 hors updraft)
-        wm = np.where(down, w, 0.0)               # w- (0 hors downdraft)
 
-        # --- paire Reynolds : <w+ u'> et <w- u'>  (diviseur N) ---
-        a1 += (wp*up_).mean()                     # <w+ u'>
-        a2 += (wm*up_).mean()                     # <w- u'>
-
-        # --- vitesses conditionnelles ---
-        wp_mean = (w*up).mean()                   # <w+> = sigma_up · w_c
-        wm_mean = (w*down).mean()                 # <w-> = sigma_dn · w_d  (<0)
-        uc = u[up].mean()   if up.any()   else ub # u_c = <u>_up
-        ud = u[down].mean() if down.any() else ub # u_d = <u>_dn
-        ue = u[env].mean()  if env.any()  else ub # u_e = <u>_env  (commun aux 2 branches)
-
-        # --- paire flux de masse ascendant : <w+> u_c  et  <w+> u_e ---
-        a3 += wp_mean * uc
-        a4 += wp_mean * ue
-        # --- paire flux de masse descendant : <w-> u_d  et  <w-> u_e ---
-        a5 += wm_mean * ud
-        a6 += wm_mean * ue
-        n += 1; del u,w,up_,wp,wm,up,down,env
-    T_wp_u[iz]  = rho0[iz]*a1/n
-    T_wm_u[iz]  = rho0[iz]*a2/n
-    T_wp_uc[iz] = rho0[iz]*a3/n
-    T_wp_ue[iz] = rho0[iz]*a4/n
-    T_wm_ud[iz] = rho0[iz]*a5/n
-    T_wm_ue[iz] = rho0[iz]*a6/n
-    if iz%10==0: print(f'  iz={iz}/{n_z-1}')
-    gc.collect()
-ds_u.close(); ds_w.close(); del ds_u,ds_w; gc.collect()
-
-# --- combinaisons ---
-flux_reynolds  = T_wp_u + T_wm_u          # Reynolds up + down
-flux_masse     = T_wp_uc - T_wp_ue        # flux de masse ascendant  = <w+>(u_c-u_e)
-flux_masse_d   = T_wm_ud - T_wm_ue        # flux de masse descendant = <w->(u_d-u_e)
-flux_masse_tot = flux_masse + flux_masse_d
-print('Termes calculés.')
 
 # ============================================================================
-# Figure : branches séparées puis assemblées
+# §6 bis — Robustesse : flux de masse PROPRE (asc+desc) en humide ET sèche
 # ============================================================================
-iz_lo = np.searchsorted(alt, 2000); iz_hi = np.searchsorted(alt, 18000)
-sl = slice(iz_lo, iz_hi); zf = alt[sl]; sc = 1e3
+W0_MIN = 0.001
+Cs = np.array([0.3, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0])
 
-fig, axes = plt.subplots(1, 5, figsize=(20, 8), sharey=True)
+fen = {'2-18km': (2000,18000), '2-12km': (2000,12000)}
+iz_f = {k:(np.searchsorted(alt,a), np.searchsorted(alt,b)) for k,(a,b) in fen.items()}
 
-# (a) paire Reynolds
-ax = axes[0]
-ax.plot(T_wp_u[sl]*sc, zf, color='royalblue', lw=2, label="⟨w⁺u'⟩")
-ax.plot(T_wm_u[sl]*sc, zf, color='crimson',  lw=2, label="⟨w⁻u'⟩")
-ax.plot(flux_reynolds[sl]*sc, zf, 'k', lw=2.5, label="somme = Φ_rey")
-ax.axvline(0, color='grey', alpha=0.4); ax.set_ylabel('Altitude (m)')
-ax.set_xlabel('flux (×10⁻³)'); ax.set_title('(a) Reynolds (à sommer)', fontweight='bold')
-ax.legend(fontsize=8); ax.grid(alpha=0.3)
+def nse(t,p,s):
+    a,b = t[s],p[s]; ok = np.isfinite(a)&np.isfinite(b)
+    return 1-np.nansum((a[ok]-b[ok])**2)/np.nansum((a[ok]-np.nanmean(a[ok]))**2)
 
-# (b) paire flux de masse ascendant
-ax = axes[1]
-ax.plot(T_wp_uc[sl]*sc, zf, color='seagreen', lw=2, label='⟨w⁺⟩u_c')
-ax.plot(T_wp_ue[sl]*sc, zf, color='darkorange', lw=2, label='⟨w⁺⟩u_e')
-ax.plot(flux_masse[sl]*sc, zf, 'k--', lw=2.5, label='fm ascendant')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('flux (×10⁻³)'); ax.set_title('(b) fm ascendant', fontweight='bold')
-ax.legend(fontsize=8); ax.grid(alpha=0.3)
+results = {}   # (region, fenêtre) -> liste NSE par C
+for rname, reg in [('humide', mh), ('seche', ms)]:
+    rey = np.zeros(n_z)
+    fm_byC = {C: np.zeros(n_z) for C in Cs}
+    ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+    for iz in range(n_z):
+        a_re = 0.0; a_fm = {C:0.0 for C in Cs}; n = 0
+        for it in range(t_stat, n_t):
+            u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
+            w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
+            ub = u.mean(); wb = w.mean(); sw = w.std()
+            a_re += ((u-ub)*(w-wb)).mean()
+            for C in Cs:
+                ws = max(W0_MIN, C*sw)
+                up = w > ws; dn = w < -ws; env = np.abs(w) <= ws
+                wp_mean = (w*up).mean(); wm_mean = (w*dn).mean()
+                uc  = u[up].mean()  if up.any()  else ub
+                ucd = u[dn].mean()  if dn.any()  else ub
+                ue  = u[env].mean() if env.any() else ub
+                a_fm[C] += (wp_mean*uc - wp_mean*ue) + (wm_mean*ucd - wm_mean*ue)
+            n += 1; del u, w
+        rey[iz] = rho0[iz]*a_re/n
+        for C in Cs: fm_byC[C][iz] = rho0[iz]*a_fm[C]/n
+        gc.collect()
+    ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
+    for fn,(lo,hi) in iz_f.items():
+        s = slice(lo,hi)
+        results[(rname,fn)] = [nse(rey, fm_byC[C], s) for C in Cs]
 
-# (c) Reynolds up vs fm ascendant
-ax = axes[2]
-ax.plot(T_wp_u[sl]*sc, zf, 'k', lw=2.5, label="⟨w⁺u'⟩")
-ax.plot(flux_masse[sl]*sc, zf, 'r--', lw=2, label='fm ascendant')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('flux (×10⁻³)'); ax.set_title('(c) UP : Reynolds vs masse', fontweight='bold')
-ax.legend(fontsize=8); ax.grid(alpha=0.3)
+# tableau
+print(f"{'C':>5} | " + " | ".join(f"{r}/{f}" for (r,f) in results))
+for i,C in enumerate(Cs):
+    print(f"{C:5.1f} | " + " | ".join(f"{results[k][i]:+.3f}      " for k in results))
 
-# (d) Reynolds down vs fm descendant
-ax = axes[3]
-ax.plot(T_wm_u[sl]*sc, zf, 'k', lw=2.5, label="⟨w⁻u'⟩")
-ax.plot(flux_masse_d[sl]*sc, zf, 'r--', lw=2, label='fm descendant')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('flux (×10⁻³)'); ax.set_title('(d) DOWN : Reynolds vs masse', fontweight='bold')
-ax.legend(fontsize=8); ax.grid(alpha=0.3)
-
-# (e) total assemblé
-ax = axes[4]
-ax.plot(flux_reynolds[sl]*sc, zf, 'k', lw=2.5, label="⟨w⁺u'⟩+⟨w⁻u'⟩")
-ax.plot(flux_masse_tot[sl]*sc, zf, 'r--', lw=2, label='fm total (up+dn)')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('flux (×10⁻³)'); ax.set_title('(e) TOTAL : Reynolds vs masse', fontweight='bold')
-ax.legend(fontsize=8); ax.grid(alpha=0.3)
-
-plt.suptitle('Étape 6 — Décomposition Reynolds vs flux de masse, branches séparées puis assemblées',
-             fontsize=13, fontweight='bold')
+# figure
+fig,ax = plt.subplots(figsize=(9,6))
+for (r,f),nses in results.items():
+    ls = '-' if r=='humide' else '--'
+    ax.plot(Cs, nses, ls, marker='o', label=f'{r} {f}')
+ax.axvline(1.2, color='grey', ls=':', label='C*=1.2')
+ax.set_xlabel('C (seuil = C·σ_w)'); ax.set_ylabel('NSE vs Reynolds total')
+ax.set_title('Robustesse de C* : région × fenêtre (flux masse propre)', fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3); ax.set_ylim(-0.2,1)
 plt.tight_layout(); plt.show()
+
+for k,nses in results.items():
+    print(f'{k}: C*={Cs[np.argmax(nses)]:.1f}  NSE_max={max(nses):+.3f}')
