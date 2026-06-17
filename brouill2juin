@@ -1,26 +1,37 @@
 # ============================================================================
-# Même décomposition, mais en TENDANCE de quantité de mouvement :
-#   terme de Reynolds dans NS  =  -(1/rho0) * d/dz ( rho0 <u'w'> )   [m/s²]
-#   on applique l'opérateur à Phi_rey, T1, T2 (qui sont déjà rho0*<u'w'>)
+# sigma_w^2 (variance verticale, région humide) à côté du terme 2 de covariance
 # ============================================================================
-def tend(flux):
-    # flux = rho0 * <u'w'>  -> tendance = -(1/rho0) d(flux)/dz
-    return -np.gradient(flux, alt) / rho0
+sigw2 = np.full(n_z, np.nan)
+ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    acc = 0.0; n = 0
+    for it in range(t_stat, n_t):
+        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
+        acc += w.var(); n += 1
+    sigw2[iz] = acc/n; gc.collect()
+ds_w.close(); del ds_w; gc.collect()
 
-drey = tend(rey)
-dT1  = tend(T1)
-dT2  = tend(T2)
+s = slice(np.searchsorted(alt, 2000), np.searchsorted(alt, 18000)); zf = alt[s]
 
-s  = slice(np.searchsorted(alt, 2000), np.searchsorted(alt, 18000))
-zf = alt[s]; sc = 1e5   # tendances ~1e-5 m/s² ; on affiche en ×10⁻⁵
+fig, axes = plt.subplots(1, 2, figsize=(12, 8), sharey=True)
 
-fig, ax = plt.subplots(figsize=(7, 8))
-ax.plot(drey[s]*sc, zf, 'k',   lw=2.5, label="tendance Φ_rey  −(1/ρ₀)∂z(ρ₀⟨u'w'⟩)")
-ax.plot(dT1[s]*sc,  zf, 'r--', lw=2,   label='T1 : transport organisé')
-ax.plot(dT2[s]*sc,  zf, 'b-.', lw=2,   label='T2 : covariance sous-maille')
+# (a) terme 2 de covariance (total + par catégorie)
+ax = axes[0]
+ax.plot(T2[s]*1e3,     zf, 'k',          lw=2.5, label='T2 total')
+ax.plot(T2_env[s]*1e3, zf, color='seagreen', lw=2, label='T2 env')
+ax.plot(T2_up[s]*1e3,  zf, color='royalblue', lw=2, label='T2 up')
+ax.plot(T2_dn[s]*1e3,  zf, color='crimson',  lw=2, label='T2 down')
 ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('tendance de momentum (×10⁻⁵ m s⁻²)')
-ax.set_ylabel('Altitude (m)')
-ax.set_title("Décomposition de la tendance CMT (terme de Reynolds dans NS)", fontweight='bold')
+ax.set_xlabel('flux ρ₀⟨u\'w\'⟩ (×10⁻³)'); ax.set_ylabel('Altitude (m)')
+ax.set_title('Terme 2 : covariance sous-maille', fontweight='bold')
 ax.legend(fontsize=9); ax.grid(alpha=0.3)
+
+# (b) sigma_w^2
+ax = axes[1]
+ax.plot(sigw2[s], zf, color='orange', lw=2.5, label='σ_w²')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('σ_w² (m² s⁻²)')
+ax.set_title('Variance verticale σ_w²', fontweight='bold')
+ax.legend(fontsize=9); ax.grid(alpha=0.3)
+
 plt.tight_layout(); plt.show()
