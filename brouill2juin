@@ -1,199 +1,26 @@
 # ============================================================================
-# §7 — C*=1.2 : flux de masse PROPRE (asc+desc) vs Reynolds + localisation résidu
-#   le résidu corrèle-t-il avec -∂z u_bar (down-gradient) ?
+# Même décomposition, mais en TENDANCE de quantité de mouvement :
+#   terme de Reynolds dans NS  =  -(1/rho0) * d/dz ( rho0 <u'w'> )   [m/s²]
+#   on applique l'opérateur à Phi_rey, T1, T2 (qui sont déjà rho0*<u'w'>)
 # ============================================================================
-C_STAR = 1.2; W0_MIN = 0.001; reg = mh
+def tend(flux):
+    # flux = rho0 * <u'w'>  -> tendance = -(1/rho0) d(flux)/dz
+    return -np.gradient(flux, alt) / rho0
 
-rey = np.zeros(n_z); fm = np.zeros(n_z); ubar = np.zeros(n_z)
-fm_up_p = np.zeros(n_z); fm_dn_p = np.zeros(n_z)
-ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
-for iz in range(n_z):
-    a_re = a_ub = a_up = a_dn = 0.0; n = 0
-    for it in range(t_stat, n_t):
-        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
-        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
-        ub = u.mean(); wb = w.mean()
-        a_re += ((u-ub)*(w-wb)).mean(); a_ub += ub
-        ws = max(W0_MIN, C_STAR*w.std())
-        up = w > ws; dn = w < -ws; env = np.abs(w) <= ws
-        wp_mean = (w*up).mean(); wm_mean = (w*dn).mean()
-        uc  = u[up].mean()  if up.any()  else ub
-        ucd = u[dn].mean()  if dn.any()  else ub
-        ue  = u[env].mean() if env.any() else ub
-        a_up += wp_mean*uc - wp_mean*ue          # composante ascendante
-        a_dn += wm_mean*ucd - wm_mean*ue         # composante descendante
-        n += 1; del u, w
-    rey[iz] = rho0[iz]*a_re/n; ubar[iz] = a_ub/n
-    fm_up_p[iz] = rho0[iz]*a_up/n; fm_dn_p[iz] = rho0[iz]*a_dn/n
-    fm[iz] = fm_up_p[iz] + fm_dn_p[iz]           # flux de masse total assemblé
-    gc.collect()
-ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
+drey = tend(rey)
+dT1  = tend(T1)
+dT2  = tend(T2)
 
-s = slice(np.searchsorted(alt,2000), np.searchsorted(alt,18000)); zf = alt[s]; sc = 1e3
-def nse(t,p):
-    a,b = t[s],p[s]; ok = np.isfinite(a)&np.isfinite(b)
-    return 1-np.nansum((a[ok]-b[ok])**2)/np.nansum((a[ok]-np.nanmean(a[ok]))**2)
+s  = slice(np.searchsorted(alt, 2000), np.searchsorted(alt, 18000))
+zf = alt[s]; sc = 1e5   # tendances ~1e-5 m/s² ; on affiche en ×10⁻⁵
 
-resid = rey - fm
-dudz  = np.gradient(ubar, alt)
-r_dg  = np.corrcoef(resid[s], -dudz[s])[0,1]
-print(f'NSE (C=1.2, flux masse asc+desc) = {nse(rey,fm):+.3f}')
-print(f'corr(résidu, -∂z u_bar) = {r_dg:+.3f}')
-
-K = (resid[s] @ (-dudz[s])) / ((-dudz[s]) @ (-dudz[s])) if np.any(dudz[s]) else 0.0
-fm_mixte = fm - K*dudz
-print(f'K diffusif calibré = {K:.1f} m2/s   (ref Romps 10-30)')
-print(f'NSE closure mixte (fm + diffusion) = {nse(rey, fm_mixte):+.3f}')
-
-fig,axes = plt.subplots(1,3,figsize=(16,8),sharey=True)
-ax = axes[0]
-ax.plot(rey[s]*sc, zf,'k',lw=2.5,label="ρ₀⟨u'w'⟩ vrai")
-ax.plot(fm[s]*sc, zf,'r--',lw=2,label=f'flux masse asc+desc, C={C_STAR}')
-ax.plot(fm_up_p[s]*sc, zf,color='royalblue',lw=1.2,label='  composante asc')
-ax.plot(fm_dn_p[s]*sc, zf,color='crimson',lw=1.2,label='  composante desc')
-ax.axvline(0,color='grey',alpha=0.4)
-ax.set_xlabel('flux (×10⁻³)'); ax.set_ylabel('Altitude (m)')
-ax.set_title(f'Profil final (NSE={nse(rey,fm):.2f})',fontweight='bold')
-ax.legend(fontsize=8); ax.grid(alpha=0.3)
-
-ax = axes[1]
-ax.plot(resid[s]*sc, zf,color='purple',lw=2,label='résidu = vrai − fm')
-ax.plot((-K*dudz)[s]*sc, zf,color='seagreen',lw=2,ls='--',label=f'−K∂z u_bar (K={K:.0f})')
-ax.axvline(0,color='grey',alpha=0.4)
-ax.set_xlabel('flux (×10⁻³)')
-ax.set_title(f'Résidu vs down-gradient (r={r_dg:+.2f})',fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3)
-
-ax = axes[2]
-ax.plot(rey[s]*sc, zf,'k',lw=2.5,label='vrai')
-ax.plot(fm_mixte[s]*sc, zf,color='royalblue',lw=2,ls='--',label='fm + diffusion')
-ax.axvline(0,color='grey',alpha=0.4)
-ax.set_xlabel('flux (×10⁻³)')
-ax.set_title(f'Closure mixte (NSE={nse(rey,fm_mixte):.2f})',fontweight='bold')
+fig, ax = plt.subplots(figsize=(7, 8))
+ax.plot(drey[s]*sc, zf, 'k',   lw=2.5, label="tendance Φ_rey  −(1/ρ₀)∂z(ρ₀⟨u'w'⟩)")
+ax.plot(dT1[s]*sc,  zf, 'r--', lw=2,   label='T1 : transport organisé')
+ax.plot(dT2[s]*sc,  zf, 'b-.', lw=2,   label='T2 : covariance sous-maille')
+ax.axvline(0, color='grey', alpha=0.4)
+ax.set_xlabel('tendance de momentum (×10⁻⁵ m s⁻²)')
+ax.set_ylabel('Altitude (m)')
+ax.set_title("Décomposition de la tendance CMT (terme de Reynolds dans NS)", fontweight='bold')
 ax.legend(fontsize=9); ax.grid(alpha=0.3)
 plt.tight_layout(); plt.show()
-
-
-
-
-# ============================================================================
-# §7 bis — composantes du flux de masse propre + covariance interne (niveau fixe)
-# ============================================================================
-for ALT0 in [3000, 5000, 8000, 12000]:
-    iz0 = np.searchsorted(alt, ALT0); reg = mh
-    ds_w = xr.open_dataset(path3d('wa')); ds_u = xr.open_dataset(path3d('ua'))
-    print(f"\n=== z ≈ {alt[iz0]:.0f} m ===")
-    print(f"{'C':>5} {'σ_up':>7} {'⟨w⁺⟩':>8} {'fm_asc':>9} {'fm_desc':>9} "
-          f"{'fm_tot':>9} {'cov_int':>9} {'rey_tot':>9}")
-    for C in [0.2, 0.5, 1.0, 1.5, 2.0, 3.0]:
-        a_sig=a_wp=a_asc=a_desc=a_cov=a_rey=0.0; n=0
-        for it in range(t_stat, n_t):
-            w = ds_w['wa'].isel({dim_t:it, dim_z:iz0}).values[reg]
-            u = ds_u['ua'].isel({dim_t:it, dim_z:iz0}).values[reg]
-            ub = u.mean(); wb = w.mean(); N = u.size
-            a_rey += ((u-ub)*(w-wb)).mean()
-            ws = max(0.001, C*w.std())
-            up = w > ws; dn = w < -ws; env = np.abs(w) <= ws
-            if up.any() and dn.any():
-                uu = u[up]; ww = w[up]; uc = uu.mean(); wc = ww.mean()
-                ucd = u[dn].mean(); ue = u[env].mean() if env.any() else ub
-                wp_mean = (w*up).mean(); wm_mean = (w*dn).mean()
-                a_sig  += up.mean(); a_wp += wc
-                a_asc  += wp_mean*uc - wp_mean*ue          # ascendant
-                a_desc += wm_mean*ucd - wm_mean*ue         # descendant
-                a_cov  += (up.sum()/N)*((uu-uc)*(ww-wc)).mean()
-                n += 1
-        sig=a_sig/n; wp=a_wp/n
-        asc=rho0[iz0]*a_asc/n; desc=rho0[iz0]*a_desc/n
-        cov=rho0[iz0]*a_cov/n; rey=rho0[iz0]*a_rey/n
-        print(f"{C:5.1f} {sig:7.4f} {wp:8.3f} {asc*1e3:9.3f} {desc*1e3:9.3f} "
-              f"{(asc+desc)*1e3:9.3f} {cov*1e3:9.3f} {rey*1e3:9.3f}")
-    ds_w.close(); ds_u.close(); del ds_w, ds_u; gc.collect()
-
-
-
-
-# ============================================================================
-# §7 ter — rapport (flux masse propre asc+desc)/Reynolds, niveau par niveau, vs C
-# ============================================================================
-reg = mh; W0_MIN = 0.001
-Cs = np.array([0.3, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0])
-
-rey   = np.zeros(n_z)
-fm_C  = {C: np.zeros(n_z) for C in Cs}
-cov_C = {C: np.zeros(n_z) for C in Cs}
-
-ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
-for iz in range(n_z):
-    a_re = 0.0; a_fm = {C:0.0 for C in Cs}; a_cv = {C:0.0 for C in Cs}; n = 0
-    for it in range(t_stat, n_t):
-        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
-        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
-        ub = u.mean(); wb = w.mean(); sw = w.std(); N = u.size
-        a_re += ((u-ub)*(w-wb)).mean()
-        for C in Cs:
-            ws = max(W0_MIN, C*sw)
-            up = w > ws; dn = w < -ws; env = np.abs(w) <= ws
-            wp_mean = (w*up).mean(); wm_mean = (w*dn).mean()
-            uc  = u[up].mean()  if up.any()  else ub
-            ucd = u[dn].mean()  if dn.any()  else ub
-            ue  = u[env].mean() if env.any() else ub
-            a_fm[C] += (wp_mean*uc - wp_mean*ue) + (wm_mean*ucd - wm_mean*ue)
-            if up.any():
-                uu = u[up]; ww = w[up]
-                a_cv[C] += (up.sum()/N)*((uu-uu.mean())*(ww-ww.mean())).mean()
-        n += 1; del u, w
-    rey[iz] = rho0[iz]*a_re/n
-    for C in Cs:
-        fm_C[C][iz]  = rho0[iz]*a_fm[C]/n
-        cov_C[C][iz] = rho0[iz]*a_cv[C]/n
-    gc.collect()
-ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
-
-s = slice(np.searchsorted(alt,2000), np.searchsorted(alt,18000)); zf = alt[s]
-rey_floor = 0.05*np.nanmax(np.abs(rey[s]))
-def safe_ratio(num):
-    r = rey[s].copy(); out = np.full(len(zf), np.nan)
-    v = np.abs(r) > rey_floor; out[v] = num[s][v]/r[v]; return out
-
-ratio_fm  = np.array([safe_ratio(fm_C[C])  for C in Cs])
-ratio_cov = np.array([safe_ratio(cov_C[C]) for C in Cs])
-
-fig, axes = plt.subplots(2, 2, figsize=(15, 13))
-ax = axes[0,0]
-im = ax.pcolormesh(zf/1000, Cs, ratio_fm, cmap='RdBu_r', vmin=0, vmax=2, shading='nearest')
-ax.axhline(1.2, color='black', ls='--', lw=1.5, label='C*=1.2')
-plt.colorbar(im, ax=ax, label='flux_masse(asc+desc) / Φ_rey')
-ax.set_xlabel('Altitude (km)'); ax.set_ylabel('C'); ax.legend()
-ax.set_title('Part flux de masse propre (idéal = 1)', fontweight='bold')
-
-ax = axes[0,1]
-im = ax.pcolormesh(zf/1000, Cs, ratio_cov, cmap='PuOr_r', vmin=-0.5, vmax=0.5, shading='nearest')
-ax.axhline(1.2, color='black', ls='--', lw=1.5)
-plt.colorbar(im, ax=ax, label='cov_interne / Φ_rey')
-ax.set_xlabel('Altitude (km)'); ax.set_ylabel('C')
-ax.set_title('Part covariance interne (idéal = 0)', fontweight='bold')
-
-ax = axes[1,0]
-for C in [0.5, 1.0, 1.2, 1.5, 2.0]:
-    ax.plot(safe_ratio(fm_C[C]), zf/1000, lw=2, label=f'C={C}')
-ax.axvline(1, color='black', ls=':', lw=1.5)
-ax.set_xlabel('flux_masse / Φ_rey'); ax.set_ylabel('Altitude (km)')
-ax.set_xlim(0, 2.5); ax.legend(fontsize=9); ax.grid(alpha=0.3)
-ax.set_title('Profil part flux de masse', fontweight='bold')
-
-ax = axes[1,1]
-for C in [0.5, 1.0, 1.2, 1.5, 2.0]:
-    ax.plot(safe_ratio(cov_C[C]), zf/1000, lw=2, label=f'C={C}')
-ax.axvline(0, color='black', ls=':', lw=1.5)
-ax.set_xlabel('cov_interne / Φ_rey'); ax.set_ylabel('Altitude (km)')
-ax.set_xlim(-0.6, 0.6); ax.legend(fontsize=9); ax.grid(alpha=0.3)
-ax.set_title('Profil part covariance', fontweight='bold')
-plt.tight_layout(); plt.show()
-
-print("C    | médiane fm/rey | médiane cov/rey | % niv fm∈[0.8,1.2]")
-for C in Cs:
-    rf = safe_ratio(fm_C[C]);  rf = rf[np.isfinite(rf)]
-    rc = safe_ratio(cov_C[C]); rc = rc[np.isfinite(rc)]
-    pct = np.mean((rf>0.8)&(rf<1.2))*100
-    print(f"{C:4.1f} |   {np.median(rf):+.3f}      |   {np.median(rc):+.3f}       |   {pct:.0f}%")
