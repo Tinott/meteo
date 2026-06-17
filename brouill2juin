@@ -1,37 +1,82 @@
 # ============================================================================
-# sigma_w^2 (variance verticale, région humide) à côté du terme 2 de covariance
+# Ratio des TENDANCES : tend(T1) / tend(Phi_rey), balayé en C, recherche du C optimal
+#   tend(flux) = -(1/rho0) d/dz (flux)   [flux = rho0 <u'w'>, terme Reynolds dans NS]
+#   T1 = transport organisé (mass-flux généralisé, 3 catégories)
 # ============================================================================
-sigw2 = np.full(n_z, np.nan)
-ds_w = xr.open_dataset(path3d('wa'))
-for iz in range(n_z):
-    acc = 0.0; n = 0
-    for it in range(t_stat, n_t):
-        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
-        acc += w.var(); n += 1
-    sigw2[iz] = acc/n; gc.collect()
-ds_w.close(); del ds_w; gc.collect()
+reg = mh; W0_MIN = 0.001
+Cs = np.array([0.3, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0])
+
+def tend(flux):
+    return -np.gradient(flux, alt) / rho0
 
 s = slice(np.searchsorted(alt, 2000), np.searchsorted(alt, 18000)); zf = alt[s]
+def nse(t, p):
+    a, b = t[s], p[s]; ok = np.isfinite(a) & np.isfinite(b)
+    return 1 - np.nansum((a[ok]-b[ok])**2) / np.nansum((a[ok]-np.nanmean(a[ok]))**2)
 
-fig, axes = plt.subplots(1, 2, figsize=(12, 8), sharey=True)
+rey  = np.full(n_z, np.nan)               # Reynolds total (indépendant de C)
+T1_C = {C: np.full(n_z, np.nan) for C in Cs}
 
-# (a) terme 2 de covariance (total + par catégorie)
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    a_re = 0.0; a1 = {C: 0.0 for C in Cs}; n = 0
+    for it in range(t_stat, n_t):
+        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
+        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
+        ub = u.mean(); wb = w.mean(); N = u.size
+        a_re += ((u-ub)*(w-wb)).mean()
+        sw = w.std()
+        for C in Cs:
+            ws = max(W0_MIN, C*sw); acc = 0.0
+            for msk in [w > ws, w < -ws, np.abs(w) <= ws]:
+                if not msk.any(): continue
+                sig = msk.sum()/N
+                uc = u[msk].mean(); wc = w[msk].mean()
+                acc += sig*(uc-ub)*(wc-wb)          # T1 par catégorie
+            a1[C] += acc
+        n += 1; del u, w
+    rey[iz] = rho0[iz]*a_re/n
+    for C in Cs: T1_C[C][iz] = rho0[iz]*a1[C]/n
+    gc.collect()
+ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
+
+# tendances
+d_rey = tend(rey)
+d_T1  = {C: tend(T1_C[C]) for C in Cs}
+
+# masque : on évite les niveaux où tend(rey) ~ 0 (ratio instable)
+floor = 0.05*np.nanmax(np.abs(d_rey[s]))
+valid = np.abs(d_rey[s]) > floor
+
+print(f"{'C':>5} | {'NSE(tend T1 vs tend rey)':>24} | {'ratio médian tendT1/tendrey':>28}")
+nse_list = []
+for C in Cs:
+    r = d_T1[C][s][valid] / d_rey[s][valid]
+    score = nse(d_rey, d_T1[C])
+    nse_list.append(score)
+    print(f"{C:5.1f} | {score:+24.3f} | {np.median(r):+28.3f}")
+
+C_opt = Cs[int(np.argmax(nse_list))]
+print(f"\n>> C optimal (NSE max sur les tendances) = {C_opt}  (NSE={max(nse_list):+.3f})")
+
+# figure : ratio des tendances par niveau, pour quelques C
+fig, axes = plt.subplots(1, 2, figsize=(13, 8), sharey=True)
+
 ax = axes[0]
-ax.plot(T2[s]*1e3,     zf, 'k',          lw=2.5, label='T2 total')
-ax.plot(T2_env[s]*1e3, zf, color='seagreen', lw=2, label='T2 env')
-ax.plot(T2_up[s]*1e3,  zf, color='royalblue', lw=2, label='T2 up')
-ax.plot(T2_dn[s]*1e3,  zf, color='crimson',  lw=2, label='T2 down')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('flux ρ₀⟨u\'w\'⟩ (×10⁻³)'); ax.set_ylabel('Altitude (m)')
-ax.set_title('Terme 2 : covariance sous-maille', fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3)
+for C in [0.5, 1.0, 1.2, 1.5, 2.0]:
+    r = np.full(len(zf), np.nan); v = np.abs(d_rey[s]) > floor
+    r[v] = d_T1[C][s][v] / d_rey[s][v]
+    ax.plot(r, zf, lw=2, label=f'C={C}')
+ax.axvline(1, color='black', ls=':', lw=1.5, label='idéal = 1')
+ax.set_xlabel('tend(T1) / tend(Φ_rey)'); ax.set_ylabel('Altitude (m)')
+ax.set_title('Ratio des tendances par niveau', fontweight='bold')
+ax.set_xlim(-0.5, 2.5); ax.legend(fontsize=9); ax.grid(alpha=0.3)
 
-# (b) sigma_w^2
 ax = axes[1]
-ax.plot(sigw2[s], zf, color='orange', lw=2.5, label='σ_w²')
-ax.axvline(0, color='grey', alpha=0.4)
-ax.set_xlabel('σ_w² (m² s⁻²)')
-ax.set_title('Variance verticale σ_w²', fontweight='bold')
+ax.plot(Cs, nse_list, 'o-', lw=2, color='steelblue')
+ax.axvline(C_opt, color='red', ls='--', label=f'C*={C_opt}')
+ax.set_xlabel('C (seuil = C·σ_w)'); ax.set_ylabel('NSE (tendances)')
+ax.set_title('NSE tend(T1) vs tend(Φ_rey)', fontweight='bold')
 ax.legend(fontsize=9); ax.grid(alpha=0.3)
 
 plt.tight_layout(); plt.show()
