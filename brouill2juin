@@ -1,8 +1,36 @@
-  ['sw']               LOO-NSE=+0.240
-  ['su']               LOO-NSE=-0.033
-  ['amp']              LOO-NSE=+0.327
-  ['sw', 'amp']        LOO-NSE=+0.531
-  ['sw', 'su']         LOO-NSE=+0.373
+# Verification graphique de l'identite  <u'w'>_up = r0(z) * sigma_u * sigma_w
+# (identite exacte par construction : r0 := cov / (su*sw))
+s = band()
+zf = alt[s]
+r0_prof = cov_up / (amp + 1e-12)        # correlation interne, niveau par niveau
+recon   = r0_prof * amp                  # = cov_up exactement (controle d'identite)
 
-  corr(sw, amp) = +0.99  (si proche de 1 -> redondance, pas info nouvelle)
-  NSE {sw,amp} sans les 2 niveaux les + influents = +0.641  (z=[4000. 8000.])
+fig, ax = plt.subplots(1, 3, figsize=(16, 7), sharey=True)
+
+# (a) identite exacte : la covariance = r0 * amplitude, point par point
+ax[0].plot(cov_up[s]*1e3, zf, 'k',  lw=2.8, label=r"$\langle u'w'\rangle_{up}$ (mesuré)")
+ax[0].plot(recon[s]*1e3,  zf, 'orange', lw=1.5, ls='--', label=r'$r_0(z)\,\sigma_u\sigma_w$')
+ax[0].axvline(0, color='grey', alpha=.4)
+ax[0].set_xlabel(r"$\times10^{-3}$"); ax[0].set_ylabel('Altitude (m)')
+ax[0].set_title("Identité exacte (contrôle)", fontweight='bold')
+ax[0].legend(fontsize=9); ax[0].grid(alpha=.3)
+print(f"residu max |cov - r0*amp| = {np.nanmax(np.abs((cov_up-recon)[s])):.2e}  (doit ~0)")
+
+# (b) les deux facteurs : amplitude (varie) vs correlation (≈ constante) -- profils normalises
+def zsc(x): mu,sd=np.nanmean(x[s]),np.nanstd(x[s]); return (x-mu)/sd
+ax[1].plot(zsc(cov_up)[s], zf, 'k',      lw=2.8, label=r"$\langle u'w'\rangle_{up}$")
+ax[1].plot(zsc(amp)[s],    zf, 'orange', lw=2,   label=r'$\sigma_u\sigma_w$ (amplitude)')
+ax[1].plot(zsc(r0_prof)[s],zf, 'navy',   lw=1.5, ls=':', label=r'$r_0(z)$ (corrélation)')
+ax[1].axvline(0, color='grey', alpha=.4)
+ax[1].set_xlabel('profil normalisé')
+ax[1].set_title("Qui pilote la forme verticale ?", fontweight='bold')
+ax[1].legend(fontsize=9); ax[1].grid(alpha=.3)
+
+# (c) r0(z) en valeur brute : montre qu'il est faible et de signe stable
+ax[2].plot(r0_prof[s], zf, 'navy', lw=2)
+ax[2].axvline(np.nanmedian(r0_prof[s]), color='orange', ls='--',
+              label=fr'médiane $r_0={np.nanmedian(r0_prof[s]):+.3f}$')
+ax[2].axvline(0, color='grey', alpha=.4)
+ax[2].set_xlabel(r'$r_0(z)$'); ax[2].set_title("Corrélation interne", fontweight='bold')
+ax[2].legend(fontsize=9); ax[2].grid(alpha=.3)
+plt.tight_layout(); plt.show()
