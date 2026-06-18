@@ -1,115 +1,111 @@
 # ============================================================================
-# BANC D'ESSAI : fermeture parcimonieuse de <u'w'>_up  (cible = cov_up)
-#   Objectif : battre la baseline amplitude r0c*amp en validation croisee LOO.
-#   Methodes : OLS dictionnaire, Lasso (chemin complet), best-subset k<=2.
-#   Regle d'or : un score n'est credible qu'en LOO-CV (32 niveaux => sur-ajust facile).
+# BANC D'ESSAI (numpy pur) : fermeture parcimonieuse de <u'w'>_up
+#   LOO-CV maison, OLS via lstsq, Lasso via descente de coordonnees.
+#   Reutilise : cov_up, su_up, sw_up, skew_w, varflx, sig_up, ubar, dudz, amp, alt, band
 # ============================================================================
 from itertools import combinations
-from sklearn.linear_model import LassoCV, LinearLayer if False else LinearRegression
-from sklearn.preprocessing import StandardScaler
 
 s = band()
-y_full = cov_up.copy()
 
-# --- dictionnaire de predicteurs PHYSIQUEMENT motives (2nd moment + structure) ---
 feat = {
-    'su'        : su_up,                 # amplitude u interne
-    'sw'        : sw_up,                 # amplitude w interne
-    'amp'       : amp,                   # su*sw  (la baseline)
-    'skew_w'    : skew_w,                # asymetrie coeur/bord
-    'varflx'    : varflx,                # <u'^2 w'> transport interne de variance
-    'sig_up'    : sig_up,                # fraction surfacique
-    'dudz'      : dudz,                  # cisaillement (signe oscillant -> piege)
-    'amp_dudz'  : amp*dudz,              # down-gradient module par amplitude
-    'sw2'       : sw_up**2,              # variance w (TKE-like)
+    'su'      : su_up,        'sw'   : sw_up,      'amp'    : amp,
+    'skew_w'  : skew_w,       'varflx': varflx,    'sig_up' : sig_up,
+    'dudz'    : dudz,         'amp_dudz': amp*dudz,'sw2'    : sw_up**2,
 }
-
-# masque commun : niveaux de la bande, finis partout
 names = list(feat.keys())
 X_all = np.column_stack([feat[k] for k in names])
-m = np.isfinite(y_full) & np.all(np.isfinite(X_all), axis=1)
+y_all = cov_up.copy()
+
+m = np.isfinite(y_all) & np.all(np.isfinite(X_all), axis=1)
 m[:s.start] = False; m[s.stop:] = False
-X = X_all[m]; y = y_full[m]
-zlev = alt[m]
-N = len(y)
-print(f"N niveaux exploitables = {N}  (sur bande {alt[s.start]:.0f}-{alt[s.stop-1]:.0f} m)\n")
+X = X_all[m]; y = y_all[m]; N = len(y)
+print(f"N niveaux exploitables = {N}  (bande {alt[s.start]:.0f}-{alt[s.stop-1]:.0f} m)\n")
 
-def nse_vec(truth, pred):
-    return 1 - np.sum((truth-pred)**2)/np.sum((truth-truth.mean())**2)
+def nse_vec(t, p): return 1 - np.sum((t-p)**2)/np.sum((t-t.mean())**2)
 
-# --- LOO-CV generique : renvoie le NSE hors-echantillon d'un estimateur sklearn ---
-def loo_nse(make_model, Xm):
+def standardize(Xtr, Xte):
+    mu, sd = Xtr.mean(0), Xtr.std(0); sd = np.where(sd < 1e-12, 1.0, sd)
+    return (Xtr-mu)/sd, (Xte-mu)/sd
+
+# --- OLS via moindres carres (colonne de 1 pour l'intercept) ---
+def ols_fit_predict(Xtr, ytr, Xte):
+    A = np.column_stack([np.ones(len(Xtr)), Xtr])
+    beta, *_ = np.linalg.lstsq(A, ytr, rcond=None)
+    return np.column_stack([np.ones(len(Xte)), Xte]) @ beta
+
+# --- Lasso par descente de coordonnees (donnees centrees/reduites) ---
+def lasso_fit(Xtr, ytr, lam, n_iter=500):
+    n, p = Xtr.shape; b = np.zeros(p); yb = ytr.mean(); r = ytr - yb
+    col2 = (Xtr**2).sum(0)
+    for _ in range(n_iter):
+        for j in range(p):
+            r += Xtr[:, j]*b[j]
+            rho = Xtr[:, j] @ r
+            b[j] = np.sign(rho)*max(abs(rho)-lam*n, 0)/ (col2[j] + 1e-12)
+            r -= Xtr[:, j]*b[j]
+    return yb, b
+
+def loo_nse_generic(fitpred):
     pred = np.empty(N)
     for i in range(N):
         tr = np.arange(N) != i
-        sc = StandardScaler().fit(Xm[tr])
-        mdl = make_model().fit(sc.transform(Xm[tr]), y[tr])
-        pred[i] = mdl.predict(sc.transform(Xm[i:i+1]))[0]
+        pred[i] = fitpred(X[tr], y[tr], X[i:i+1])[0]
     return nse_vec(y, pred), pred
 
-# =================== 0) BASELINE (r0 constant * amplitude) ===================
-# meme construction que ton predA, mais evaluee proprement en LOO
-def loo_nse_baseline():
-    pred = np.empty(N)
-    a_idx = names.index('amp')
-    for i in range(N):
-        tr = np.arange(N) != i
-        r0 = np.median(y[tr]/(X[tr, a_idx] + 1e-12))     # r0 calibre hors point i
-        pred[i] = r0 * X[i, a_idx]
-    return nse_vec(y, pred), pred
-nse_base, _ = loo_nse_baseline()
-print(f"[BASELINE]  r0*amp                 LOO-NSE = {nse_base:+.3f}   <-- a battre\n")
+# ===== 0) BASELINE r0*amp (r0 calibre hors point i) =====
+ai = names.index('amp'); predb = np.empty(N)
+for i in range(N):
+    tr = np.arange(N) != i
+    r0 = np.median(y[tr]/(X[tr, ai] + 1e-12)); predb[i] = r0*X[i, ai]
+nse_base = nse_vec(y, predb)
+print(f"[BASELINE] r0*amp            LOO-NSE = {nse_base:+.3f}   <-- a battre\n")
 
-# =================== 1) OLS sur le dictionnaire complet =====================
-nse_ols, _ = loo_nse(lambda: LinearRegression(), X)
-print(f"[OLS dict complet, {len(names)} feats] LOO-NSE = {nse_ols:+.3f}   "
-      f"(in-sample sur-ajuste, attendu bas en CV)")
+# ===== 1) OLS dictionnaire complet =====
+def ols_std(Xtr, ytr, Xte):
+    Xtr_s, Xte_s = standardize(Xtr, Xte); return ols_fit_predict(Xtr_s, ytr, Xte_s)
+nse_ols, _ = loo_nse_generic(ols_std)
+print(f"[OLS dict complet ({len(names)})]  LOO-NSE = {nse_ols:+.3f}  (sur-ajuste, attendu bas)")
 
-# =================== 2) Lasso (chemin complet, alpha auto-CV) ===============
-# StandardScaler integre dans la boucle LOO pour ne pas fuiter la variance test
-def make_lasso():
-    return LassoCV(cv=5, n_alphas=60, max_iter=20000, random_state=0)
-nse_lasso, _ = loo_nse(make_lasso, X)
-# coefficients retenus sur tout l'echantillon (lecture des features survivants)
-scl = StandardScaler().fit(X)
-lasso_full = make_lasso().fit(scl.transform(X), y)
-kept = [(n, c) for n, c in zip(names, lasso_full.coef_) if abs(c) > 1e-10]
-kept.sort(key=lambda t: -abs(t[1]))
-print(f"[LASSO]                            LOO-NSE = {nse_lasso:+.3f}")
-print(f"   alpha* = {lasso_full.alpha_:.2e} | features retenus (coef standardise) :")
-for n, c in kept: print(f"      {n:>10} : {c:+.3f}")
+# ===== 2) Lasso, balayage de lambda en LOO =====
+lams = np.logspace(-4, 0, 25)
+best_lam, best_nse_l = None, -np.inf
+for lam in lams:
+    def lasso_pred(Xtr, ytr, Xte, lam=lam):
+        Xtr_s, Xte_s = standardize(Xtr, Xte)
+        yb, b = lasso_fit(Xtr_s, ytr, lam); return Xte_s @ b + yb
+    sc, _ = loo_nse_generic(lasso_pred)
+    if sc > best_nse_l: best_nse_l, best_lam = sc, lam
+# features retenus sur tout l'echantillon au meilleur lambda
+mu, sd = X.mean(0), X.std(0); sd = np.where(sd<1e-12,1,sd)
+_, bfull = lasso_fit((X-mu)/sd, y, best_lam)
+kept = sorted([(n,c) for n,c in zip(names,bfull) if abs(c)>1e-8], key=lambda t:-abs(t[1]))
+print(f"[LASSO best]                 LOO-NSE = {best_nse_l:+.3f}  (lambda={best_lam:.1e})")
+print("   features retenus :", ", ".join(f"{n}({c:+.2f})" for n,c in kept) or "aucun")
 print()
 
-# =================== 3) Best-subset interpretable (k = 1 et 2) ==============
-# on cherche LE couple de predicteurs qui generalise le mieux (loi simple, GCM-ready)
-print("[BEST-SUBSET]  meilleurs modeles a 1 et 2 termes (classes par LOO-NSE) :")
-results = []
+# ===== 3) Best-subset k=1,2 (loi simple, GCM-ready) =====
+print("[BEST-SUBSET] meilleurs modeles 1-2 termes (LOO-NSE) :")
+res = []
 for k in (1, 2):
     for combo in combinations(range(len(names)), k):
-        Xc = X[:, combo]
-        sc, _ = loo_nse(lambda: LinearRegression(), Xc)
-        results.append((sc, [names[j] for j in combo]))
-results.sort(key=lambda t: -t[0])
-for sc, combo in results[:8]:
-    flag = "  <-- bat la baseline" if sc > nse_base else ""
+        idx = list(combo)
+        sc, _ = loo_nse_generic(lambda Xtr,ytr,Xte,idx=idx: ols_std(Xtr[:,idx],ytr,Xte[:,idx]))
+        res.append((sc, [names[j] for j in idx]))
+res.sort(key=lambda t:-t[0])
+for sc, combo in res[:8]:
+    flag = "  <-- bat baseline" if sc > nse_base else ""
     print(f"   NSE={sc:+.3f}  {{{', '.join(combo)}}}{flag}")
-print()
 
-# =================== 4) VERDICT ============================================
-best_sc, best_combo = results[0]
-gain = best_sc - nse_base
-print("="*68)
+# ===== 4) VERDICT =====
+best_sc, best_combo = res[0]; gain = best_sc - nse_base
+print("\n" + "="*64)
 if gain > 0.05:
-    print(f"VERDICT : le modele {{{', '.join(best_combo)}}} bat la baseline")
-    print(f"          de +{gain:.3f} NSE en validation croisee.")
-    print(f"          -> piste de fermeture du 2nd moment a creuser.")
+    print(f"VERDICT : {{{', '.join(best_combo)}}} bat la baseline de +{gain:.3f} NSE en CV.")
+    print("          -> piste de fermeture du 2nd moment a creuser (interpreter avant d'y croire).")
 elif gain > 0:
-    print(f"VERDICT : amelioration marginale (+{gain:.3f}) sur {{{', '.join(best_combo)}}}.")
-    print(f"          Pas decisif vu N={N} : prudence, possible bruit d'echantillon.")
+    print(f"VERDICT : gain marginal (+{gain:.3f}). Vu N={N}, prudence : possible bruit.")
 else:
-    print(f"VERDICT : RIEN ne bat r0*amp en CV (meilleur = {best_sc:+.3f}).")
-    print(f"          Resultat FORT : <u'w'>_up est bien un pur terme d'amplitude,")
-    print(f"          la correlation interne r0 est structurellement ~constante.")
-    print(f"          La fermeture amplitude est la bonne -- et c'est demontre, pas")
-    print(f"          juste constate. C'est une conclusion publiable en soi.")
-print("="*68)
+    print(f"VERDICT : rien ne bat r0*amp (meilleur={best_sc:+.3f}).")
+    print("          Resultat FORT : <u'w'>_up est un pur terme d'amplitude, r0 ~ constant.")
+    print("          La fermeture amplitude est optimale dans sa classe -- demontre, pas constate.")
+print("="*64)
