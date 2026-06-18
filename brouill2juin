@@ -1,82 +1,77 @@
 # ============================================================================
-# Ratio des TENDANCES : tend(T1) / tend(Phi_rey), balayé en C, recherche du C optimal
-#   tend(flux) = -(1/rho0) d/dz (flux)   [flux = rho0 <u'w'>, terme Reynolds dans NS]
-#   T1 = transport organisé (mass-flux généralisé, 3 catégories)
+# COMPRENDRE T2 : T2_k = rho0 * sigma_k * <u'w'>_k = rho0 * sigma_k * r_k * sigma_u_k * sigma_w_k
+#   -> a quel facteur (correlation interne r_k / amplitudes sigma_u,sigma_w / aire sigma_k)
+#      doit-on l'augmentation de |T2|, et a quel niveau grossit-il ?
 # ============================================================================
-reg = mh; W0_MIN = 0.001
-Cs = np.array([0.3, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0])
-
-def tend(flux):
-    return -np.gradient(flux, alt) / rho0
-
-s = slice(np.searchsorted(alt, 2000), np.searchsorted(alt, 18000)); zf = alt[s]
-def nse(t, p):
-    a, b = t[s], p[s]; ok = np.isfinite(a) & np.isfinite(b)
-    return 1 - np.nansum((a[ok]-b[ok])**2) / np.nansum((a[ok]-np.nanmean(a[ok]))**2)
-
-rey  = np.full(n_z, np.nan)               # Reynolds total (indépendant de C)
-T1_C = {C: np.full(n_z, np.nan) for C in Cs}
+reg = mh; C = float(C_star)
+cats = ('up', 'dn', 'env')
+T2_k  = {k: np.full(n_z, np.nan) for k in cats}   # rho0*sig*<u'w'>_k
+r_k   = {k: np.full(n_z, np.nan) for k in cats}   # correlation interne
+su_k  = {k: np.full(n_z, np.nan) for k in cats}   # std interne de u
+sw_k  = {k: np.full(n_z, np.nan) for k in cats}   # std interne de w
+sig_k = {k: np.full(n_z, np.nan) for k in cats}   # fraction surfacique
 
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
 for iz in range(n_z):
-    a_re = 0.0; a1 = {C: 0.0 for C in Cs}; n = 0
+    acc = {k: dict(T2=0., r=0., su=0., sw=0., sig=0.) for k in cats}; n = 0
     for it in range(t_stat, n_t):
         u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
         w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
-        ub = u.mean(); wb = w.mean(); N = u.size
-        a_re += ((u-ub)*(w-wb)).mean()
-        sw = w.std()
-        for C in Cs:
-            ws = max(W0_MIN, C*sw); acc = 0.0
-            for msk in [w > ws, w < -ws, np.abs(w) <= ws]:
-                if not msk.any(): continue
-                sig = msk.sum()/N
-                uc = u[msk].mean(); wc = w[msk].mean()
-                acc += sig*(uc-ub)*(wc-wb)          # T1 par catégorie
-            a1[C] += acc
+        N = u.size
+        ws, up, dn, env = classify(w, C)
+        for k, msk in (('up',up), ('dn',dn), ('env',env)):
+            if msk.sum() < 5: continue
+            uu, ww = u[msk], w[msk]
+            up_ = uu - uu.mean(); wp_ = ww - ww.mean()   # anomalies INTERNES a la categorie
+            sig = msk.sum()/N
+            cov = (up_*wp_).mean(); su = up_.std(); sw = wp_.std()
+            acc[k]['T2']  += rho0[iz]*sig*cov
+            acc[k]['r']   += cov/(su*sw + 1e-12)
+            acc[k]['su']  += su; acc[k]['sw'] += sw; acc[k]['sig'] += sig
         n += 1; del u, w
-    rey[iz] = rho0[iz]*a_re/n
-    for C in Cs: T1_C[C][iz] = rho0[iz]*a1[C]/n
+    for k in cats:
+        T2_k[k][iz]=acc[k]['T2']/n; r_k[k][iz]=acc[k]['r']/n
+        su_k[k][iz]=acc[k]['su']/n; sw_k[k][iz]=acc[k]['sw']/n; sig_k[k][iz]=acc[k]['sig']/n
     gc.collect()
 ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
 
-# tendances
-d_rey = tend(rey)
-d_T1  = {C: tend(T1_C[C]) for C in Cs}
+T2_tot = sum(T2_k.values()); s = band()
+iz_max = s.start + int(np.nanargmax(np.abs(T2_tot[s])))
+print(f"|T2| maximal a z = {alt[iz_max]:.0f} m   (T2 = {T2_tot[iz_max]*1e3:+.3f} e-3)")
+print("  qui domine a ce niveau : " + ", ".join(f"{k}={T2_k[k][iz_max]*1e3:+.2f}" for k in cats) + " (e-3)")
 
-# masque : on évite les niveaux où tend(rey) ~ 0 (ratio instable)
-floor = 0.05*np.nanmax(np.abs(d_rey[s]))
-valid = np.abs(d_rey[s]) > floor
+# --- quel facteur pilote les variations verticales de |T2| ? (correlation niveau-a-niveau) ---
+for k in cats:
+    tgt = np.abs(T2_k[k][s])
+    fac = {'r_k':r_k[k][s], 'sigma_u':su_k[k][s], 'sigma_w':sw_k[k][s],
+           'sigma_k':sig_k[k][s], 'su*sw':su_k[k][s]*sw_k[k][s]}
+    print(f"\n--- {k} : corr. verticale de |T2_{k}| avec chaque facteur ---")
+    for name, arr in fac.items():
+        ok = np.isfinite(arr) & np.isfinite(tgt)
+        print(f"   {name:>8} : r = {np.corrcoef(arr[ok], tgt[ok])[0,1]:+.2f}")
 
-print(f"{'C':>5} | {'NSE(tend T1 vs tend rey)':>24} | {'ratio médian tendT1/tendrey':>28}")
-nse_list = []
-for C in Cs:
-    r = d_T1[C][s][valid] / d_rey[s][valid]
-    score = nse(d_rey, d_T1[C])
-    nse_list.append(score)
-    print(f"{C:5.1f} | {score:+24.3f} | {np.median(r):+28.3f}")
-
-C_opt = Cs[int(np.argmax(nse_list))]
-print(f"\n>> C optimal (NSE max sur les tendances) = {C_opt}  (NSE={max(nse_list):+.3f})")
-
-# figure : ratio des tendances par niveau, pour quelques C
-fig, axes = plt.subplots(1, 2, figsize=(13, 8), sharey=True)
-
-ax = axes[0]
-for C in [0.5, 1.0, 1.2, 1.5, 2.0]:
-    r = np.full(len(zf), np.nan); v = np.abs(d_rey[s]) > floor
-    r[v] = d_T1[C][s][v] / d_rey[s][v]
-    ax.plot(r, zf, lw=2, label=f'C={C}')
-ax.axvline(1, color='black', ls=':', lw=1.5, label='idéal = 1')
-ax.set_xlabel('tend(T1) / tend(Φ_rey)'); ax.set_ylabel('Altitude (m)')
-ax.set_title('Ratio des tendances par niveau', fontweight='bold')
-ax.set_xlim(-0.5, 2.5); ax.legend(fontsize=9); ax.grid(alpha=0.3)
-
-ax = axes[1]
-ax.plot(Cs, nse_list, 'o-', lw=2, color='steelblue')
-ax.axvline(C_opt, color='red', ls='--', label=f'C*={C_opt}')
-ax.set_xlabel('C (seuil = C·σ_w)'); ax.set_ylabel('NSE (tendances)')
-ax.set_title('NSE tend(T1) vs tend(Φ_rey)', fontweight='bold')
-ax.legend(fontsize=9); ax.grid(alpha=0.3)
-
+# --- figure : les ingredients de T2 par categorie ---
+zf = alt[s]; col = {'up':'crimson','dn':'royalblue','env':'green'}
+fig, ax = plt.subplots(1, 5, figsize=(20, 7), sharey=True)
+ax[0].plot(T2_tot[s]*1e3, zf, 'k', lw=2.5, label=r'$T_2$ total')
+for k in cats: ax[0].plot(T2_k[k][s]*1e3, zf, color=col[k], lw=1.8, label=k)
+ax[0].axhline(alt[iz_max], color='orange', ls=':', lw=2); ax[0].axvline(0, color='grey', alpha=.4)
+ax[0].set_xlabel(r'$T_2$ ($\times10^{-3}$)'); ax[0].set_ylabel('Altitude (m)')
+ax[0].set_title('T2 et contributions', fontweight='bold'); ax[0].legend(fontsize=8); ax[0].grid(alpha=.3)
+for k in cats: ax[1].plot(r_k[k][s], zf, color=col[k], lw=1.8, label=k)
+ax[1].axhline(alt[iz_max], color='orange', ls=':', lw=2); ax[1].axvline(0, color='grey', alpha=.4)
+ax[1].set_xlabel(r'$r_k$ (corrélation interne)'); ax[1].set_title('Corrélation', fontweight='bold')
+ax[1].legend(fontsize=8); ax[1].grid(alpha=.3)
+for k in cats: ax[2].plot(su_k[k][s], zf, color=col[k], lw=1.8, label=k)
+ax[2].axhline(alt[iz_max], color='orange', ls=':', lw=2)
+ax[2].set_xlabel(r'$\sigma_{u,k}$ (m/s)'); ax[2].set_title("Amplitude u'", fontweight='bold')
+ax[2].legend(fontsize=8); ax[2].grid(alpha=.3)
+for k in cats: ax[3].plot(sw_k[k][s], zf, color=col[k], lw=1.8, label=k)
+ax[3].axhline(alt[iz_max], color='orange', ls=':', lw=2)
+ax[3].set_xlabel(r'$\sigma_{w,k}$ (m/s)'); ax[3].set_title("Amplitude w'", fontweight='bold')
+ax[3].legend(fontsize=8); ax[3].grid(alpha=.3)
+for k in cats: ax[4].plot(sig_k[k][s], zf, color=col[k], lw=1.8, label=k)
+ax[4].axhline(alt[iz_max], color='orange', ls=':', lw=2)
+ax[4].set_xlabel(r'$\sigma_k$ (aire)'); ax[4].set_title('Aire', fontweight='bold')
+ax[4].legend(fontsize=8); ax[4].grid(alpha=.3)
 plt.tight_layout(); plt.show()
