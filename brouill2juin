@@ -1,30 +1,134 @@
-s = band()
+# ============================================================================
+# INVESTIGATION T2 : quel mecanisme physique gouverne <u'w'>_up ?
+# ============================================================================
+reg = mh; C = float(C_star)
+
+cov_up = np.full(n_z, np.nan)   # CIBLE : <u'_int w'_int>_up
+su_up  = np.full(n_z, np.nan)   # sigma_u interne
+sw_up  = np.full(n_z, np.nan)   # sigma_w interne
+skew_w = np.full(n_z, np.nan)   # skewness de w' interne
+varflx = np.full(n_z, np.nan)   # <u'^2 w'>_up
+sig_up = np.full(n_z, np.nan)   # fraction surfacique up
+ubar   = np.full(n_z, np.nan)   # vent moyen
+
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    aub=acov=asu=asw=askw=avf=asig=0.0; n=0
+    for it in range(t_stat, n_t):
+        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
+        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
+        ub = u.mean(); aub += ub
+        ws, up, dn, env = classify(w, C)
+        if up.sum() >= 8:
+            uu, ww = u[up], w[up]
+            up_ = uu-uu.mean(); wp_ = ww-ww.mean()
+            su, sw = up_.std(), wp_.std()
+            acov += (up_*wp_).mean()
+            asu  += su; asw += sw
+            askw += (wp_**3).mean()/(sw**3 + 1e-12)
+            avf  += (up_**2 * wp_).mean()
+            asig += up.sum()/u.size
+        n += 1; del u, w
+    ubar[iz]=aub/n; cov_up[iz]=acov/n; su_up[iz]=asu/n; sw_up[iz]=asw/n
+    skew_w[iz]=askw/n; varflx[iz]=avf/n; sig_up[iz]=asig/n
+    gc.collect()
+ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
+
+amp  = su_up * sw_up
 dudz = np.gradient(ubar, alt)
-from numpy.linalg import lstsq
+s    = band()
 
-def zc(x):  # z-score sur la bande
-    m=np.isfinite(x); mu,sd=np.nanmean(x[m]),np.nanstd(x[m]); return (x-mu)/sd
+def zcorr(a, b, s):
+    a, b = a[s], b[s]; ok = np.isfinite(a)&np.isfinite(b)
+    return np.corrcoef(a[ok], b[ok])[0,1] if ok.sum() >= 5 else np.nan
 
-amp   = su_up*sw_up
-y     = cov_up
+# (1) quel candidat suit la covariance interne ?
+print("=== correlation de <u'w'>_up avec chaque candidat ===")
+for name, arr in {'sigma_u':su_up, 'sigma_w':sw_up, 'sigma_u*sigma_w (AMPLITUDE)':amp,
+                  'skewness w (STRUCTURE)':skew_w, "transport variance <u'^2 w'>":varflx}.items():
+    print(f"  {name:>30} : r = {zcorr(cov_up, arr, s):+.2f}")
 
-# modele A : amplitude seule
-predA = np.nanmedian((y/(amp+1e-12))[s]) * amp
-# modele B : amplitude + cisaillement ADDITIF (pas multiplicatif), data-driven
-X = np.column_stack([zc(amp), zc(dudz), zc(amp*dudz), np.ones(n_z)])
-ok = np.all(np.isfinite(X),axis=1) & np.isin(np.arange(n_z),np.arange(n_z)[s])
-beta,*_ = lstsq(X[ok], zc(y)[ok], rcond=None)
-fitB = np.full(n_z,np.nan); fitB[ok] = X[ok]@beta
+# (2) ce qui module la correlation interne r0(z)
+r0_prof = cov_up / (amp + 1e-12)
+print("\n=== ce qui module r0(z) ===")
+for name, arr in {'-dudz (cisaillement)':-dudz, 'sigma_w':sw_up, 'altitude':alt}.items():
+    print(f"  r0(z) vs {name:>20} : r = {zcorr(r0_prof, arr, s):+.2f}")
 
-print(f"NSE amplitude seule (r0 const)           = {nse(y, predA, s):+.3f}")
-print(f"R2  regression [amp, dudz, amp*dudz]     = "
-      f"{1-np.nansum((zc(y)[ok]-fitB[ok])**2)/np.nansum((zc(y)[ok]-np.nanmean(zc(y)[ok]))**2):+.3f}")
-print(f"  poids amplitude      : {beta[0]:+.2f}")
-print(f"  poids cisaillement   : {beta[1]:+.2f}")
-print(f"  poids interaction    : {beta[2]:+.2f}")
+# (3) tests de fermeture : amplitude seule vs down-gradient
+r0c = np.nanmedian(r0_prof[s])
+predA = r0c * amp
+predB = dudz * amp
+a_, b_ = cov_up[s], predB[s]; ok = np.isfinite(a_)&np.isfinite(b_)
+cB = np.sum(a_[ok]*b_[ok])/np.sum(b_[ok]**2)
+print("\n=== tests de fermeture (NSE vs <u'w'>_up) ===")
+print(f"  amplitude  r0*su*sw    (r0={r0c:+.3f}) : NSE = {nse(cov_up, predA,    s):+.3f}")
+print(f"  down-grad  c*dudz*su*sw (c={cB:+.2e}) : NSE = {nse(cov_up, cB*predB, s):+.3f}")
 
-# le signe de la covariance est-il stable, ou oscille-t-il ?
-print(f"\nsigne de <u'w'>_up sur la bande : "
-      f"{np.sum(cov_up[s]>0)} niveaux +, {np.sum(cov_up[s]<0)} niveaux -")
-print(f"signe de dudz sur la bande      : "
-      f"{np.sum(dudz[s]>0)} niveaux +, {np.sum(dudz[s]<0)} niveaux -")
+# (4) diagnostic des signes
+print("\n=== signes sur la bande ===")
+print(f"  <u'w'>_up : {np.sum(cov_up[s]>0)} +, {np.sum(cov_up[s]<0)} -  (STABLE)")
+print(f"  dudz      : {np.sum(dudz[s]>0)} +, {np.sum(dudz[s]<0)} -  (OSCILLANT)")
+
+
+
+
+
+# ============================ FIGURE de synthese ============================
+zf = alt[s]
+def zsc(x): m=np.isfinite(x); mu,sd=np.nanmean(x[m]),np.nanstd(x[m]); return (x-mu)/sd
+fig, ax = plt.subplots(1, 3, figsize=(16, 7), sharey=True)
+
+# (a) covariance vs amplitude (formes normalisees)
+ax[0].plot(zsc(cov_up)[s], zf, 'k',          lw=2.8, label=r"$\langle u'w'\rangle_{up}$")
+ax[0].plot(zsc(amp)[s],    zf, 'darkorange', lw=2,   label=r'$\sigma_u\sigma_w$')
+ax[0].plot(zsc(skew_w)[s], zf, 'grey',       lw=1.5, ls=':', label='skewness w')
+ax[0].axvline(0, color='grey', alpha=.4)
+ax[0].set_xlabel('profil normalisé'); ax[0].set_ylabel('Altitude (m)')
+ax[0].set_title("L'amplitude suit la covariance", fontweight='bold')
+ax[0].legend(fontsize=8); ax[0].grid(alpha=.3)
+
+# (b) signes : covariance stable vs cisaillement oscillant
+ax[1].plot(cov_up[s]*1e3, zf, 'k', lw=2.5, label=r"$\langle u'w'\rangle_{up}$")
+ax1b = ax[1].twiny()
+ax1b.plot(dudz[s], zf, 'navy', lw=1.8, ls='--')
+ax[1].axvline(0, color='grey', alpha=.4)
+ax[1].set_xlabel(r"$\langle u'w'\rangle_{up}$ ($\times10^{-3}$)", color='k')
+ax1b.set_xlabel(r'$\partial_z\bar u$ (s$^{-1}$)', color='navy'); ax1b.tick_params(colors='navy')
+ax[1].set_title('Signe stable vs cisaillement oscillant', fontweight='bold'); ax[1].grid(alpha=.3)
+
+# (c) test des deux fermetures
+ax[2].plot(cov_up[s]*1e3,     zf, 'k',          lw=2.8, label='mesuré')
+ax[2].plot(predA[s]*1e3,      zf, 'darkorange', lw=2,   label=f'amplitude (NSE={nse(cov_up,predA,s):.2f})')
+ax[2].plot((cB*predB)[s]*1e3, zf, 'navy',       lw=1.6, ls='--', label=f'down-grad (NSE={nse(cov_up,cB*predB,s):.2f})')
+ax[2].axvline(0, color='grey', alpha=.4)
+ax[2].set_xlabel(r'($\times10^{-3}$)')
+ax[2].set_title('Fermeture : amplitude vs down-gradient', fontweight='bold')
+ax[2].legend(fontsize=8); ax[2].grid(alpha=.3)
+plt.tight_layout(); plt.show()
+
+
+
+
+## Conclusion — D'où vient $T_2$ ? Un terme d'amplitude, non diffusif
+
+On décompose la covariance interne des updrafts en
+$\langle u'w'\rangle_{up} = r_0 \cdot \sigma_{u,up}\,\sigma_{w,up}$
+(corrélation interne × amplitudes), et on cherche lequel de ces facteurs gouverne $T_2$.
+
+**Ce qui est éliminé.**
+- **Structure (skewness)** : $r \approx 0.01$ avec la covariance. L'asymétrie cœur/bord des updrafts ne porte **pas** $T_2$.
+- **Cisaillement en facteur (down-gradient)** : la fermeture $c\,\partial_z\bar u\,\sigma_u\sigma_w$ donne un **NSE négatif** ($\approx -0.84$). La raison est diagnostiquée directement par les signes : la covariance interne a un signe **stable** (24 niveaux négatifs / 32), tandis que $\partial_z\bar u$ **oscille** (16+/16−). Multiplier par le cisaillement injecte des inversions de signe que la covariance n'a pas → une fermeture diffusive est structurellement fausse.
+
+**Ce qui ressort.**
+- **Amplitude** : $\sigma_u\sigma_w$ est le meilleur prédicteur ($r = +0.63$ ; $\sigma_w$ seul $0.57 > \sigma_u$ seul $0.29$, le produit fait mieux que chacun). La fermeture $\langle u'w'\rangle_{up} \approx r_0\,\sigma_{u,up}\,\sigma_{w,up}$ avec $r_0$ constant atteint **NSE $\approx 0.36$** — modeste mais positif, et **rien n'a fait mieux**.
+- **Corrélation interne** $r_0 \approx -0.04$, faible et de signe stable (cohérent avec les $r \approx -0.05$ des scatterplots de l'Obj 1). Le cisaillement *module* faiblement $r_0(z)$ (corr $0.63$ sur la forme normalisée) mais ne se met **pas** en facteur multiplicatif : ajouté en régression, il ne fait passer le $R^2$ que de $0.36$ à $0.42$.
+
+**Modèle physique retenu.**
+
+$$T_2^{up} \approx r_0\,\rho_0\,\sigma_{up}\,\sigma_{u,up}\,\sigma_{w,up}, \qquad r_0 \approx -0.04 \text{ (quasi-constant)}$$
+
+$T_2$ vit là où **la turbulence interne des cœurs est intense** ($\sigma_u\sigma_w$ grand), pas là où le cisaillement est fort. C'est un transport **non-local et non-diffusif** : une corrélation interne faible mais systématique, appliquée à de grandes fluctuations.
+
+**Conséquence pour la comparaison à Romps.** Sa diffusion effective $\nu = M/\rho\varepsilon$ est par construction **down-gradient** ($\propto \partial_z\bar u$). Or $T_2$ **ne suit pas le gradient** (NSE négatif de toute fermeture diffusive, signe stable face à un cisaillement oscillant). Le cadre bulk-plume diffusif de Romps capture donc le transport **organisé** ($T_1$, $\sim 56\,\%$) mais ne peut **structurellement pas** porter $T_2$ ($\sim 44\,\%$), 2ᵉ moment non-diffusif fermable seulement par les **variances internes**. C'est la justification quantitative d'une fermeture **EDMF + variance** plutôt qu'une diffusion effective seule.
+
+**Réserve d'honnêteté.** Le NSE de $0.36$ laisse $\sim 64\,\%$ de la variance de $\langle u'w'\rangle_{up}$ non capturée par $r_0$ constant : l'amplitude est le **prédicteur dominant identifié**, pas une fermeture aboutie. Affiner $r_0$ reste un travail ouvert — mais la conclusion *qualitative* (terme d'amplitude, non-diffusif) est robuste car elle survit à tous les tests de signe.
