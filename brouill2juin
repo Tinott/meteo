@@ -1,61 +1,94 @@
-%matplotlib inline
-import numpy as np
-import matplotlib.pyplot as plt
+# ============================================================================
+# FLUX DE MASSE DE ROMPS (2014) — VERSION EXACTE, vs Reynolds total
+#   Phi_Romps = M (ubar - u_c),  M = rho0*sigma_c*wbar_c  (cloudy updrafts)
+#   Definition Romps : w > W_CLOUD (1 m/s) ET condensat > 1e-5 kg/kg
+#   Un seul courant. Downdrafts negliges. On balaie W_CLOUD pour le meilleur NSE.
+# ============================================================================
+import os
+reg = mh
+QC_MIN   = 1e-5
+W_CLOUDS = [0.5, 1.0, 1.5, 2.0, 3.0]
 
-# ============================================================
-# 1) RECALCUL des variables internes aux updrafts
-#    (adapte la ligne 'sel' a ta convention : masque OU seuil)
-# ============================================================
-nz = u.shape[0]
-cov_up = np.full(nz, np.nan)
-su_up  = np.full(nz, np.nan)
-sw_up  = np.full(nz, np.nan)
+# --- detection du condensat (clw + cli si dispo) ---
+have_clw = os.path.exists(path3d('clw'))
+have_cli = os.path.exists(path3d('cli'))
+USE_QC = have_clw
+if USE_QC:
+    dsc = xr.open_dataset(path3d('clw'))
+    dsi = xr.open_dataset(path3d('cli')) if have_cli else None
+    def load_qc(it, iz):
+        q = dsc['clw'].isel({dim_t:it, dim_z:iz}).values[reg]
+        if dsi is not None:
+            q = q + dsi['cli'].isel({dim_t:it, dim_z:iz}).values[reg]
+        return q
+else:
+    print("Pas de 'clw' -> repli sur updraft defini par w seul (approx degradee).\n")
 
-for k in range(nz):
-    uk, wk = u[k].ravel(), w[k].ravel()
-    sel = up[k].ravel()              # <-- ton masque updraft ; sinon : sel = wk > max(W0_MIN, C*wk.std())
-    if sel.sum() < 2:
-        continue
-    uu, ww = uk[sel], wk[sel]
-    up_ = uu - uu.mean()
-    wp_ = ww - ww.mean()
-    cov_up[k] = (up_*wp_).mean()
-    su_up[k]  = up_.std()
-    sw_up[k]  = wp_.std()
+rey_tot   = np.full(n_z, np.nan)
+PhiRomps  = {W: np.full(n_z, np.nan) for W in W_CLOUDS}
+sigc_prof = {W: np.full(n_z, np.nan) for W in W_CLOUDS}
 
-amp     = su_up * sw_up
-r0_prof = cov_up / (amp + 1e-12)
-recon   = r0_prof * amp
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    a_re = 0.0; aR = {W:0.0 for W in W_CLOUDS}; asig = {W:0.0 for W in W_CLOUDS}; n = 0
+    for it in range(t_stat, n_t):
+        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
+        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
+        ub = u.mean(); wb = w.mean(); N = u.size
+        a_re += ((u-ub)*(w-wb)).mean()
+        qc = load_qc(it, iz) if USE_QC else None
+        for W in W_CLOUDS:
+            cloud = (w > W) & (qc > QC_MIN) if USE_QC else (w > W)
+            if not cloud.any(): continue
+            sig_c = cloud.sum()/N; wbar_c = w[cloud].mean(); uc = u[cloud].mean()
+            M = rho0[iz]*sig_c*wbar_c
+            aR[W]   += M*(ub - uc)            # Phi_Romps = M (ubar - u_c)
+            asig[W] += sig_c
+        n += 1; del u, w
+    rey_tot[iz] = rho0[iz]*a_re/n
+    for W in W_CLOUDS:
+        PhiRomps[W][iz] = aR[W]/n; sigc_prof[W][iz] = asig[W]/n
+    gc.collect()
+ds_u.close(); ds_w.close()
+if USE_QC:
+    dsc.close()
+    if dsi is not None: dsi.close()
+gc.collect()
 
-# ============================================================
-# 2) GRAPHE
-# ============================================================
-s  = band()
-zf = alt[s]
+# --- scoring : quel seuil colle le mieux ? ---
+s = band()
+print("="*64)
+print("FLUX DE ROMPS EXACT  vs  REYNOLDS TOTAL  — choix du seuil")
+print("="*64)
+print(f"{'W_cloud':>8} | {'NSE':>7} | {'RMSE(e-3)':>10} | {'sigma_c med':>11}")
+print("-"*48)
+best_W, best_nse = None, -np.inf
+for W in W_CLOUDS:
+    sc_  = nse(rey_tot, PhiRomps[W], s)
+    rmse = np.sqrt(np.nanmean(((rey_tot-PhiRomps[W])[s])**2))*1e3
+    sgm  = np.nanmedian(sigc_prof[W][s])
+    if sc_ > best_nse: best_nse, best_W = sc_, W
+    print(f"{W:>8.1f} | {sc_:>7.3f} | {rmse:>10.3f} | {sgm:>11.4f}")
+print("-"*48)
+print(f"  -> meilleur seuil : W_cloud = {best_W} m/s  (NSE = {best_nse:+.3f})")
+print(f"  -> seuil de Romps (1.0 m/s) : NSE = {nse(rey_tot, PhiRomps[1.0], s):+.3f}")
 
-fig, ax = plt.subplots(1, 2, figsize=(15, 7), sharey=True)
-
-ax[0].plot(cov_up[s]*1e3, zf, 'k',      lw=2.8, label=r"$\langle u'w'\rangle_{up}$ (mesuré)")
-ax[0].plot(recon[s]*1e3,  zf, 'orange', lw=1.5, ls='--', label=r'$r_0(z)\,\sigma_u\sigma_w$')
+# --- figure ---
+zf = alt[s]; scl = 1e3
+fig, ax = plt.subplots(1, 2, figsize=(13, 7), sharey=True)
+ax[0].plot(rey_tot[s]*scl,          zf, 'k', lw=2.6, label=r'$\Phi_{rey}$ total (cible)')
+ax[0].plot(PhiRomps[best_W][s]*scl, zf, 'crimson', lw=2, ls='--',
+           label=fr'$\Phi_{{Romps}}$ (W={best_W}, NSE={best_nse:+.2f})')
+ax[0].plot(PhiRomps[1.0][s]*scl,    zf, 'orange', lw=1.6, ls=':',
+           label=r'$\Phi_{Romps}$ (W=1.0, son seuil)')
 ax[0].axvline(0, color='grey', alpha=.4)
-ax[0].set_xlabel(r"$\times10^{-3}$  m$^2$/s$^2$"); ax[0].set_ylabel('Altitude (m)')
-ax[0].set_title("Identité exacte (contrôle)", fontweight='bold')
-ax[0].legend(fontsize=9); ax[0].grid(alpha=.3)
-
-def zsc(x):
-    mu, sd = np.nanmean(x[s]), np.nanstd(x[s])
-    return (x - mu) / sd
-
-ax[1].plot(zsc(cov_up)[s],  zf, 'k',      lw=2.8, label=r"$\langle u'w'\rangle_{up}$")
-ax[1].plot(zsc(amp)[s],     zf, 'orange', lw=2,   label=r'$\sigma_u\sigma_w$ (amplitude)')
-ax[1].plot(zsc(r0_prof)[s], zf, 'navy',   lw=1.5, ls=':', label=r'$r_0(z)$ (corrélation)')
+ax[0].set_xlabel(r'flux ($\times10^{-3}$)'); ax[0].set_ylabel('Altitude (m)')
+ax[0].set_title('Romps exact vs Reynolds', fontweight='bold')
+ax[0].legend(fontsize=8); ax[0].grid(alpha=.3)
+ax[1].plot((rey_tot-PhiRomps[best_W])[s]*scl, zf, 'purple', lw=2,
+           label=r'$\Phi_{rey}-\Phi_{Romps}$ (non capturé)')
 ax[1].axvline(0, color='grey', alpha=.4)
-ax[1].set_xlabel('profil normalisé')
-ax[1].set_title("Qui pilote la forme verticale ?", fontweight='bold')
-ax[1].legend(fontsize=9); ax[1].grid(alpha=.3)
-
-plt.tight_layout()
-plt.show()
-
-print(f"residu max |cov - r0*amp| = {np.nanmax(np.abs((cov_up-recon)[s])):.2e}  (doit ~0)")
-print(f"r0 médian = {np.nanmedian(r0_prof[s]):+.4f}")
+ax[1].set_xlabel(r'résidu ($\times10^{-3}$)')
+ax[1].set_title('Ce que Romps ne porte pas', fontweight='bold')
+ax[1].legend(fontsize=8); ax[1].grid(alpha=.3)
+plt.tight_layout(); plt.show()
