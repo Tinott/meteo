@@ -1,28 +1,13 @@
 # ============================================================================
-# D'OU VIENT LA COVARIANCE INTERNE ? Test des 3 mecanismes contre T2 (categorie up)
-#
-#   On mesure  cov_int = <u'w'>_up  (anomalies INTERNES au coeur), dont T2_up = rho0*sig*cov_int
-#   et on construit 3 predicteurs physiques :
-#
-#   M1 cisaillement     : un updraft souleve de l'air du bas (u du bas) -> down-gradient
-#                         predicteur ~ -dz(ubar) * <quelque chose en w'> ; signature : corr(cov_int, -dudz)
-#   M2 entrainement     : les bords (w' faible) sont tires vers u_e -> covariance liee a eps*(u_e-u_c)
-#                         predicteur ~ eps * (u_e - u_c)
-#   M3 pression / coeur  : couplage local absorbe par Romps dans eps_eff gonfle
-#                         on l'isole comme le RESIDU une fois M1+M2 retires
+# D'OU VIENT LA COVARIANCE INTERNE ? (version normalisee, comparaison de FORMES)
+#   On compare des PROFILS NORMALISES (z-score) : le but est de voir quel mecanisme
+#   a la meme FORME verticale que <u'w'>_up, pas la meme amplitude (unites differentes).
 # ============================================================================
 reg = mh; C = float(C_star)
 
-cov_up   = np.full(n_z, np.nan)   # <u'w'>_up  (covariance interne BRUTE, le coeur de T2_up)
-T2_up    = np.full(n_z, np.nan)   # rho0 * sig_up * cov_up
-ubar     = np.full(n_z, np.nan)
-uc_p     = np.full(n_z, np.nan); ue_p = np.full(n_z, np.nan)
-sig_up_p = np.full(n_z, np.nan)
-# proxy M1 : covariance entre w'_int et le "u importe d'en bas".
-#   un point qui monte (w'_int>0) a tendance a porter le u de plus bas.
-#   on l'approxime par  -<w'_int * (u_local - u_bas_advecte)> ; en pratique on teste
-#   directement la signature down-gradient : cov_int doit suivre -dudz.
-wstar_uc = np.full(n_z, np.nan)   # <w'_int^2>_up : intensite du brassage vertical interne
+cov_up=np.full(n_z,np.nan); T2_up=np.full(n_z,np.nan); sig_up_p=np.full(n_z,np.nan)
+ubar=np.full(n_z,np.nan); uc_p=np.full(n_z,np.nan); ue_p=np.full(n_z,np.nan)
+w2_up=np.full(n_z,np.nan)   # <w'_int^2>_up : intensite du brassage vertical interne
 
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
 for iz in range(n_z):
@@ -32,86 +17,83 @@ for iz in range(n_z):
         w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
         ub, N = u.mean(), u.size
         ws, up, dn, env = classify(w, C)
-        aub += ub
-        auc += cond_mean(u, up, ub); aue += cond_mean(u, env, ub)
+        aub += ub; auc += cond_mean(u,up,ub); aue += cond_mean(u,env,ub)
         if up.sum() >= 5:
-            uu, ww = u[up], w[up]
-            up_ = uu-uu.mean(); wp_ = ww-ww.mean()       # anomalies internes
-            acov += (up_*wp_).mean()
-            aw2  += (wp_**2).mean()
-            asig += up.sum()/N
+            uu, ww = u[up], w[up]; up_=uu-uu.mean(); wp_=ww-ww.mean()
+            acov += (up_*wp_).mean(); aw2 += (wp_**2).mean(); asig += up.sum()/N
         n += 1; del u, w
     ubar[iz]=aub/n; cov_up[iz]=acov/n; sig_up_p[iz]=asig/n
-    uc_p[iz]=auc/n; ue_p[iz]=aue/n; wstar_uc[iz]=aw2/n
+    uc_p[iz]=auc/n; ue_p[iz]=aue/n; w2_up[iz]=aw2/n
     T2_up[iz]=rho0[iz]*sig_up_p[iz]*cov_up[iz]
     gc.collect()
 ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
 
-# --- construction des 3 predicteurs physiques ---
-dudz = np.gradient(ubar, alt)                 # cisaillement du vent moyen
-duc  = np.gradient(uc_p, alt)
-DU_MIN = 0.15
-den   = np.where(np.abs(ue_p-uc_p)>DU_MIN, ue_p-uc_p, np.nan)
-eps_eff = duc/den                              # entrainement effectif (Romps eq.18)
+# --- predicteurs physiques ---
+dudz = np.gradient(ubar, alt); duc = np.gradient(uc_p, alt)
+DU_MIN = 0.30                                   # seuil plus large pour stabiliser M2
+den = ue_p - uc_p
+eps_eff = np.where(np.abs(den) > DU_MIN, duc/den, np.nan)
+pred_M1 = -dudz * np.sqrt(np.maximum(w2_up, 0))     # cisaillement x brassage
+pred_M2 = np.where(np.abs(den) > DU_MIN, eps_eff*den, np.nan)  # = duc la ou defini -> regularise
 
-# M1 : transport down-gradient du cisaillement par le brassage vertical interne
-#      cov_int ~ -K * dudz, avec K ~ intensite du brassage <w'^2> (longueur*vitesse)
-pred_M1 = -dudz * np.sqrt(np.maximum(wstar_uc,0))
-# M2 : effet de l'entrainement lateral, qui tire les bords vers u_e
-pred_M2 = eps_eff * (ue_p - uc_p)
-# M3 : residu (pression / couplage de coeur) = ce qui reste apres M1+M2
-
+# --- normalisation z-score sur la bande (compare des FORMES) ---
 s = band()
-def zcorr(a, b, s):
-    a, b = a[s], b[s]; ok = np.isfinite(a)&np.isfinite(b)
-    if ok.sum()<5: return np.nan
-    return np.corrcoef(a[ok], b[ok])[0,1]
+def zscore(x):
+    x = x.copy(); m = np.isfinite(x)
+    mu, sd = np.nanmean(x[m]), np.nanstd(x[m])
+    return (x - mu)/sd if sd>0 else x*np.nan
 
-print("=== correlation verticale de la covariance interne <u'w'>_up avec chaque mecanisme ===")
-print(f"  M1 cisaillement  (-dudz*sqrt<w'^2>) : r = {zcorr(cov_up, pred_M1, s):+.2f}")
-print(f"  M2 entrainement  (eps*(ue-uc))      : r = {zcorr(cov_up, pred_M2, s):+.2f}")
-print(f"  (ref) -dudz seul                    : r = {zcorr(cov_up, -dudz,   s):+.2f}")
+cov_n = zscore(cov_up); M1_n = zscore(pred_M1); M2_n = zscore(pred_M2)
 
-# --- regression multiple : part de variance de cov_up expliquee par M1+M2, residu = M3 ---
+def zcorr(a,b,s):
+    a,b=a[s],b[s]; ok=np.isfinite(a)&np.isfinite(b)
+    return np.corrcoef(a[ok],b[ok])[0,1] if ok.sum()>=5 else np.nan
+print("=== correlation de FORME (profils normalises) avec <u'w'>_up ===")
+print(f"  M1 cisaillement  : r = {zcorr(cov_up, pred_M1, s):+.2f}")
+print(f"  M2 entrainement  : r = {zcorr(cov_up, pred_M2, s):+.2f}")
+print(f"  (ref) -dudz seul : r = {zcorr(cov_up, -dudz,  s):+.2f}")
+
+# --- regression sur predicteurs STANDARDISES (poids comparables, M3 = residu) ---
 from numpy.linalg import lstsq
-X = np.column_stack([pred_M1, pred_M2, np.ones_like(pred_M1)])
-y = cov_up.copy()
-ok = np.all(np.isfinite(np.column_stack([X, y])), axis=1) & np.isin(np.arange(n_z), np.arange(n_z)[s])
-beta, *_ = lstsq(X[ok], y[ok], rcond=None)
-fit = X @ beta
-resid_M3 = y - fit                              # mecanisme 3 (pression/coeur) = residu
-R2 = 1 - np.nansum((y[ok]-fit[ok])**2)/np.nansum((y[ok]-np.nanmean(y[ok]))**2)
-print(f"\n  regression cov_up ~ a*M1 + b*M2 + c :  R2 = {R2:+.2f}")
-print(f"     poids M1 (cisaillement) = {beta[0]:+.3e}")
-print(f"     poids M2 (entrainement) = {beta[1]:+.3e}")
-print(f"     part residuelle M3 (pression/coeur) median |resid|/|cov| = "
-      f"{np.nanmedian(np.abs(resid_M3[s])/np.abs(cov_up[s])):.2f}")
+Xc = np.column_stack([M1_n, M2_n])
+ok = np.all(np.isfinite(np.column_stack([Xc, cov_n])), axis=1)
+ok &= np.isin(np.arange(n_z), np.arange(n_z)[s])
+Xfit = np.column_stack([Xc[ok], np.ones(ok.sum())])
+beta,*_ = lstsq(Xfit, cov_n[ok], rcond=None)
+fit_n = np.full(n_z, np.nan); fit_n[ok] = Xfit @ beta
+resid_n = cov_n - fit_n
+R2 = 1 - np.nansum((cov_n[ok]-fit_n[ok])**2)/np.nansum((cov_n[ok]-np.nanmean(cov_n[ok]))**2)
+print(f"\n  regression (standardisee) R2 = {R2:+.2f}  |  poids M1={beta[0]:+.2f}  M2={beta[1]:+.2f}")
+print(f"  residu M3 (pression/coeur) : ecart-type relatif = {np.nanstd(resid_n[ok]):.2f}")
 
-# --- figure : T2_up et la decomposition mecaniste ---
+# ============================ FIGURE (normalisee, lisible) ============================
 zf = alt[s]
-fig, ax = plt.subplots(1, 4, figsize=(18, 7), sharey=True)
+fig, ax = plt.subplots(1, 3, figsize=(16, 7), sharey=True)
 
-ax[0].plot(T2_up[s]*1e3,  zf, 'crimson', lw=2.5, label=r'$T_2^{up}$')
-ax[0].plot(cov_up[s]*1e3, zf, 'k--', lw=1.5, label=r"$\langle u'w'\rangle_{up}$ (brut)")
-ax[0].axvline(0, color='grey', alpha=.4)
-ax[0].set_xlabel(r'($\times10^{-3}$)'); ax[0].set_ylabel('Altitude (m)')
-ax[0].set_title('Ce que tu mesures', fontweight='bold'); ax[0].legend(fontsize=9); ax[0].grid(alpha=.3)
+# (a) les deux quantites mesurees, CHACUNE sur son propre axe -> plus de "colle a zero"
+a0 = ax[0]; a0b = a0.twiny()
+l1, = a0.plot(cov_up[s]*1e3, zf, 'k', lw=2.5, label=r"$\langle u'w'\rangle_{up}$")
+l2, = a0b.plot(T2_up[s]*1e3, zf, 'crimson', lw=2, ls='--', label=r'$T_2^{up}$')
+a0.set_xlabel(r"$\langle u'w'\rangle_{up}$ ($\times10^{-3}$ m$^2$s$^{-2}$)", color='k')
+a0b.set_xlabel(r'$T_2^{up}=\rho_0\sigma\langle\cdot\rangle$ ($\times10^{-3}$)', color='crimson')
+a0b.tick_params(axis='x', colors='crimson')
+a0.set_ylabel('Altitude (m)'); a0.axvline(0, color='grey', alpha=.3)
+a0.set_title('Mesure : covariance interne vs $T_2$', fontweight='bold')
+a0.legend(handles=[l1,l2], fontsize=9, loc='lower right'); a0.grid(alpha=.3)
 
-ax[1].plot(-dudz[s], zf, 'navy', lw=2)
+# (b) FORMES normalisees superposees : on compare les profils, pas les amplitudes
+ax[1].plot(cov_n[s], zf, 'k',   lw=2.8, label=r"$\langle u'w'\rangle_{up}$ (mesuré)")
+ax[1].plot(M1_n[s],  zf, 'navy', lw=2, label='M1 cisaillement')
+ax[1].plot(M2_n[s],  zf, 'green',lw=2, label='M2 entraînement')
 ax[1].axvline(0, color='grey', alpha=.4)
-ax[1].set_xlabel(r'$-\partial_z\bar u$ (s$^{-1}$)')
-ax[1].set_title('M1 : cisaillement', fontweight='bold'); ax[1].grid(alpha=.3)
+ax[1].set_xlabel('profil normalisé (z-score)')
+ax[1].set_title('Quelle FORME colle ?', fontweight='bold'); ax[1].legend(fontsize=9); ax[1].grid(alpha=.3)
 
-ax[2].plot(pred_M2[s], zf, 'darkgreen', lw=2)
+# (c) reconstruction normalisee M1+M2 et residu M3
+ax[2].plot(cov_n[s],  zf, 'k',     lw=2.8, label='mesuré')
+ax[2].plot(fit_n[s],  zf, 'orange',lw=2,   label=f'M1+M2 (R²={R2:.2f})')
+ax[2].plot(resid_n[s],zf, 'purple',lw=1.6, ls=':', label='M3 résidu (pression)')
 ax[2].axvline(0, color='grey', alpha=.4)
-ax[2].set_xlabel(r'$\varepsilon_{eff}(u_e-u_c)$'); ax[2].set_xlim(-2,2)
-ax[2].set_title('M2 : entraînement', fontweight='bold'); ax[2].grid(alpha=.3)
-
-# comparaison cov mesuree vs reconstruite M1+M2, residu = M3
-ax[3].plot(cov_up[s]*1e3, zf, 'k', lw=2.5, label='mesuré')
-ax[3].plot(fit[s]*1e3,    zf, 'orange', lw=2, label='M1+M2 (fit)')
-ax[3].plot(resid_M3[s]*1e3, zf, 'purple', lw=1.6, ls=':', label='M3 résidu (pression)')
-ax[3].axvline(0, color='grey', alpha=.4)
-ax[3].set_xlabel(r'($\times10^{-3}$)')
-ax[3].set_title('Décomposition mécaniste', fontweight='bold'); ax[3].legend(fontsize=8); ax[3].grid(alpha=.3)
+ax[2].set_xlabel('profil normalisé (z-score)')
+ax[2].set_title('Décomposition mécaniste', fontweight='bold'); ax[2].legend(fontsize=8); ax[2].grid(alpha=.3)
 plt.tight_layout(); plt.show()
