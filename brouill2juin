@@ -1,134 +1,111 @@
 # ============================================================================
-# INVESTIGATION T2 : quel mecanisme physique gouverne <u'w'>_up ?
+# TEST DES DEUX AFFIRMATIONS DE ROMPS
+#   A1 : le flux de masse montant cree de la subsidence (conservation de masse)
+#        -> sigma_env * wbar_env  doit compenser  sigma_up * wbar_up  (etre <0)
+#   A2 : cette subsidence est UNIFORME
+#        -> dans l'environnement, w doit etre peu disperse et sans queue de
+#           descendances intenses (sinon la compensation est STRUCTUREE, pas uniforme)
 # ============================================================================
 reg = mh; C = float(C_star)
 
-cov_up = np.full(n_z, np.nan)   # CIBLE : <u'_int w'_int>_up
-su_up  = np.full(n_z, np.nan)   # sigma_u interne
-sw_up  = np.full(n_z, np.nan)   # sigma_w interne
-skew_w = np.full(n_z, np.nan)   # skewness de w' interne
-varflx = np.full(n_z, np.nan)   # <u'^2 w'>_up
-sig_up = np.full(n_z, np.nan)   # fraction surfacique up
-ubar   = np.full(n_z, np.nan)   # vent moyen
+Mup   = np.full(n_z, np.nan)   # sigma_up * wbar_up   (flux de masse montant, >0)
+Menv  = np.full(n_z, np.nan)   # sigma_env * wbar_env (subsidence env, doit etre <0)
+Mdn   = np.full(n_z, np.nan)   # sigma_dn * wbar_dn   (descendances actives, <0)
+Mtot  = np.full(n_z, np.nan)   # somme (doit ~ 0 : conservation)
+wenv_mean = np.full(n_z, np.nan)  # <w>_env
+wenv_std  = np.full(n_z, np.nan)  # ecart-type de w DANS l'environnement
+wenv_skew = np.full(n_z, np.nan)  # skewness de w dans l'env (queue descendante ?)
+# part de la compensation portee par des descendances "fortes" vs subsidence "douce"
+frac_strong = np.full(n_z, np.nan)  # fraction du flux descendant portee par les 10% les plus intenses
 
-ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+ds_w = xr.open_dataset(path3d('wa'))
 for iz in range(n_z):
-    aub=acov=asu=asw=askw=avf=asig=0.0; n=0
+    aMu=aMe=aMd=awm=aws=ask=afr=0.0; n=0
     for it in range(t_stat, n_t):
-        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
         w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
-        ub = u.mean(); aub += ub
+        N = w.size
         ws, up, dn, env = classify(w, C)
-        if up.sum() >= 8:
-            uu, ww = u[up], w[up]
-            up_ = uu-uu.mean(); wp_ = ww-ww.mean()
-            su, sw = up_.std(), wp_.std()
-            acov += (up_*wp_).mean()
-            asu  += su; asw += sw
-            askw += (wp_**3).mean()/(sw**3 + 1e-12)
-            avf  += (up_**2 * wp_).mean()
-            asig += up.sum()/u.size
-        n += 1; del u, w
-    ubar[iz]=aub/n; cov_up[iz]=acov/n; su_up[iz]=asu/n; sw_up[iz]=asw/n
-    skew_w[iz]=askw/n; varflx[iz]=avf/n; sig_up[iz]=asig/n
+        su, sd, se = up.sum()/N, dn.sum()/N, env.sum()/N
+        aMu += su*(w[up].mean()  if up.any()  else 0.0)
+        aMd += sd*(w[dn].mean()  if dn.any()  else 0.0)
+        we = w[env]
+        aMe += se*(we.mean() if we.size else 0.0)
+        if we.size > 10:
+            awm += we.mean(); aws += we.std()
+            ask += ((we-we.mean())**3).mean()/(we.std()**3 + 1e-12)
+        # --- A2 : concentration de la subsidence ---
+        # toute la subsidence = points a w<0 (env + dn confondus), on regarde si elle
+        # est portee par une minorite de points intenses (structuree) ou repartie (uniforme)
+        wdesc = w[w < 0]
+        if wdesc.size > 10:
+            wsort = np.sort(wdesc)                 # du plus negatif au moins negatif
+            k = max(1, int(0.10*wsort.size))       # les 10% les plus descendants
+            afr += wsort[:k].sum() / wsort.sum()   # leur part du flux descendant total
+        n += 1; del w
+    Mup[iz]=aMu/n; Menv[iz]=aMe/n; Mdn[iz]=aMd/n; Mtot[iz]=(aMu+aMe+aMd)/n
+    wenv_mean[iz]=awm/n; wenv_std[iz]=aws/n; wenv_skew[iz]=ask/n; frac_strong[iz]=afr/n
     gc.collect()
-ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
+ds_w.close(); del ds_w; gc.collect()
 
-amp  = su_up * sw_up
-dudz = np.gradient(ubar, alt)
-s    = band()
+s = band()
+# ---------- A1 : la subsidence existe-t-elle, et compense-t-elle les cores ? ----------
+print("="*70)
+print("A1 — LE FLUX DE MASSE CREE-T-IL DE LA SUBSIDENCE ?")
+print("="*70)
+print(f"  flux montant   <M_up>  median = {np.nanmedian(Mup[s]):+.4f} m/s  (doit etre >0)")
+print(f"  flux env       <M_env> median = {np.nanmedian(Menv[s]):+.4f} m/s  (doit etre <0 = subsidence)")
+print(f"  flux dn        <M_dn>  median = {np.nanmedian(Mdn[s]):+.4f} m/s")
+print(f"  somme M_tot           median = {np.nanmedian(Mtot[s]):+.2e} m/s  (doit ~0 : conservation)")
+# ratio de compensation : quelle part du montant est compensee par l'env seul ?
+comp_env = -Menv / Mup
+comp_dn  = -Mdn  / Mup
+print(f"\n  part du montant compensee par l'ENV  : {np.nanmedian(comp_env[s])*100:+.0f} %")
+print(f"  part du montant compensee par les DN : {np.nanmedian(comp_dn[s])*100:+.0f} %")
+print("  -> A1 VRAIE si M_env<0 et somme~0. Si comp_dn non negligeable, une partie")
+print("     de la compensation passe par des descendances actives, pas que la subsidence env.")
 
-def zcorr(a, b, s):
-    a, b = a[s], b[s]; ok = np.isfinite(a)&np.isfinite(b)
-    return np.corrcoef(a[ok], b[ok])[0,1] if ok.sum() >= 5 else np.nan
+# ---------- A2 : cette subsidence est-elle UNIFORME ? ----------
+print("\n"+"="*70)
+print("A2 — CETTE SUBSIDENCE EST-ELLE UNIFORME ?")
+print("="*70)
+print(f"  <w>_env          median = {np.nanmedian(wenv_mean[s]):+.4f} m/s")
+print(f"  std(w) dans env  median = {np.nanmedian(wenv_std[s]):+.4f} m/s")
+print(f"  ratio std/|mean| median = {np.nanmedian((wenv_std/np.abs(wenv_mean))[s]):.1f}")
+print(f"     (>>1 => fluctuations >> subsidence moyenne => PAS uniforme)")
+print(f"  skewness w_env   median = {np.nanmedian(wenv_skew[s]):+.2f}")
+print(f"     (<0 marque => queue de descendances intenses => PAS uniforme)")
+print(f"\n  part du flux descendant portee par les 10% les plus intenses :"
+      f" {np.nanmedian(frac_strong[s])*100:.0f} %")
+print(f"     (uniforme => ~10% ; structure => >>10%)")
 
-# (1) quel candidat suit la covariance interne ?
-print("=== correlation de <u'w'>_up avec chaque candidat ===")
-for name, arr in {'sigma_u':su_up, 'sigma_w':sw_up, 'sigma_u*sigma_w (AMPLITUDE)':amp,
-                  'skewness w (STRUCTURE)':skew_w, "transport variance <u'^2 w'>":varflx}.items():
-    print(f"  {name:>30} : r = {zcorr(cov_up, arr, s):+.2f}")
-
-# (2) ce qui module la correlation interne r0(z)
-r0_prof = cov_up / (amp + 1e-12)
-print("\n=== ce qui module r0(z) ===")
-for name, arr in {'-dudz (cisaillement)':-dudz, 'sigma_w':sw_up, 'altitude':alt}.items():
-    print(f"  r0(z) vs {name:>20} : r = {zcorr(r0_prof, arr, s):+.2f}")
-
-# (3) tests de fermeture : amplitude seule vs down-gradient
-r0c = np.nanmedian(r0_prof[s])
-predA = r0c * amp
-predB = dudz * amp
-a_, b_ = cov_up[s], predB[s]; ok = np.isfinite(a_)&np.isfinite(b_)
-cB = np.sum(a_[ok]*b_[ok])/np.sum(b_[ok]**2)
-print("\n=== tests de fermeture (NSE vs <u'w'>_up) ===")
-print(f"  amplitude  r0*su*sw    (r0={r0c:+.3f}) : NSE = {nse(cov_up, predA,    s):+.3f}")
-print(f"  down-grad  c*dudz*su*sw (c={cB:+.2e}) : NSE = {nse(cov_up, cB*predB, s):+.3f}")
-
-# (4) diagnostic des signes
-print("\n=== signes sur la bande ===")
-print(f"  <u'w'>_up : {np.sum(cov_up[s]>0)} +, {np.sum(cov_up[s]<0)} -  (STABLE)")
-print(f"  dudz      : {np.sum(dudz[s]>0)} +, {np.sum(dudz[s]<0)} -  (OSCILLANT)")
-
-
-
-
-
-# ============================ FIGURE de synthese ============================
+# ============================ FIGURES ============================
 zf = alt[s]
-def zsc(x): m=np.isfinite(x); mu,sd=np.nanmean(x[m]),np.nanstd(x[m]); return (x-mu)/sd
 fig, ax = plt.subplots(1, 3, figsize=(16, 7), sharey=True)
 
-# (a) covariance vs amplitude (formes normalisees)
-ax[0].plot(zsc(cov_up)[s], zf, 'k',          lw=2.8, label=r"$\langle u'w'\rangle_{up}$")
-ax[0].plot(zsc(amp)[s],    zf, 'darkorange', lw=2,   label=r'$\sigma_u\sigma_w$')
-ax[0].plot(zsc(skew_w)[s], zf, 'grey',       lw=1.5, ls=':', label='skewness w')
+# (a) A1 : les flux de masse et leur somme
+ax[0].plot(Mup[s],  zf, 'crimson',   lw=2, label=r'$M_{up}$ (montant)')
+ax[0].plot(Menv[s], zf, 'green',     lw=2, label=r'$M_{env}$ (subsidence)')
+ax[0].plot(Mdn[s],  zf, 'royalblue', lw=2, label=r'$M_{dn}$ (descendances)')
+ax[0].plot(Mtot[s], zf, 'k--',       lw=1.5, label=r'$\sum$ (conservation)')
 ax[0].axvline(0, color='grey', alpha=.4)
-ax[0].set_xlabel('profil normalisé'); ax[0].set_ylabel('Altitude (m)')
-ax[0].set_title("L'amplitude suit la covariance", fontweight='bold')
+ax[0].set_xlabel(r'flux de masse cinématique $\sigma_k\bar w_k$ (m/s)')
+ax[0].set_ylabel('Altitude (m)')
+ax[0].set_title('A1 : subsidence créée ?', fontweight='bold')
 ax[0].legend(fontsize=8); ax[0].grid(alpha=.3)
 
-# (b) signes : covariance stable vs cisaillement oscillant
-ax[1].plot(cov_up[s]*1e3, zf, 'k', lw=2.5, label=r"$\langle u'w'\rangle_{up}$")
-ax1b = ax[1].twiny()
-ax1b.plot(dudz[s], zf, 'navy', lw=1.8, ls='--')
+# (b) A2 : dispersion de w dans l'environnement
+ax[1].plot(wenv_mean[s], zf, 'green', lw=2.5, label=r'$\langle w\rangle_{env}$')
+ax[1].fill_betweenx(zf, (wenv_mean-wenv_std)[s], (wenv_mean+wenv_std)[s],
+                    color='green', alpha=.2, label=r'$\pm\sigma_w$ env')
 ax[1].axvline(0, color='grey', alpha=.4)
-ax[1].set_xlabel(r"$\langle u'w'\rangle_{up}$ ($\times10^{-3}$)", color='k')
-ax1b.set_xlabel(r'$\partial_z\bar u$ (s$^{-1}$)', color='navy'); ax1b.tick_params(colors='navy')
-ax[1].set_title('Signe stable vs cisaillement oscillant', fontweight='bold'); ax[1].grid(alpha=.3)
+ax[1].set_xlabel(r'$w$ dans l\'environnement (m/s)')
+ax[1].set_title('A2 : subsidence uniforme ?', fontweight='bold')
+ax[1].legend(fontsize=8); ax[1].grid(alpha=.3)
 
-# (c) test des deux fermetures
-ax[2].plot(cov_up[s]*1e3,     zf, 'k',          lw=2.8, label='mesuré')
-ax[2].plot(predA[s]*1e3,      zf, 'darkorange', lw=2,   label=f'amplitude (NSE={nse(cov_up,predA,s):.2f})')
-ax[2].plot((cB*predB)[s]*1e3, zf, 'navy',       lw=1.6, ls='--', label=f'down-grad (NSE={nse(cov_up,cB*predB,s):.2f})')
-ax[2].axvline(0, color='grey', alpha=.4)
-ax[2].set_xlabel(r'($\times10^{-3}$)')
-ax[2].set_title('Fermeture : amplitude vs down-gradient', fontweight='bold')
+# (c) A2 : concentration de la compensation
+ax[2].plot(frac_strong[s]*100, zf, 'purple', lw=2.5, label='part des 10% les + intenses')
+ax[2].axvline(10, color='grey', ls=':', lw=2, label='seuil uniforme (10%)')
+ax[2].set_xlabel('% du flux descendant')
+ax[2].set_title('A2 : compensation concentrée ?', fontweight='bold')
 ax[2].legend(fontsize=8); ax[2].grid(alpha=.3)
 plt.tight_layout(); plt.show()
-
-
-
-
-## Conclusion — D'où vient $T_2$ ? Un terme d'amplitude, non diffusif
-
-On décompose la covariance interne des updrafts en
-$\langle u'w'\rangle_{up} = r_0 \cdot \sigma_{u,up}\,\sigma_{w,up}$
-(corrélation interne × amplitudes), et on cherche lequel de ces facteurs gouverne $T_2$.
-
-**Ce qui est éliminé.**
-- **Structure (skewness)** : $r \approx 0.01$ avec la covariance. L'asymétrie cœur/bord des updrafts ne porte **pas** $T_2$.
-- **Cisaillement en facteur (down-gradient)** : la fermeture $c\,\partial_z\bar u\,\sigma_u\sigma_w$ donne un **NSE négatif** ($\approx -0.84$). La raison est diagnostiquée directement par les signes : la covariance interne a un signe **stable** (24 niveaux négatifs / 32), tandis que $\partial_z\bar u$ **oscille** (16+/16−). Multiplier par le cisaillement injecte des inversions de signe que la covariance n'a pas → une fermeture diffusive est structurellement fausse.
-
-**Ce qui ressort.**
-- **Amplitude** : $\sigma_u\sigma_w$ est le meilleur prédicteur ($r = +0.63$ ; $\sigma_w$ seul $0.57 > \sigma_u$ seul $0.29$, le produit fait mieux que chacun). La fermeture $\langle u'w'\rangle_{up} \approx r_0\,\sigma_{u,up}\,\sigma_{w,up}$ avec $r_0$ constant atteint **NSE $\approx 0.36$** — modeste mais positif, et **rien n'a fait mieux**.
-- **Corrélation interne** $r_0 \approx -0.04$, faible et de signe stable (cohérent avec les $r \approx -0.05$ des scatterplots de l'Obj 1). Le cisaillement *module* faiblement $r_0(z)$ (corr $0.63$ sur la forme normalisée) mais ne se met **pas** en facteur multiplicatif : ajouté en régression, il ne fait passer le $R^2$ que de $0.36$ à $0.42$.
-
-**Modèle physique retenu.**
-
-$$T_2^{up} \approx r_0\,\rho_0\,\sigma_{up}\,\sigma_{u,up}\,\sigma_{w,up}, \qquad r_0 \approx -0.04 \text{ (quasi-constant)}$$
-
-$T_2$ vit là où **la turbulence interne des cœurs est intense** ($\sigma_u\sigma_w$ grand), pas là où le cisaillement est fort. C'est un transport **non-local et non-diffusif** : une corrélation interne faible mais systématique, appliquée à de grandes fluctuations.
-
-**Conséquence pour la comparaison à Romps.** Sa diffusion effective $\nu = M/\rho\varepsilon$ est par construction **down-gradient** ($\propto \partial_z\bar u$). Or $T_2$ **ne suit pas le gradient** (NSE négatif de toute fermeture diffusive, signe stable face à un cisaillement oscillant). Le cadre bulk-plume diffusif de Romps capture donc le transport **organisé** ($T_1$, $\sim 56\,\%$) mais ne peut **structurellement pas** porter $T_2$ ($\sim 44\,\%$), 2ᵉ moment non-diffusif fermable seulement par les **variances internes**. C'est la justification quantitative d'une fermeture **EDMF + variance** plutôt qu'une diffusion effective seule.
-
-**Réserve d'honnêteté.** Le NSE de $0.36$ laisse $\sim 64\,\%$ de la variance de $\langle u'w'\rangle_{up}$ non capturée par $r_0$ constant : l'amplitude est le **prédicteur dominant identifié**, pas une fermeture aboutie. Affiner $r_0$ reste un travail ouvert — mais la conclusion *qualitative* (terme d'amplitude, non-diffusif) est robuste car elle survit à tous les tests de signe.
