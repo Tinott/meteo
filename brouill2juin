@@ -1,26 +1,8 @@
-# A) {sw, amp} est-il juste "sw pondere plus fort"? Test : sw seul, et sw*amp
-import numpy as np
-def loo_quick(cols):
-    idx=[names.index(c) for c in cols]; pred=np.empty(N)
-    for i in range(N):
-        tr=np.arange(N)!=i
-        Xtr,Xte=standardize(X[tr][:,idx],X[i:i+1][:,idx])
-        pred[i]=ols_fit_predict(Xtr,y[tr],Xte)[0]
-    return nse_vec(y,pred)
+  ['sw']               LOO-NSE=+0.240
+  ['su']               LOO-NSE=-0.033
+  ['amp']              LOO-NSE=+0.327
+  ['sw', 'amp']        LOO-NSE=+0.531
+  ['sw', 'su']         LOO-NSE=+0.373
 
-for c in (['sw'],['su'],['amp'],['sw','amp'],['sw','su']):
-    print(f"  {str(c):20} LOO-NSE={loo_quick(c):+.3f}")
-
-# B) colinearite sw / amp sur la bande
-r_sw_amp = np.corrcoef(X[:,names.index('sw')], X[:,names.index('amp')])[0,1]
-print(f"\n  corr(sw, amp) = {r_sw_amp:+.2f}  (si proche de 1 -> redondance, pas info nouvelle)")
-
-# C) le gain tient-il si on enleve les 2 points les plus influents? (robustesse)
-idx=[names.index('sw'),names.index('amp')]
-res_loo=np.array([y[i]-(lambda tr: ols_fit_predict(*standardize(X[tr][:,idx],X[i:i+1][:,idx])[:1]+(y[tr],),standardize(X[tr][:,idx],X[i:i+1][:,idx])[1])[0])(np.arange(N)!=i) for i in range(N)])
-worst=np.argsort(-np.abs(res_loo))[:2]
-keep=np.ones(N,bool); keep[worst]=False
-Xk,yk=X[keep][:,idx],y[keep]; pred=np.empty(keep.sum())
-for i in range(keep.sum()):
-    tr=np.arange(keep.sum())!=i; a,b=standardize(Xk[tr],Xk[i:i+1]); pred[i]=ols_fit_predict(a,yk[tr],b)[0]
-print(f"  NSE {{sw,amp}} sans les 2 niveaux les + influents = {nse_vec(yk,pred):+.3f}  (z={alt[m][worst]})")
+  corr(sw, amp) = +0.99  (si proche de 1 -> redondance, pas info nouvelle)
+  NSE {sw,amp} sans les 2 niveaux les + influents = +0.641  (z=[4000. 8000.])
