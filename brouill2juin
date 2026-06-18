@@ -1,111 +1,207 @@
-# ============================================================================
-# BANC D'ESSAI (numpy pur) : fermeture parcimonieuse de <u'w'>_up
-#   LOO-CV maison, OLS via lstsq, Lasso via descente de coordonnees.
-#   Reutilise : cov_up, su_up, sw_up, skew_w, varflx, sig_up, ubar, dudz, amp, alt, band
-# ============================================================================
-from itertools import combinations
+Matplotlib is building the font cache; this may take a moment.
+Pret.
+100 t x 74 z   |  altitude 0-32500 m   |  t_stat=66
+Humide 42.3%   Sec 57.7%
+rho0 surface 1.183  ~10km 0.410 kg/m3
+classify / cond_mean / band / nse  -> OK
+controle |rey-(T1+T2)| max = 1.27e-09  (doit ~0)
+part T1 (organise)    mediane = 0.56
+part T2 (sous-maille) mediane = 0.44
+echantillons prets pour [3000, 5000, 8000, 12000]
+Conservation de la masse : sum_k sigma_k wbar_k  (doit ~ wbar_global ~ 0)
+  residu median |R_mass| @C*=0.8 : 5.07e-03 m/s
 
-s = band()
+    C |   NSE(Phi_MF=T1 vs Reynolds total)
+ 0.10 |                             -0.136
+ 0.20 |                             +0.158
+ 0.30 |                             +0.342
+ 0.50 |                             +0.506
+ 0.80 |                             +0.550
+ 1.00 |                             +0.528
+ 1.20 |                             +0.486
+ 1.50 |                             +0.415
+ 2.00 |                             +0.291
+ 3.00 |                             +0.060
 
-feat = {
-    'su'      : su_up,        'sw'   : sw_up,      'amp'    : amp,
-    'skew_w'  : skew_w,       'varflx': varflx,    'sig_up' : sig_up,
-    'dudz'    : dudz,         'amp_dudz': amp*dudz,'sw2'    : sw_up**2,
-}
-names = list(feat.keys())
-X_all = np.column_stack([feat[k] for k in names])
-y_all = cov_up.copy()
+>> C* (flux de masse 3-cat optimal) = 0.8   (NSE = +0.550)
+NSE Romps (2 cat, up+subsidence) vs Reynolds = -0.036
+NSE moi   (3 cat, up+dn+env)     vs Reynolds = +0.550
+part mediane portee explicitement par dn (3-cat) = +35 %
+/tmp/ipykernel_5840/2181733594.py:42: RuntimeWarning: invalid value encountered in divide
+  f'{np.nanmedian((contrib_dn/Phi_3cat)[s])*100:+.0f} %')
+contraste |u_e-u_c| median = 0.54 m/s
+eps_c effectif (masque) median = -0.034 km^-1
+eps_d effectif (masque) median = +0.080 km^-1
+(Romps : ~1.5 km^-1 pour le vent, ~0.4 pour un traceur passif)
+/tmp/ipykernel_5840/4171548654.py:27: RuntimeWarning: divide by zero encountered in divide
+  eps_c = np.where(np.abs(den_c)>DU_MIN, duc/den_c, np.nan)
+/tmp/ipykernel_5840/4171548654.py:28: RuntimeWarning: divide by zero encountered in divide
+  eps_d = np.where(np.abs(den_d)>DU_MIN, dud/den_d, np.nan)
+conservation masse : |sum_k sigma_k wbar_k| median = 5.07e-03 m/s (~0)
+reconstruction terminee.
+           bande |   modele |     NSE |  RMSE(e-3) | amp pred/vrai
+------------------------------------------------------------------
+    basse 2-6 km |    Romps | -101.781 |     38.673 |          0.47
+    basse 2-6 km |      moi |  -3.732 |      8.298 |          0.71
+------------------------------------------------------------------
+ moyenne 6-10 km |    Romps | -123.470 |     33.682 |          0.35
+ moyenne 6-10 km |      moi | -12.863 |     11.241 |          0.55
+------------------------------------------------------------------
+  haute 10-15 km |    Romps |  -5.809 |     15.231 |          0.54
+  haute 10-15 km |      moi |  +0.318 |      4.820 |          0.52
+------------------------------------------------------------------
+  global 2-15 km |    Romps |  -8.583 |     29.975 |          0.43
+  global 2-15 km |      moi |  +0.264 |      8.306 |          0.63
+------------------------------------------------------------------
 
-m = np.isfinite(y_all) & np.all(np.isfinite(X_all), axis=1)
-m[:s.start] = False; m[s.stop:] = False
-X = X_all[m]; y = y_all[m]; N = len(y)
-print(f"N niveaux exploitables = {N}  (bande {alt[s.start]:.0f}-{alt[s.stop-1]:.0f} m)\n")
+amplitude organisee / Reynolds total (global) = 0.63  => plafond intrinseque d'un flux de masse
+|T2| maximal a z = 6500 m   (T2 = -12.586 e-3)
+  qui domine a ce niveau : up=-5.51, dn=-1.27, env=-5.81 (e-3)
 
-def nse_vec(t, p): return 1 - np.sum((t-p)**2)/np.sum((t-t.mean())**2)
+--- up : corr. verticale de |T2_up| avec chaque facteur ---
+        r_k : r = -0.62
+    sigma_u : r = +0.04
+    sigma_w : r = +0.71
+    sigma_k : r = -0.72
+      su*sw : r = +0.73
 
-def standardize(Xtr, Xte):
-    mu, sd = Xtr.mean(0), Xtr.std(0); sd = np.where(sd < 1e-12, 1.0, sd)
-    return (Xtr-mu)/sd, (Xte-mu)/sd
+--- dn : corr. verticale de |T2_dn| avec chaque facteur ---
+        r_k : r = -0.87
+    sigma_u : r = -0.16
+    sigma_w : r = +0.83
+    sigma_k : r = -0.77
+      su*sw : r = +0.82
 
-# --- OLS via moindres carres (colonne de 1 pour l'intercept) ---
-def ols_fit_predict(Xtr, ytr, Xte):
-    A = np.column_stack([np.ones(len(Xtr)), Xtr])
-    beta, *_ = np.linalg.lstsq(A, ytr, rcond=None)
-    return np.column_stack([np.ones(len(Xte)), Xte]) @ beta
+--- env : corr. verticale de |T2_env| avec chaque facteur ---
+        r_k : r = -0.99
+    sigma_u : r = -0.92
+    sigma_w : r = +0.66
+    sigma_k : r = +0.88
+      su*sw : r = +0.01
+=== correlation de <u'w'>_up avec chaque candidat ===
+                         sigma_u : r = -0.29
+                         sigma_w : r = -0.57
+     sigma_u*sigma_w (AMPLITUDE) : r = -0.63
+          skewness w (STRUCTURE) : r = -0.01
+    transport variance <u'^2 w'> : r = -0.56
 
-# --- Lasso par descente de coordonnees (donnees centrees/reduites) ---
-def lasso_fit(Xtr, ytr, lam, n_iter=500):
-    n, p = Xtr.shape; b = np.zeros(p); yb = ytr.mean(); r = ytr - yb
-    col2 = (Xtr**2).sum(0)
-    for _ in range(n_iter):
-        for j in range(p):
-            r += Xtr[:, j]*b[j]
-            rho = Xtr[:, j] @ r
-            b[j] = np.sign(rho)*max(abs(rho)-lam*n, 0)/ (col2[j] + 1e-12)
-            r -= Xtr[:, j]*b[j]
-    return yb, b
+=== ce qui module r0(z) ===
+  r0(z) vs -dudz (cisaillement) : r = -0.63
+  r0(z) vs              sigma_w : r = -0.18
+  r0(z) vs             altitude : r = -0.09
 
-def loo_nse_generic(fitpred):
-    pred = np.empty(N)
-    for i in range(N):
-        tr = np.arange(N) != i
-        pred[i] = fitpred(X[tr], y[tr], X[i:i+1])[0]
-    return nse_vec(y, pred), pred
+=== tests de fermeture (NSE vs <u'w'>_up) ===
+  amplitude  r0*su*sw    (r0=-0.041) : NSE = +0.359
+  down-grad  c*dudz*su*sw (c=+5.21e+00) : NSE = -0.838
 
-# ===== 0) BASELINE r0*amp (r0 calibre hors point i) =====
-ai = names.index('amp'); predb = np.empty(N)
-for i in range(N):
-    tr = np.arange(N) != i
-    r0 = np.median(y[tr]/(X[tr, ai] + 1e-12)); predb[i] = r0*X[i, ai]
-nse_base = nse_vec(y, predb)
-print(f"[BASELINE] r0*amp            LOO-NSE = {nse_base:+.3f}   <-- a battre\n")
+=== signes sur la bande ===
+  <u'w'>_up : 8 +, 24 -  (STABLE)
+  dudz      : 16 +, 16 -  (OSCILLANT)
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
 
-# ===== 1) OLS dictionnaire complet =====
-def ols_std(Xtr, ytr, Xte):
-    Xtr_s, Xte_s = standardize(Xtr, Xte); return ols_fit_predict(Xtr_s, ytr, Xte_s)
-nse_ols, _ = loo_nse_generic(ols_std)
-print(f"[OLS dict complet ({len(names)})]  LOO-NSE = {nse_ols:+.3f}  (sur-ajuste, attendu bas)")
 
-# ===== 2) Lasso, balayage de lambda en LOO =====
-lams = np.logspace(-4, 0, 25)
-best_lam, best_nse_l = None, -np.inf
-for lam in lams:
-    def lasso_pred(Xtr, ytr, Xte, lam=lam):
-        Xtr_s, Xte_s = standardize(Xtr, Xte)
-        yb, b = lasso_fit(Xtr_s, ytr, lam); return Xte_s @ b + yb
-    sc, _ = loo_nse_generic(lasso_pred)
-    if sc > best_nse_l: best_nse_l, best_lam = sc, lam
-# features retenus sur tout l'echantillon au meilleur lambda
-mu, sd = X.mean(0), X.std(0); sd = np.where(sd<1e-12,1,sd)
-_, bfull = lasso_fit((X-mu)/sd, y, best_lam)
-kept = sorted([(n,c) for n,c in zip(names,bfull) if abs(c)>1e-8], key=lambda t:-abs(t[1]))
-print(f"[LASSO best]                 LOO-NSE = {best_nse_l:+.3f}  (lambda={best_lam:.1e})")
-print("   features retenus :", ", ".join(f"{n}({c:+.2f})" for n,c in kept) or "aucun")
-print()
+ 
+ 
+ 
+ 
+ 
+ 
+ 
 
-# ===== 3) Best-subset k=1,2 (loi simple, GCM-ready) =====
-print("[BEST-SUBSET] meilleurs modeles 1-2 termes (LOO-NSE) :")
-res = []
-for k in (1, 2):
-    for combo in combinations(range(len(names)), k):
-        idx = list(combo)
-        sc, _ = loo_nse_generic(lambda Xtr,ytr,Xte,idx=idx: ols_std(Xtr[:,idx],ytr,Xte[:,idx]))
-        res.append((sc, [names[j] for j in idx]))
-res.sort(key=lambda t:-t[0])
-for sc, combo in res[:8]:
-    flag = "  <-- bat baseline" if sc > nse_base else ""
-    print(f"   NSE={sc:+.3f}  {{{', '.join(combo)}}}{flag}")
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
 
-# ===== 4) VERDICT =====
-best_sc, best_combo = res[0]; gain = best_sc - nse_base
-print("\n" + "="*64)
-if gain > 0.05:
-    print(f"VERDICT : {{{', '.join(best_combo)}}} bat la baseline de +{gain:.3f} NSE en CV.")
-    print("          -> piste de fermeture du 2nd moment a creuser (interpreter avant d'y croire).")
-elif gain > 0:
-    print(f"VERDICT : gain marginal (+{gain:.3f}). Vu N={N}, prudence : possible bruit.")
-else:
-    print(f"VERDICT : rien ne bat r0*amp (meilleur={best_sc:+.3f}).")
-    print("          Resultat FORT : <u'w'>_up est un pur terme d'amplitude, r0 ~ constant.")
-    print("          La fermeture amplitude est optimale dans sa classe -- demontre, pas constate.")
-print("="*64)
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+
+ 
+ 
+ 
+
+ 
+ 
+ 
+ 
+ 
+
+ 
+ 
+ 
+ 
+ 
+
+======================================================================
+A1 — LE FLUX DE MASSE CREE-T-IL DE LA SUBSIDENCE ?
+======================================================================
+  flux montant   <M_up>  median = +0.0252 m/s  (doit etre >0)
+  flux env       <M_env> median = -0.0032 m/s  (doit etre <0 = subsidence)
+  flux dn        <M_dn>  median = -0.0197 m/s
+  somme M_tot           median = +5.07e-03 m/s  (doit ~0 : conservation)
+
+  part du montant compensee par l'ENV  : +12 %
+  part du montant compensee par les DN : +67 %
+  -> A1 VRAIE si M_env<0 et somme~0. Si comp_dn non negligeable, une partie
+     de la compensation passe par des descendances actives, pas que la subsidence env.
+
+======================================================================
+A2 — CETTE SUBSIDENCE EST-ELLE UNIFORME ?
+======================================================================
+  <w>_env          median = -0.0034 m/s
+  std(w) dans env  median = +0.0773 m/s
+  ratio std/|mean| median = 22.2
+     (>>1 => fluctuations >> subsidence moyenne => PAS uniforme)
+  skewness w_env   median = +0.02
+     (<0 marque => queue de descendances intenses => PAS uniforme)
+
+  part du flux descendant portee par les 10% les plus intenses : 38 %
+     (uniforme => ~10% ; structure => >>10%)
+/tmp/ipykernel_5840/1011320852.py:60: RuntimeWarning: divide by zero encountered in divide
+  comp_env = -Menv / Mup
+/tmp/ipykernel_5840/1011320852.py:61: RuntimeWarning: invalid value encountered in divide
+  comp_dn  = -Mdn  / Mup
+N niveaux exploitables = 32  (bande 2055-17500 m)
+
+[BASELINE] r0*amp            LOO-NSE = +0.296   <-- a battre
+
+[OLS dict complet (9)]  LOO-NSE = +0.904  (sur-ajuste, attendu bas)
+[LASSO best]                 LOO-NSE = +0.828  (lambda=4.6e-04)
+   features retenus : sw2(+0.32), amp(-0.29), varflx(-0.27), sig_up(-0.18), dudz(+0.04), amp_dudz(-0.04), su(-0.04), skew_w(-0.03), sw(-0.00)
+
+[BEST-SUBSET] meilleurs modeles 1-2 termes (LOO-NSE) :
+   NSE=+0.531  {sw, amp}  <-- bat baseline
+   NSE=+0.418  {su, amp}  <-- bat baseline
+   NSE=+0.417  {amp, sw2}  <-- bat baseline
+   NSE=+0.406  {amp, skew_w}  <-- bat baseline
+   NSE=+0.400  {su, varflx}  <-- bat baseline
+   NSE=+0.373  {su, sw}  <-- bat baseline
+   NSE=+0.331  {amp, dudz}  <-- bat baseline
+   NSE=+0.327  {amp}  <-- bat baseline
+
+================================================================
+VERDICT : {sw, amp} bat la baseline de +0.236 NSE en CV.
+          -> piste de fermeture du 2nd moment a creuser (interpreter avant d'y croire).
+================================================================
