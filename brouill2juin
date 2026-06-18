@@ -1,111 +1,115 @@
 # ============================================================================
-# TEST DES DEUX AFFIRMATIONS DE ROMPS
-#   A1 : le flux de masse montant cree de la subsidence (conservation de masse)
-#        -> sigma_env * wbar_env  doit compenser  sigma_up * wbar_up  (etre <0)
-#   A2 : cette subsidence est UNIFORME
-#        -> dans l'environnement, w doit etre peu disperse et sans queue de
-#           descendances intenses (sinon la compensation est STRUCTUREE, pas uniforme)
+# BANC D'ESSAI : fermeture parcimonieuse de <u'w'>_up  (cible = cov_up)
+#   Objectif : battre la baseline amplitude r0c*amp en validation croisee LOO.
+#   Methodes : OLS dictionnaire, Lasso (chemin complet), best-subset k<=2.
+#   Regle d'or : un score n'est credible qu'en LOO-CV (32 niveaux => sur-ajust facile).
 # ============================================================================
-reg = mh; C = float(C_star)
-
-Mup   = np.full(n_z, np.nan)   # sigma_up * wbar_up   (flux de masse montant, >0)
-Menv  = np.full(n_z, np.nan)   # sigma_env * wbar_env (subsidence env, doit etre <0)
-Mdn   = np.full(n_z, np.nan)   # sigma_dn * wbar_dn   (descendances actives, <0)
-Mtot  = np.full(n_z, np.nan)   # somme (doit ~ 0 : conservation)
-wenv_mean = np.full(n_z, np.nan)  # <w>_env
-wenv_std  = np.full(n_z, np.nan)  # ecart-type de w DANS l'environnement
-wenv_skew = np.full(n_z, np.nan)  # skewness de w dans l'env (queue descendante ?)
-# part de la compensation portee par des descendances "fortes" vs subsidence "douce"
-frac_strong = np.full(n_z, np.nan)  # fraction du flux descendant portee par les 10% les plus intenses
-
-ds_w = xr.open_dataset(path3d('wa'))
-for iz in range(n_z):
-    aMu=aMe=aMd=awm=aws=ask=afr=0.0; n=0
-    for it in range(t_stat, n_t):
-        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
-        N = w.size
-        ws, up, dn, env = classify(w, C)
-        su, sd, se = up.sum()/N, dn.sum()/N, env.sum()/N
-        aMu += su*(w[up].mean()  if up.any()  else 0.0)
-        aMd += sd*(w[dn].mean()  if dn.any()  else 0.0)
-        we = w[env]
-        aMe += se*(we.mean() if we.size else 0.0)
-        if we.size > 10:
-            awm += we.mean(); aws += we.std()
-            ask += ((we-we.mean())**3).mean()/(we.std()**3 + 1e-12)
-        # --- A2 : concentration de la subsidence ---
-        # toute la subsidence = points a w<0 (env + dn confondus), on regarde si elle
-        # est portee par une minorite de points intenses (structuree) ou repartie (uniforme)
-        wdesc = w[w < 0]
-        if wdesc.size > 10:
-            wsort = np.sort(wdesc)                 # du plus negatif au moins negatif
-            k = max(1, int(0.10*wsort.size))       # les 10% les plus descendants
-            afr += wsort[:k].sum() / wsort.sum()   # leur part du flux descendant total
-        n += 1; del w
-    Mup[iz]=aMu/n; Menv[iz]=aMe/n; Mdn[iz]=aMd/n; Mtot[iz]=(aMu+aMe+aMd)/n
-    wenv_mean[iz]=awm/n; wenv_std[iz]=aws/n; wenv_skew[iz]=ask/n; frac_strong[iz]=afr/n
-    gc.collect()
-ds_w.close(); del ds_w; gc.collect()
+from itertools import combinations
+from sklearn.linear_model import LassoCV, LinearLayer if False else LinearRegression
+from sklearn.preprocessing import StandardScaler
 
 s = band()
-# ---------- A1 : la subsidence existe-t-elle, et compense-t-elle les cores ? ----------
-print("="*70)
-print("A1 — LE FLUX DE MASSE CREE-T-IL DE LA SUBSIDENCE ?")
-print("="*70)
-print(f"  flux montant   <M_up>  median = {np.nanmedian(Mup[s]):+.4f} m/s  (doit etre >0)")
-print(f"  flux env       <M_env> median = {np.nanmedian(Menv[s]):+.4f} m/s  (doit etre <0 = subsidence)")
-print(f"  flux dn        <M_dn>  median = {np.nanmedian(Mdn[s]):+.4f} m/s")
-print(f"  somme M_tot           median = {np.nanmedian(Mtot[s]):+.2e} m/s  (doit ~0 : conservation)")
-# ratio de compensation : quelle part du montant est compensee par l'env seul ?
-comp_env = -Menv / Mup
-comp_dn  = -Mdn  / Mup
-print(f"\n  part du montant compensee par l'ENV  : {np.nanmedian(comp_env[s])*100:+.0f} %")
-print(f"  part du montant compensee par les DN : {np.nanmedian(comp_dn[s])*100:+.0f} %")
-print("  -> A1 VRAIE si M_env<0 et somme~0. Si comp_dn non negligeable, une partie")
-print("     de la compensation passe par des descendances actives, pas que la subsidence env.")
+y_full = cov_up.copy()
 
-# ---------- A2 : cette subsidence est-elle UNIFORME ? ----------
-print("\n"+"="*70)
-print("A2 — CETTE SUBSIDENCE EST-ELLE UNIFORME ?")
-print("="*70)
-print(f"  <w>_env          median = {np.nanmedian(wenv_mean[s]):+.4f} m/s")
-print(f"  std(w) dans env  median = {np.nanmedian(wenv_std[s]):+.4f} m/s")
-print(f"  ratio std/|mean| median = {np.nanmedian((wenv_std/np.abs(wenv_mean))[s]):.1f}")
-print(f"     (>>1 => fluctuations >> subsidence moyenne => PAS uniforme)")
-print(f"  skewness w_env   median = {np.nanmedian(wenv_skew[s]):+.2f}")
-print(f"     (<0 marque => queue de descendances intenses => PAS uniforme)")
-print(f"\n  part du flux descendant portee par les 10% les plus intenses :"
-      f" {np.nanmedian(frac_strong[s])*100:.0f} %")
-print(f"     (uniforme => ~10% ; structure => >>10%)")
+# --- dictionnaire de predicteurs PHYSIQUEMENT motives (2nd moment + structure) ---
+feat = {
+    'su'        : su_up,                 # amplitude u interne
+    'sw'        : sw_up,                 # amplitude w interne
+    'amp'       : amp,                   # su*sw  (la baseline)
+    'skew_w'    : skew_w,                # asymetrie coeur/bord
+    'varflx'    : varflx,                # <u'^2 w'> transport interne de variance
+    'sig_up'    : sig_up,                # fraction surfacique
+    'dudz'      : dudz,                  # cisaillement (signe oscillant -> piege)
+    'amp_dudz'  : amp*dudz,              # down-gradient module par amplitude
+    'sw2'       : sw_up**2,              # variance w (TKE-like)
+}
 
-# ============================ FIGURES ============================
-zf = alt[s]
-fig, ax = plt.subplots(1, 3, figsize=(16, 7), sharey=True)
+# masque commun : niveaux de la bande, finis partout
+names = list(feat.keys())
+X_all = np.column_stack([feat[k] for k in names])
+m = np.isfinite(y_full) & np.all(np.isfinite(X_all), axis=1)
+m[:s.start] = False; m[s.stop:] = False
+X = X_all[m]; y = y_full[m]
+zlev = alt[m]
+N = len(y)
+print(f"N niveaux exploitables = {N}  (sur bande {alt[s.start]:.0f}-{alt[s.stop-1]:.0f} m)\n")
 
-# (a) A1 : les flux de masse et leur somme
-ax[0].plot(Mup[s],  zf, 'crimson',   lw=2, label=r'$M_{up}$ (montant)')
-ax[0].plot(Menv[s], zf, 'green',     lw=2, label=r'$M_{env}$ (subsidence)')
-ax[0].plot(Mdn[s],  zf, 'royalblue', lw=2, label=r'$M_{dn}$ (descendances)')
-ax[0].plot(Mtot[s], zf, 'k--',       lw=1.5, label=r'$\sum$ (conservation)')
-ax[0].axvline(0, color='grey', alpha=.4)
-ax[0].set_xlabel(r'flux de masse cinématique $\sigma_k\bar w_k$ (m/s)')
-ax[0].set_ylabel('Altitude (m)')
-ax[0].set_title('A1 : subsidence créée ?', fontweight='bold')
-ax[0].legend(fontsize=8); ax[0].grid(alpha=.3)
+def nse_vec(truth, pred):
+    return 1 - np.sum((truth-pred)**2)/np.sum((truth-truth.mean())**2)
 
-# (b) A2 : dispersion de w dans l'environnement
-ax[1].plot(wenv_mean[s], zf, 'green', lw=2.5, label=r'$\langle w\rangle_{env}$')
-ax[1].fill_betweenx(zf, (wenv_mean-wenv_std)[s], (wenv_mean+wenv_std)[s],
-                    color='green', alpha=.2, label=r'$\pm\sigma_w$ env')
-ax[1].axvline(0, color='grey', alpha=.4)
-ax[1].set_xlabel(r'$w$ dans l\'environnement (m/s)')
-ax[1].set_title('A2 : subsidence uniforme ?', fontweight='bold')
-ax[1].legend(fontsize=8); ax[1].grid(alpha=.3)
+# --- LOO-CV generique : renvoie le NSE hors-echantillon d'un estimateur sklearn ---
+def loo_nse(make_model, Xm):
+    pred = np.empty(N)
+    for i in range(N):
+        tr = np.arange(N) != i
+        sc = StandardScaler().fit(Xm[tr])
+        mdl = make_model().fit(sc.transform(Xm[tr]), y[tr])
+        pred[i] = mdl.predict(sc.transform(Xm[i:i+1]))[0]
+    return nse_vec(y, pred), pred
 
-# (c) A2 : concentration de la compensation
-ax[2].plot(frac_strong[s]*100, zf, 'purple', lw=2.5, label='part des 10% les + intenses')
-ax[2].axvline(10, color='grey', ls=':', lw=2, label='seuil uniforme (10%)')
-ax[2].set_xlabel('% du flux descendant')
-ax[2].set_title('A2 : compensation concentrée ?', fontweight='bold')
-ax[2].legend(fontsize=8); ax[2].grid(alpha=.3)
-plt.tight_layout(); plt.show()
+# =================== 0) BASELINE (r0 constant * amplitude) ===================
+# meme construction que ton predA, mais evaluee proprement en LOO
+def loo_nse_baseline():
+    pred = np.empty(N)
+    a_idx = names.index('amp')
+    for i in range(N):
+        tr = np.arange(N) != i
+        r0 = np.median(y[tr]/(X[tr, a_idx] + 1e-12))     # r0 calibre hors point i
+        pred[i] = r0 * X[i, a_idx]
+    return nse_vec(y, pred), pred
+nse_base, _ = loo_nse_baseline()
+print(f"[BASELINE]  r0*amp                 LOO-NSE = {nse_base:+.3f}   <-- a battre\n")
+
+# =================== 1) OLS sur le dictionnaire complet =====================
+nse_ols, _ = loo_nse(lambda: LinearRegression(), X)
+print(f"[OLS dict complet, {len(names)} feats] LOO-NSE = {nse_ols:+.3f}   "
+      f"(in-sample sur-ajuste, attendu bas en CV)")
+
+# =================== 2) Lasso (chemin complet, alpha auto-CV) ===============
+# StandardScaler integre dans la boucle LOO pour ne pas fuiter la variance test
+def make_lasso():
+    return LassoCV(cv=5, n_alphas=60, max_iter=20000, random_state=0)
+nse_lasso, _ = loo_nse(make_lasso, X)
+# coefficients retenus sur tout l'echantillon (lecture des features survivants)
+scl = StandardScaler().fit(X)
+lasso_full = make_lasso().fit(scl.transform(X), y)
+kept = [(n, c) for n, c in zip(names, lasso_full.coef_) if abs(c) > 1e-10]
+kept.sort(key=lambda t: -abs(t[1]))
+print(f"[LASSO]                            LOO-NSE = {nse_lasso:+.3f}")
+print(f"   alpha* = {lasso_full.alpha_:.2e} | features retenus (coef standardise) :")
+for n, c in kept: print(f"      {n:>10} : {c:+.3f}")
+print()
+
+# =================== 3) Best-subset interpretable (k = 1 et 2) ==============
+# on cherche LE couple de predicteurs qui generalise le mieux (loi simple, GCM-ready)
+print("[BEST-SUBSET]  meilleurs modeles a 1 et 2 termes (classes par LOO-NSE) :")
+results = []
+for k in (1, 2):
+    for combo in combinations(range(len(names)), k):
+        Xc = X[:, combo]
+        sc, _ = loo_nse(lambda: LinearRegression(), Xc)
+        results.append((sc, [names[j] for j in combo]))
+results.sort(key=lambda t: -t[0])
+for sc, combo in results[:8]:
+    flag = "  <-- bat la baseline" if sc > nse_base else ""
+    print(f"   NSE={sc:+.3f}  {{{', '.join(combo)}}}{flag}")
+print()
+
+# =================== 4) VERDICT ============================================
+best_sc, best_combo = results[0]
+gain = best_sc - nse_base
+print("="*68)
+if gain > 0.05:
+    print(f"VERDICT : le modele {{{', '.join(best_combo)}}} bat la baseline")
+    print(f"          de +{gain:.3f} NSE en validation croisee.")
+    print(f"          -> piste de fermeture du 2nd moment a creuser.")
+elif gain > 0:
+    print(f"VERDICT : amelioration marginale (+{gain:.3f}) sur {{{', '.join(best_combo)}}}.")
+    print(f"          Pas decisif vu N={N} : prudence, possible bruit d'echantillon.")
+else:
+    print(f"VERDICT : RIEN ne bat r0*amp en CV (meilleur = {best_sc:+.3f}).")
+    print(f"          Resultat FORT : <u'w'>_up est bien un pur terme d'amplitude,")
+    print(f"          la correlation interne r0 est structurellement ~constante.")
+    print(f"          La fermeture amplitude est la bonne -- et c'est demontre, pas")
+    print(f"          juste constate. C'est une conclusion publiable en soi.")
+print("="*68)
