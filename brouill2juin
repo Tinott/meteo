@@ -1,10 +1,11 @@
-# 1) r0 est-il vraiment ~constant ? si oui, T2 se reduit a un terme de variance.
 s = band()
-r0_prof = cov_up[s] / (su_up[s]*sw_up[s] + 1e-12)
-print(f"r0 = cov/(su*sw) : median={np.nanmedian(r0_prof):+.3f}  "
-      f"std={np.nanstd(r0_prof):.3f}  min/max={np.nanmin(r0_prof):+.2f}/{np.nanmax(r0_prof):+.2f}")
+r0_prof = cov_up / (su_up*sw_up + 1e-12)        # profil complet, pas juste la mediane
+dudz = np.gradient(ubar, alt)                    # ubar deja calcule plus haut ; sinon recalcule-le
 
-# 2) skill du modele de variance : cov_up ~ r0_const * su*sw
-r0c = np.nanmedian(r0_prof)
-pred = r0c * su_up * sw_up
-print(f"NSE  <u'w'>_up vs  r0*su*sw  = {nse(cov_up, pred, s):+.3f}")
+# qui pilote la MODULATION verticale de r0 ?
+for name, arr in {'-dudz (cisaillement)': -dudz,
+                  'sigma_w interne': sw_up,
+                  'sigma_u interne': su_up,
+                  'altitude': alt}.items():
+    a, b = r0_prof[s], arr[s]; ok = np.isfinite(a)&np.isfinite(b)
+    print(f"  r0(z) vs {name:>22} : r = {np.corrcoef(a[ok], b[ok])[0,1]:+.2f}")
