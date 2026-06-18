@@ -1,11 +1,30 @@
 s = band()
 dudz = np.gradient(ubar, alt)
-pred = dudz * su_up * sw_up                       # modele complet (a une constante pres)
-# calage de la constante c par moindres carres sur la bande
-a, b = cov_up[s], pred[s]; ok = np.isfinite(a)&np.isfinite(b)
-c = np.sum(a[ok]*b[ok]) / np.sum(b[ok]**2)
-print(f"constante c = {c:+.3e}  (signe + attendu => contre-gradient)")
-print(f"NSE  <u'w'>_up  vs  c*dudz*su*sw  = {nse(cov_up, c*pred, s):+.3f}")
+from numpy.linalg import lstsq
 
-# comparaison directe avec l'ancien modele a amplitude seule
-print(f"rappel NSE amplitude seule (r0 const) = 0.36")
+def zc(x):  # z-score sur la bande
+    m=np.isfinite(x); mu,sd=np.nanmean(x[m]),np.nanstd(x[m]); return (x-mu)/sd
+
+amp   = su_up*sw_up
+y     = cov_up
+
+# modele A : amplitude seule
+predA = np.nanmedian((y/(amp+1e-12))[s]) * amp
+# modele B : amplitude + cisaillement ADDITIF (pas multiplicatif), data-driven
+X = np.column_stack([zc(amp), zc(dudz), zc(amp*dudz), np.ones(n_z)])
+ok = np.all(np.isfinite(X),axis=1) & np.isin(np.arange(n_z),np.arange(n_z)[s])
+beta,*_ = lstsq(X[ok], zc(y)[ok], rcond=None)
+fitB = np.full(n_z,np.nan); fitB[ok] = X[ok]@beta
+
+print(f"NSE amplitude seule (r0 const)           = {nse(y, predA, s):+.3f}")
+print(f"R2  regression [amp, dudz, amp*dudz]     = "
+      f"{1-np.nansum((zc(y)[ok]-fitB[ok])**2)/np.nansum((zc(y)[ok]-np.nanmean(zc(y)[ok]))**2):+.3f}")
+print(f"  poids amplitude      : {beta[0]:+.2f}")
+print(f"  poids cisaillement   : {beta[1]:+.2f}")
+print(f"  poids interaction    : {beta[2]:+.2f}")
+
+# le signe de la covariance est-il stable, ou oscille-t-il ?
+print(f"\nsigne de <u'w'>_up sur la bande : "
+      f"{np.sum(cov_up[s]>0)} niveaux +, {np.sum(cov_up[s]<0)} niveaux -")
+print(f"signe de dudz sur la bande      : "
+      f"{np.sum(dudz[s]>0)} niveaux +, {np.sum(dudz[s]<0)} niveaux -")
