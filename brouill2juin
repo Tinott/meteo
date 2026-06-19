@@ -1,50 +1,114 @@
 # ============================================================================
-# TENDANCES (divergence verticale des flux) — le vrai terme de Navier-Stokes
-#   tend = -1/rho0 * d/dz ( rho0 * Phi )
-#   On compare la tendance Reynolds a la tendance Romps et a la tienne (3-cat).
-#   (reutilise rey_g, Phi_R, Phi_3 du run GLOBAL precedent)
+# TEST DES 3 EQUATIONS BULK-PLUME DE ROMPS, COURANT PAR COURANT (up/dn/env)
+# sur la zone humide. ATTENTION aux statuts differents des equations :
+#   (1) continuite : DEFINIT (eps-delta), pas un test  -> on extrait delta
+#   (3) panache    : DEFINIT eps,        pas un test    -> on extrait eps
+#   (2) moment     : SEULE equation FALSIFIABLE         -> vrai test
+#
+# Test de (2) = le flux top-hat M_k*(ubar-u_k) reproduit-il la partie
+#   ORGANISEE T1_k du Reynolds de ce courant ? (il NE PEUT PAS reproduire T2_k)
+#   On compare donc :
+#     flux bulk-plume   Phi_bp_k  = M_k (ubar - u_k)
+#     flux organise     T1_k      = rho0 sigma_k (u_k-ubar)(w_k-wbar)
+#     flux within       T2_k      = rho0 sigma_k <u'w'>_k   (ce que (2) rate)
+#   et leurs DIVERGENCES (terme de Navier-Stokes).
 # ============================================================================
-def tendance(Phi):
-    """-1/rho0 d/dz(rho0 * Phi), differences finies centrees sur la grille alt."""
-    return -np.gradient(rho0*Phi, alt) / rho0
+reg = mh; C = float(C_star)
+cats = ('up','dn','env')
 
-tend_rey = tendance(rey_g)
-tend_R   = tendance(Phi_R)
-tend_3   = tendance(Phi_3)
+# profils a stocker
+ubar   = np.full(n_z, np.nan)
+uk     = {k: np.full(n_z, np.nan) for k in cats}    # u_k
+wk     = {k: np.full(n_z, np.nan) for k in cats}    # w_k
+sigk   = {k: np.full(n_z, np.nan) for k in cats}    # sigma_k
+Mk     = {k: np.full(n_z, np.nan) for k in cats}    # M_k = rho0 sigma_k w_k
+T1k    = {k: np.full(n_z, np.nan) for k in cats}    # organise
+T2k    = {k: np.full(n_z, np.nan) for k in cats}    # within (sous-maille)
 
-s = band(); zf = alt[s]
-print("="*60)
-print("TENDANCES (divergence) — terme de Navier-Stokes")
-print("="*60)
-print(f"  NSE Romps (tendance) vs Reynolds = {nse(tend_rey, tend_R, s):+.3f}")
-print(f"  NSE 3-cat (tendance) vs Reynolds = {nse(tend_rey, tend_3, s):+.3f}")
-print(f"  (comparer aux NSE EN FLUX : la divergence amplifie les écarts de pente)")
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    aub=awb=0.0
+    au={k:0. for k in cats}; aw={k:0. for k in cats}; asg={k:0. for k in cats}
+    aT1={k:0. for k in cats}; aT2={k:0. for k in cats}; n=0
+    for it in range(t_stat, n_t):
+        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
+        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
+        ub, wb, N = u.mean(), w.mean(), u.size
+        aub += ub
+        ws, up, dn, env = classify(w, C)
+        for k, msk in (('up',up),('dn',dn),('env',env)):
+            if msk.sum() < 5:
+                continue
+            uu, ww = u[msk], w[msk]
+            uc, wc = uu.mean(), ww.mean()
+            sig = msk.sum()/N
+            au[k]  += uc; aw[k] += wc; asg[k] += sig
+            # T1 = transport organise (separation des moyennes), avec wbar retranche
+            aT1[k] += sig*(uc-ub)*(wc-wb)
+            # T2 = within (covariance interne a la categorie)
+            aT2[k] += sig*((uu-uc)*(ww-wc)).mean()
+        n+=1; del u, w
+    ubar[iz] = aub/n
+    for k in cats:
+        if asg[k] > 0:
+            uk[k][iz]=au[k]/n; wk[k][iz]=aw[k]/n; sigk[k][iz]=asg[k]/n
+            Mk[k][iz]=rho0[iz]*sigk[k][iz]*wk[k][iz]
+            T1k[k][iz]=rho0[iz]*aT1[k]/n
+            T2k[k][iz]=rho0[iz]*aT2[k]/n
+    gc.collect()
+ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
 
-sc = 1e5   # tendances ~ 1e-5 m/s^2
-fig, ax = plt.subplots(1, 3, figsize=(17, 7), sharey=True)
+# ---------------------------------------------------------------------------
+# helpers de derivation (differences finies centrees sur la grille alt)
+def ddz(x):           return np.gradient(x, alt)
+def div_flux(Phi):    return ddz(Phi)             # d/dz(Phi)  (= rho0 * dt_u pour eq.2)
 
-# (a) les flux (rappel)
-ax[0].plot(rey_g[s]*1e3, zf, 'k', lw=2.6, label=r'$\Phi_{rey}$')
-ax[0].plot(Phi_R[s]*1e3, zf, 'crimson', lw=2, ls='--', label='Romps')
-ax[0].plot(Phi_3[s]*1e3, zf, 'royalblue', lw=2, label='3-cat')
-ax[0].axvline(0, color='grey', alpha=.4)
-ax[0].set_xlabel(r'flux ($\times10^{-3}$)'); ax[0].set_ylabel('Altitude (m)')
-ax[0].set_title('Flux', fontweight='bold'); ax[0].legend(fontsize=8); ax[0].grid(alpha=.3)
+s = band()
+DU_MIN = 0.15   # m/s, garde-fou anti-singularite sur (ubar - u_k)
 
-# (b) les tendances = ce qui entre vraiment dans Navier-Stokes
-ax[1].plot(tend_rey[s]*sc, zf, 'k', lw=2.6, label=r'$-\frac{1}{\rho_0}\partial_z(\rho_0\Phi_{rey})$')
-ax[1].plot(tend_R[s]*sc,   zf, 'crimson', lw=2, ls='--', label='Romps')
-ax[1].plot(tend_3[s]*sc,   zf, 'royalblue', lw=2, label='3-cat')
-ax[1].axvline(0, color='grey', alpha=.4)
-ax[1].set_xlabel(r'tendance ($\times10^{-5}$ m/s²)')
-ax[1].set_title('Tendances (divergence)', fontweight='bold')
-ax[1].legend(fontsize=8); ax[1].grid(alpha=.3)
+print("="*72)
+print("STATUT DES 3 EQUATIONS BULK-PLUME, PAR COURANT")
+print("="*72)
+print("(1) continuite et (3) panache DEFINISSENT eps,delta -> jamais 'fausses'")
+print("(2) moment est la SEULE testable : M_k(ubar-u_k) reproduit-il T1_k ?\n")
 
-# (c) residus de tendance
-ax[2].plot((tend_rey-tend_R)[s]*sc, zf, 'crimson', lw=2, label='résidu Romps')
-ax[2].plot((tend_rey-tend_3)[s]*sc, zf, 'royalblue', lw=2, label='résidu 3-cat')
-ax[2].axvline(0, color='grey', alpha=.4)
-ax[2].set_xlabel(r'résidu tendance ($\times10^{-5}$)')
-ax[2].set_title('Erreur de tendance', fontweight='bold')
-ax[2].legend(fontsize=8); ax[2].grid(alpha=.3)
+for k in cats:
+    # --- eq (3) : eps_k par inversion, avec masque ---
+    den = ubar - uk[k]
+    eps_k = np.where(np.abs(den) > DU_MIN, ddz(uk[k])/den, np.nan)
+    # --- eq (1) : delta_k = eps_k - dz(M_k)/M_k ---
+    dM = ddz(Mk[k])
+    delta_k = eps_k - np.where(np.abs(Mk[k])>1e-12, dM/Mk[k], np.nan)
+    # --- eq (2) TEST : flux bulk-plume vs flux organise T1_k ---
+    Phi_bp = Mk[k]*(ubar - uk[k])          # M_k (ubar - u_k)
+    # NSE en FLUX : bulk-plume vs organise
+    nse_flux = nse(T1k[k], Phi_bp, s)
+    # NSE en DIVERGENCE (le vrai terme de Navier-Stokes)
+    nse_div  = nse(div_flux(T1k[k]), div_flux(Phi_bp), s)
+    # part du within non capturable par (2)
+    frac_T2 = np.nansum(np.abs(T2k[k][s])) / (np.nansum(np.abs(T1k[k][s]+T2k[k][s]))+1e-30)
+
+    print(f"--- {k} ---")
+    print(f"  eps_k median   = {np.nanmedian(eps_k[s])*1e3:+.2f} km^-1   "
+          f"(Romps vent ~1.5 ; traceur ~0.4)")
+    print(f"  delta_k median = {np.nanmedian(delta_k[s])*1e3:+.2f} km^-1")
+    print(f"  contraste |ubar-u_k| median = {np.nanmedian(np.abs(den)[s]):.2f} m/s "
+          f"({'OK' if np.nanmedian(np.abs(den)[s])>DU_MIN else 'FAIBLE -> eps bruite'})")
+    print(f"  eq.(2) NSE flux  [M_k(ubar-u_k) vs T1_k] = {nse_flux:+.3f}")
+    print(f"  eq.(2) NSE diverg [d/dz idem]            = {nse_div:+.3f}")
+    print(f"  part within T2_k (NON capturee par eq.2) = {frac_T2*100:.0f} %\n")
+
+# ---------------------------------------------------------------------------
+# Figures : pour chaque courant, flux bulk-plume vs T1 vs (T1+T2)
+zf = alt[s]; sc = 1e3; col={'up':'crimson','dn':'royalblue','env':'green'}
+fig, ax = plt.subplots(1, 3, figsize=(17,7), sharey=True)
+for j,k in enumerate(cats):
+    Phi_bp = Mk[k]*(ubar - uk[k])
+    ax[j].plot((T1k[k]+T2k[k])[s]*sc, zf,'k',  lw=2.4, label=r'Reynolds $T_1+T_2$')
+    ax[j].plot(T1k[k][s]*sc,          zf,'grey',lw=1.8,ls='-', label=r'organisé $T_1$')
+    ax[j].plot(Phi_bp[s]*sc,          zf,col[k],lw=1.8,ls='--',label=r'bulk-plume $M_k(\bar u-u_k)$')
+    ax[j].axvline(0,color='grey',alpha=.4)
+    ax[j].set_title(f'Courant {k}',fontweight='bold')
+    ax[j].set_xlabel(r'flux ($\times10^{-3}$)'); ax[j].legend(fontsize=8); ax[j].grid(alpha=.3)
+ax[0].set_ylabel('Altitude (m)')
 plt.tight_layout(); plt.show()
