@@ -1,94 +1,94 @@
 # ============================================================================
-# FLUX DE MASSE DE ROMPS (2014) — VERSION EXACTE, vs Reynolds total
-#   Phi_Romps = M (ubar - u_c),  M = rho0*sigma_c*wbar_c  (cloudy updrafts)
-#   Definition Romps : w > W_CLOUD (1 m/s) ET condensat > 1e-5 kg/kg
-#   Un seul courant. Downdrafts negliges. On balaie W_CLOUD pour le meilleur NSE.
+# COMPARAISON SUR LE DOMAINE GLOBAL (sans masque humide/sec)
+#   C'est le cadre ou la formule de Romps est VALABLE (domaine periodique
+#   homogene, faible fraction nuageuse, env = moyenne de domaine).
+#   On compare : Reynolds total | Romps (1 courant) | toi (3 cat) | toi (2 cat)
 # ============================================================================
-import os
-reg = mh
-QC_MIN   = 1e-5
-W_CLOUDS = [0.5, 1.0, 1.5, 2.0, 3.0]
+C = float(C_star)
+rey_g   = np.full(n_z, np.nan)   # Reynolds total, domaine entier
+Phi_R   = np.full(n_z, np.nan)   # Romps : M(ubar - u_c), cloudy updrafts
+Phi_2   = np.full(n_z, np.nan)   # toi 2-cat (up + reste)
+Phi_3   = np.full(n_z, np.nan)   # toi 3-cat (up + dn + env)
+sigc_g  = np.full(n_z, np.nan)   # fraction nuageuse globale (verif "faible aire")
 
-# --- detection du condensat (clw + cli si dispo) ---
-have_clw = os.path.exists(path3d('clw'))
-have_cli = os.path.exists(path3d('cli'))
+import os
+have_clw = os.path.exists(path3d('clw')); have_cli = os.path.exists(path3d('cli'))
 USE_QC = have_clw
 if USE_QC:
     dsc = xr.open_dataset(path3d('clw'))
     dsi = xr.open_dataset(path3d('cli')) if have_cli else None
-    def load_qc(it, iz):
-        q = dsc['clw'].isel({dim_t:it, dim_z:iz}).values[reg]
-        if dsi is not None:
-            q = q + dsi['cli'].isel({dim_t:it, dim_z:iz}).values[reg]
-        return q
-else:
-    print("Pas de 'clw' -> repli sur updraft defini par w seul (approx degradee).\n")
-
-rey_tot   = np.full(n_z, np.nan)
-PhiRomps  = {W: np.full(n_z, np.nan) for W in W_CLOUDS}
-sigc_prof = {W: np.full(n_z, np.nan) for W in W_CLOUDS}
+W_CLOUD, QC_MIN = 1.0, 1e-5      # definition Romps exacte
 
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
 for iz in range(n_z):
-    a_re = 0.0; aR = {W:0.0 for W in W_CLOUDS}; asig = {W:0.0 for W in W_CLOUDS}; n = 0
+    are=aR=a2=a3=asg=0.0; n=0
     for it in range(t_stat, n_t):
-        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
-        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
-        ub = u.mean(); wb = w.mean(); N = u.size
-        a_re += ((u-ub)*(w-wb)).mean()
-        qc = load_qc(it, iz) if USE_QC else None
-        for W in W_CLOUDS:
-            cloud = (w > W) & (qc > QC_MIN) if USE_QC else (w > W)
-            if not cloud.any(): continue
-            sig_c = cloud.sum()/N; wbar_c = w[cloud].mean(); uc = u[cloud].mean()
-            M = rho0[iz]*sig_c*wbar_c
-            aR[W]   += M*(ub - uc)            # Phi_Romps = M (ubar - u_c)
-            asig[W] += sig_c
-        n += 1; del u, w
-    rey_tot[iz] = rho0[iz]*a_re/n
-    for W in W_CLOUDS:
-        PhiRomps[W][iz] = aR[W]/n; sigc_prof[W][iz] = asig[W]/n
+        # --- PAS DE MASQUE : tout le plan horizontal ---
+        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values.ravel()
+        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values.ravel()
+        ub, wb, N = u.mean(), w.mean(), u.size
+        # Reynolds total global
+        are += ((u-ub)*(w-wb)).mean()
+        # --- Romps : cloudy updrafts sur le domaine entier ---
+        if USE_QC:
+            qc = dsc['clw'].isel({dim_t:it, dim_z:iz}).values.ravel()
+            if dsi is not None: qc = qc + dsi['cli'].isel({dim_t:it, dim_z:iz}).values.ravel()
+            cloud = (w > W_CLOUD) & (qc > QC_MIN)
+        else:
+            cloud = (w > W_CLOUD)
+        if cloud.any():
+            sig_c = cloud.sum()/N
+            M = rho0[iz]*sig_c*w[cloud].mean()
+            aR  += M*(ub - u[cloud].mean())     # M(ubar - u_c)
+            asg += sig_c
+        # --- tes flux top-hat, partition globale (seuil sur w) ---
+        ws, up, dn, env = classify(w, C)
+        rest = ~up
+        for msk in (up, rest):
+            if msk.any():
+                a2 += (msk.sum()/N)*w[msk].mean()*(u[msk].mean()-ub)
+        for msk in (up, dn, env):
+            if msk.any():
+                a3 += (msk.sum()/N)*w[msk].mean()*(u[msk].mean()-ub)
+        n+=1; del u, w
+    rey_g[iz]=rho0[iz]*are/n; Phi_R[iz]=aR/n
+    Phi_2[iz]=rho0[iz]*a2/n;  Phi_3[iz]=rho0[iz]*a3/n
+    sigc_g[iz]=asg/n
     gc.collect()
 ds_u.close(); ds_w.close()
 if USE_QC:
     dsc.close()
     if dsi is not None: dsi.close()
-gc.collect()
+del ds_u, ds_w; gc.collect()
 
-# --- scoring : quel seuil colle le mieux ? ---
+# --- scores + verif faible fraction nuageuse ---
 s = band()
-print("="*64)
-print("FLUX DE ROMPS EXACT  vs  REYNOLDS TOTAL  — choix du seuil")
-print("="*64)
-print(f"{'W_cloud':>8} | {'NSE':>7} | {'RMSE(e-3)':>10} | {'sigma_c med':>11}")
-print("-"*48)
-best_W, best_nse = None, -np.inf
-for W in W_CLOUDS:
-    sc_  = nse(rey_tot, PhiRomps[W], s)
-    rmse = np.sqrt(np.nanmean(((rey_tot-PhiRomps[W])[s])**2))*1e3
-    sgm  = np.nanmedian(sigc_prof[W][s])
-    if sc_ > best_nse: best_nse, best_W = sc_, W
-    print(f"{W:>8.1f} | {sc_:>7.3f} | {rmse:>10.3f} | {sgm:>11.4f}")
-print("-"*48)
-print(f"  -> meilleur seuil : W_cloud = {best_W} m/s  (NSE = {best_nse:+.3f})")
-print(f"  -> seuil de Romps (1.0 m/s) : NSE = {nse(rey_tot, PhiRomps[1.0], s):+.3f}")
+print("="*60)
+print("COMPARAISON GLOBALE (domaine entier, cadre valable de Romps)")
+print("="*60)
+print(f"  fraction nuageuse globale mediane sigma_c = {np.nanmedian(sigc_g[s]):.4f}")
+print(f"     (hypothese Romps 'faible aire' OK si << 1)")
+print(f"  NSE Romps (1 courant) vs Reynolds global = {nse(rey_g, Phi_R, s):+.3f}")
+print(f"  NSE toi 2-cat         vs Reynolds global = {nse(rey_g, Phi_2, s):+.3f}")
+print(f"  NSE toi 3-cat         vs Reynolds global = {nse(rey_g, Phi_3, s):+.3f}")
+print(f"\n  RAPPEL region humide seule (ton notebook) : a comparer pour voir")
+print(f"  si l'ecart Romps/Reynolds etait un artefact de masque ou un vrai defaut.")
 
 # --- figure ---
-zf = alt[s]; scl = 1e3
-fig, ax = plt.subplots(1, 2, figsize=(13, 7), sharey=True)
-ax[0].plot(rey_tot[s]*scl,          zf, 'k', lw=2.6, label=r'$\Phi_{rey}$ total (cible)')
-ax[0].plot(PhiRomps[best_W][s]*scl, zf, 'crimson', lw=2, ls='--',
-           label=fr'$\Phi_{{Romps}}$ (W={best_W}, NSE={best_nse:+.2f})')
-ax[0].plot(PhiRomps[1.0][s]*scl,    zf, 'orange', lw=1.6, ls=':',
-           label=r'$\Phi_{Romps}$ (W=1.0, son seuil)')
-ax[0].axvline(0, color='grey', alpha=.4)
+zf=alt[s]; sc=1e3
+fig, ax = plt.subplots(1, 2, figsize=(13,7), sharey=True)
+ax[0].plot(rey_g[s]*sc, zf,'k',lw=2.6,label=r'$\Phi_{rey}$ global')
+ax[0].plot(Phi_R[s]*sc, zf,'crimson',lw=2,ls='--',label='Romps (1 courant)')
+ax[0].plot(Phi_3[s]*sc, zf,'royalblue',lw=2,label='toi (3 cat)')
+ax[0].plot(Phi_2[s]*sc, zf,'green',lw=1.6,ls=':',label='toi (2 cat)')
+ax[0].axvline(0,color='grey',alpha=.4)
 ax[0].set_xlabel(r'flux ($\times10^{-3}$)'); ax[0].set_ylabel('Altitude (m)')
-ax[0].set_title('Romps exact vs Reynolds', fontweight='bold')
+ax[0].set_title('Flux sur le domaine global',fontweight='bold')
 ax[0].legend(fontsize=8); ax[0].grid(alpha=.3)
-ax[1].plot((rey_tot-PhiRomps[best_W])[s]*scl, zf, 'purple', lw=2,
-           label=r'$\Phi_{rey}-\Phi_{Romps}$ (non capturé)')
-ax[1].axvline(0, color='grey', alpha=.4)
+ax[1].plot((rey_g-Phi_R)[s]*sc, zf,'crimson',lw=2,label='résidu Romps')
+ax[1].plot((rey_g-Phi_3)[s]*sc, zf,'royalblue',lw=2,label='résidu 3-cat')
+ax[1].axvline(0,color='grey',alpha=.4)
 ax[1].set_xlabel(r'résidu ($\times10^{-3}$)')
-ax[1].set_title('Ce que Romps ne porte pas', fontweight='bold')
+ax[1].set_title('Ce qui reste non capturé',fontweight='bold')
 ax[1].legend(fontsize=8); ax[1].grid(alpha=.3)
 plt.tight_layout(); plt.show()
