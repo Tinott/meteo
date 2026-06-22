@@ -1,34 +1,72 @@
-print("raccord gauche-droite de psi :",
-      np.abs(psi_i[:,0] - psi_i[:,-1]).max() / (np.abs(psi_i).max()+1e-30))
+# ======================================================================
+#  T2 revisité : décomposition du flux moyenné-y en organisé (x) + résidu (y)
+#  Phi_rey(z) = T1_y(z) + T2_y(z)
+#    T1_y = < [u]_y' [w]_y' >_x   (porté par les structures résolues en x)
+#    T2_y = < [u''w'']_y >_x      (covariance sous-maille dans la direction y)
+#  Identité exacte (décomposition between/within sur les colonnes y).
+# ======================================================================
+ZMIN_T, ZMAX_T = 2000., 18000.        # fenêtre verticale d'analyse
+IT_ANALYSE = n_t - 1                   # instant analysé (ou boucle, cf. plus bas)
 
+kz = (alt >= ZMIN_T) & (alt <= ZMAX_T)
+z_T   = alt[kz]
+nz_T  = z_T.size
 
+phi_tot = np.zeros(nz_T)   # flux total <u'w'> (moyenne y,x)
+T1_y    = np.zeros(nz_T)   # organisé en x
+T2_y    = np.zeros(nz_T)   # sous-maille en y
 
-dxl = float(x[1] - x[0])
-dzl = float(z_i[1] - z_i[0])
+ds_u = xr.open_dataset(path3d('ua'))
+ds_w = xr.open_dataset(path3d('wa'))
+iz_list = np.where(kz)[0]
+for k, iz in enumerate(iz_list):
+    u_yx = ds_u['ua'].isel({dim_t: IT_ANALYSE, dim_z: iz}).values   # (ny, nx)
+    w_yx = ds_w['wa'].isel({dim_t: IT_ANALYSE, dim_z: iz}).values
 
-gx = (np.roll(psi_i, -1, axis=1) - np.roll(psi_i, 1, axis=1)) / (2*dxl)
-ecart_grad = np.abs(gx[:,0] - gx[:,-1]).max() / (np.abs(gx).max() + 1e-30)
-print("raccord du gradient au bord :", ecart_grad)
+    # anomalies par rapport à la moyenne globale (y,x) du niveau -> convention pipeline
+    ubar = u_yx.mean();  wbar = w_yx.mean()
+    up = u_yx - ubar;    wp = w_yx - wbar
 
+    # flux total du niveau
+    phi_tot[k] = (up * wp).mean()
 
+    # --- partie organisée en x : moyenne sur y, puis covariance en x ---
+    up_y = up.mean(axis=0)        # [u']_y  -> profil en x (nx,)
+    wp_y = wp.mean(axis=0)        # [w']_y
+    T1_y[k] = (up_y * wp_y).mean()   # < [u']_y [w']_y >_x
 
-print("psi au bord bas :", np.abs(psi_i[0,:]).max())
-print("psi au bord haut:", np.abs(psi_i[-1,:]).max())
+    # --- résidu sous-maille en y : covariance intra-colonne, moyennée en x ---
+    upp = up - up_y[None, :]      # u'' = u' - [u']_y   (fluctuation en y)
+    wpp = wp - wp_y[None, :]      # w''
+    T2_y[k] = (upp * wpp).mean()      # < [u'' w'']_y >_x
 
+    del u_yx, w_yx, up, wp, upp, wpp; gc.collect()
+ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
 
+# --- contrôle : l'identité doit être exacte ---
+err = np.abs(phi_tot - (T1_y + T2_y)).max()
+print(f"contrôle identité  max|Φ − (T1+T2)| = {err:.2e}  (doit être ~1e-18)")
 
+# --- poids relatifs (médiane sur la colonne) ---
+frac_T1 = np.median(np.abs(T1_y) / (np.abs(phi_tot) + 1e-30))
+frac_T2 = np.median(np.abs(T2_y) / (np.abs(phi_tot) + 1e-30))
+print(f"poids médian  T1 (organisé x) = {frac_T1:.0%}   T2 (sous-maille y) = {frac_T2:.0%}")
 
-dxl = float(x[1]-x[0]); dzl = float(z_i[1]-z_i[0])
-rhoU = rho_i[:,None]*U_i; rhoW = rho_i[:,None]*W_i
-div = (np.roll(rhoU,-1,1)-np.roll(rhoU,1,1))/(2*dxl) + np.gradient(rhoW, dzl, axis=0)
-rot = (np.roll(rhoW,-1,1)-np.roll(rhoW,1,1))/(2*dxl) - np.gradient(rhoU, dzl, axis=0)
-print("‖div‖/‖rot‖ =", np.linalg.norm(div)/np.linalg.norm(rot))
+# --- figure : profils verticaux ---
+Zkm = z_T / 1000
+fig, ax = plt.subplots(1, 2, figsize=(11, 5), sharey=True)
 
+ax[0].plot(phi_tot, Zkm, 'k-',  lw=2, label="Φ_rey total ⟨u'w'⟩")
+ax[0].plot(T1_y,    Zkm, 'C0-', lw=1.5, label="T1 organisé (résolu en x)")
+ax[0].plot(T2_y,    Zkm, 'C3-', lw=1.5, label="T2 sous-maille (en y)")
+ax[0].axvline(0, color='grey', lw=0.6)
+ax[0].set_xlabel("flux [m²/s²]"); ax[0].set_ylabel("z [km]")
+ax[0].legend(fontsize=9); ax[0].set_title("Décomposition du flux moyenné-y")
 
-
-d2x = (np.roll(psi_i,-1,1) - 2*psi_i + np.roll(psi_i,1,1))/dxl**2
-d2z = (psi_i[2:] - 2*psi_i[1:-1] + psi_i[:-2])/dzl**2
-lap = d2x[1:-1,:] + d2z
-omega = (np.roll(rhoW,-1,1)-np.roll(rhoW,1,1))/(2*dxl) - np.gradient(rhoU, dzl, axis=0)
-res = np.linalg.norm(lap - omega[1:-1,:]) / np.linalg.norm(omega[1:-1,:])
-print("résidu Poisson périodique :", res)
+# part relative de T2
+ratio = T2_y / (phi_tot + 1e-30)
+ax[1].plot(ratio, Zkm, 'C3-', lw=1.5)
+ax[1].axvline(0, color='grey', lw=0.6); ax[1].axvline(1, color='grey', lw=0.6, ls='--')
+ax[1].set_xlabel("T2 / Φ_rey"); ax[1].set_title("Part du sous-maille en y")
+ax[1].set_xlim(-0.5, 1.5)
+plt.tight_layout(); plt.show()
