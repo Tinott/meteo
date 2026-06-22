@@ -1,7 +1,48 @@
-# Laplacien 2D complet, mêmes schémas que le solveur
-d2x = (np.roll(psi, -1, 1) - 2*psi + np.roll(psi, 1, 1)) / dx**2   # périodique en x
-d2z = (psi[2:] - 2*psi[1:-1] + psi[:-2]) / dz**2                    # centré en z, intérieur
-lap = d2x[1:-1, :] + d2z                                            # aligne sur z intérieur
+# ====================================================================
+#  Diagnostics ANCRÉS sur la visualisation (coupes z,x de cette section)
+#  Idée : quantifier ce que l'œil voit — la circulation de masse (psi)
+#  et le flux u'w' n'occupent PAS les mêmes endroits du plan (x,z).
+# ====================================================================
 
-res = lap - omega[1:-1, :]
-print("résidu relatif Poisson =", np.linalg.norm(res) / np.linalg.norm(omega[1:-1, :]))
+# 1) Intensité de la circulation de masse = |gradient de psi| (vitesse de masse locale)
+dpsidz, dpsidx = np.gradient(psi, z, x)        # psi = ta fonction de courant tracée
+speed_masse = np.hypot(dpsidx, dpsidz)         # |flux de masse| en chaque (z,x)
+
+# 2) Intensité du transport de moment = |u'w'| local
+flux_abs = np.abs(upwp)
+
+# --- Colocalisation : corrélation spatiale entre les deux cartes ---
+a = speed_masse.ravel(); b = flux_abs.ravel()
+a = a - a.mean(); b = b - b.mean()
+coloc = (a*b).sum() / (np.sqrt((a**2).sum()*(b**2).sum()) + 1e-30)
+print(f"Colocalisation circulation/flux : r = {coloc:+.3f}")
+print("  (proche de 0 => le flux n'est PAS là où la masse circule)")
+
+# --- Concentration du flux : quelle fraction de surface porte le flux ? ---
+f_sorted = np.sort(flux_abs.ravel())[::-1]
+cum = np.cumsum(f_sorted) / f_sorted.sum()
+frac_surface = np.arange(1, f_sorted.size+1) / f_sorted.size
+seuil80 = frac_surface[np.searchsorted(cum, 0.80)]
+print(f"80% du flux |u'w'| est porté par {seuil80*100:.1f}% de la surface")
+print("  (petit => flux ultra-localisé, incompatible avec un mass-flux étalé)")
+
+# ====================================================================
+#  Figure : les deux cartes côte à côte + courbe de concentration
+# ====================================================================
+fig, ax = plt.subplots(1, 3, figsize=(15, 4.2))
+
+ax[0].pcolormesh(x/1000, z/1000, speed_masse, shading='auto', cmap='viridis')
+ax[0].set_title("|circulation de masse|  (≈ resserrement des ψ)")
+ax[0].set_xlabel('x [km]'); ax[0].set_ylabel('z [km]')
+
+m = ax[1].pcolormesh(x/1000, z/1000, flux_abs, shading='auto', cmap='magma')
+ax[1].set_title("|u'w'|  (transport de moment)")
+ax[1].set_xlabel('x [km]')
+
+ax[2].plot(frac_surface*100, cum*100, lw=2)
+ax[2].axhline(80, color='C3', ls='--', lw=0.8)
+ax[2].set_xlabel('% de la surface (colonnes triées)')
+ax[2].set_ylabel('% du flux cumulé')
+ax[2].set_title('Concentration du flux')
+ax[2].set_xlim(0, 100); ax[2].set_ylim(0, 100)
+plt.tight_layout(); plt.show()
