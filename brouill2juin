@@ -1,5 +1,18 @@
-dx = float(x[1]-x[0]); dz = float(z[1]-z[0])
-rhoU = rho0[:,None]*U; rhoW = rho0[:,None]*W
-div  = np.gradient(rhoU, dx, axis=1) + np.gradient(rhoW, dz, axis=0)
-rot  = np.gradient(rhoW, dx, axis=1) - np.gradient(rhoU, dz, axis=0)
-print("‖div‖ / ‖rot‖ =", np.linalg.norm(div)/np.linalg.norm(rot))
+# résidu de l'équation réellement résolue : nabla^2 psi - omega
+lap_psi = (np.roll(psi,-1,1)-2*psi+np.roll(psi,1,1))/dx**2 \
+        + np.concatenate([psi[1:2], psi[2:]-2*psi[1:-1]+psi[:-2], psi[-2:-1]])*0  # z intérieur
+# plus simple : compare sur l'intérieur
+res = lap_psi[1:-1,:] - omega[1:-1,:]
+print("résidu relatif Poisson =", np.linalg.norm(res)/np.linalg.norm(omega[1:-1,:]))
+
+
+
+
+def frac_div_propre(psi, rhoU, rhoW, dx, dz):
+    # mêmes schémas que le Laplacien : centré périodique en x, centré en z
+    rhoU_rot = -(np.roll(psi,-1,0)-np.roll(psi,1,0))/(2*dz)   # -d psi/dz
+    rhoW_rot =  (np.roll(psi,-1,1)-np.roll(psi,1,1))/(2*dx)   #  d psi/dx (périodique)
+    sl = slice(1,-1)   # exclure les bords z où le schéma n'est pas valide
+    num = (np.linalg.norm((rhoU-rhoU_rot)[sl]) + np.linalg.norm((rhoW-rhoW_rot)[sl]))
+    den = (np.linalg.norm(rhoU[sl]) + np.linalg.norm(rhoW[sl]) + 1e-30)
+    return num/den
