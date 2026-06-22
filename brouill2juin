@@ -3,10 +3,12 @@ print("raccord gauche-droite de psi :",
 
 
 
-rhoU = rho_i[:,None]*U_i; rhoW = rho_i[:,None]*W_i
-div = (np.roll(rhoU,-1,1)-np.roll(rhoU,1,1))/(2*dxl) + np.gradient(rhoW, dzl, axis=0)
-rot = (np.roll(rhoW,-1,1)-np.roll(rhoW,1,1))/(2*dxl) - np.gradient(rhoU, dzl, axis=0)
-print("‖div‖/‖rot‖ =", np.linalg.norm(div)/np.linalg.norm(rot))
+dxl = float(x[1] - x[0])
+dzl = float(z_i[1] - z_i[0])
+
+gx = (np.roll(psi_i, -1, axis=1) - np.roll(psi_i, 1, axis=1)) / (2*dxl)
+ecart_grad = np.abs(gx[:,0] - gx[:,-1]).max() / (np.abs(gx).max() + 1e-30)
+print("raccord du gradient au bord :", ecart_grad)
 
 
 
