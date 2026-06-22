@@ -1,35 +1,51 @@
-def masque_humide_x(seuil=None, idx_temps=None):
-    """Profil PRW(x) moyenné sur y (+ temps si idx_temps=slice), et masque humide.
-    seuil=None -> médiane spatiale. idx_temps=None -> tout le stationnaire."""
-    ds = xr.open_dataset(path2d('prw'))          # PRW : (time, y, x)
-    if idx_temps is None:
-        idx_temps = idx_stat                      # défaut : état stationnaire
-    prw = ds['prw'].isel({dim_t: idx_temps}).values   # (nt_sel, ny, nx) ou (ny,nx)
-    ds.close(); gc.collect()
-    # moyenne sur tous les axes sauf x -> profil PRW(x)
-    axes_non_x = tuple(a for a in range(prw.ndim) if a != prw.ndim-1)
-    prw_x = prw.mean(axis=axes_non_x)            # (nx,)
-    if seuil is None:
-        seuil = np.median(prw_x)
-    humide = prw_x > seuil                        # masque booléen (nx,)
-    return prw_x, humide, seuil
+from scipy.sparse import diags, kron, identity, lil_matrix
+from scipy.sparse.linalg import spsolve
+
+def mass_streamfunction_periodic(U, W, x, z, rho0):
+    """psi de masse, PÉRIODIQUE en x, Dirichlet en z (sol/sommet).
+    Résout nabla^2 psi = d_x(rho0 W) - d_z(rho0 U).
+    psi ancré à 0 en un point (le Laplacien périodique est singulier)."""
+    nz, nx = U.shape
+    dx = float(x[1]-x[0]); dz = float(z[1]-z[0])
+    rhoU = rho0[:, None] * U
+    rhoW = rho0[:, None] * W
+    omega = (np.gradient_periodic_x(rhoW, dx) if False else
+             _ddx_periodic(rhoW, dx)) - np.gradient(rhoU, dz, axis=0)
+
+    # --- Laplacien en x PÉRIODIQUE : toutes les nx colonnes sont inconnues ---
+    main = -2.0*np.ones(nx)
+    off  =  1.0*np.ones(nx)
+    Lx = diags([off[:-1], main, off[:-1]], [-1, 0, 1], shape=(nx, nx), format='lil')
+    Lx[0, nx-1] = 1.0      # le point 0 voit le point nx-1 (wrap)
+    Lx[nx-1, 0] = 1.0      # et réciproquement
+    Lx = (Lx.tocsr()) / dx**2
+
+    # --- Laplacien en z DIRICHLET : seulement les nz-2 niveaux intérieurs ---
+    Lz = diags([1., -2., 1.], [-1, 0, 1], shape=(nz-2, nz-2)).tocsr() / dz**2
+
+    Ix = identity(nx)
+    Iz = identity(nz-2)
+    A = (kron(Iz, Lx) + kron(Lz, Ix)).tolil()
+
+    b = omega[1:-1, :].ravel().copy()      # tous les x, niveaux intérieurs en z
+
+    # --- ancrage : fixer psi=0 au premier point pour lever la singularité ---
+    A[0, :] = 0.0
+    A[0, 0] = 1.0
+    b[0]    = 0.0
+    A = A.tocsr()
+
+    psi = np.zeros((nz, nx))
+    psi[1:-1, :] = spsolve(A, b).reshape(nz-2, nx)
+
+    # diagnostic frac_div (reconstruction périodique en x)
+    rhoU_rot = -np.gradient(psi, dz, axis=0)
+    rhoW_rot =  _ddx_periodic(psi, dx)
+    frac_div = ((np.linalg.norm(rhoU-rhoU_rot)+np.linalg.norm(rhoW-rhoW_rot))
+                / (np.linalg.norm(rhoU)+np.linalg.norm(rhoW)+1e-30))
+    return psi, frac_div
 
 
-
-
-def trace_bords_humides(ax, x, humide, color='magenta', lw=1.3):
-    """Trace un trait pointillé vertical à chaque frontière sec<->humide."""
-    bords = np.where(np.diff(humide.astype(int)) != 0)[0]   # indices de transition
-    for b in bords:
-        xb = 0.5*(x[b] + x[b+1]) / 1000.0      # milieu de la transition, en km
-        ax.axvline(xb, color=color, ls='--', lw=lw, alpha=0.9)
-
-
-
-
-
-prw_x, humide, seuil = masque_humide_x()      # ou seuil=50., idx_temps=it pour un snapshot
-print(f'Seuil PRW = {seuil:.1f} kg/m²  —  {humide.mean()*100:.0f}% de colonnes humides')
-
-for ax in axes:                                # axes = [ax_a, ax_b] de tes 2 panneaux
-    trace_bords_humides(ax, x, humide)
+def _ddx_periodic(f, dx):
+    """Dérivée centrée en x (axis=1) avec bords périodiques."""
+    return (np.roll(f, -1, axis=1) - np.roll(f, 1, axis=1)) / (2*dx)
