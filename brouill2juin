@@ -70,3 +70,21 @@ ax[1].axvline(0, color='grey', lw=0.6); ax[1].axvline(1, color='grey', lw=0.6, l
 ax[1].set_xlabel("T2 / Φ_rey"); ax[1].set_title("Part du sous-maille en y")
 ax[1].set_xlim(-0.5, 1.5)
 plt.tight_layout(); plt.show()
+
+
+
+
+
+# poids robustes : normes L2 sur la colonne (pas de division point par point)
+w_T1 = np.linalg.norm(T1_y) / (np.linalg.norm(phi_tot) + 1e-30)
+w_T2 = np.linalg.norm(T2_y) / (np.linalg.norm(phi_tot) + 1e-30)
+print(f"poids L2  T1 = {w_T1:.0%}   T2 = {w_T2:.0%}")
+
+# et les amplitudes brutes pour voir les ordres de grandeur
+print(f"max|T1_y|  = {np.abs(T1_y).max():.3e}")
+print(f"max|T2_y|  = {np.abs(T2_y).max():.3e}")
+print(f"max|phi|   = {np.abs(phi_tot).max():.3e}")
+
+# combien de niveaux où phi change de signe (zones de ratio instable)
+sign_changes = np.sum(np.diff(np.sign(phi_tot)) != 0)
+print(f"changements de signe de phi_tot : {sign_changes}")
