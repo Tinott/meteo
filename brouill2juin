@@ -1,43 +1,48 @@
 # ======================================================================
 #  Coupes (z,x) à des instants t donnés — moyennées sur y SEULEMENT
-#  (pas de moyenne temporelle -> les ascendances ne sont pas écrasées)
+#  Version autonome : ne dépend que de dim_t, dim_z, dim_x, n_t, n_x,
+#  alt, t_stat, n_stat, x, path3d. Recalcule rho0 et tout le reste.
 # ======================================================================
 from scipy.sparse import diags, kron, identity
 from scipy.sparse.linalg import spsolve
 
-# --- instants à visualiser (indices temporels absolus) ---
-T_SNAPS = [t_stat, t_stat + n_stat//2, n_t - 1]   # début / milieu / fin du stationnaire
+ZMIN, ZMAX = 2000., 18000.
+T_SNAPS = [t_stat, t_stat + n_stat//2, n_t - 1]   # instants à tracer
+
+# --- rho0 sur la grille COMPLETE (au cas où il aurait été tronqué ailleurs) ---
+_nz_full = alt.size
+rho0_full = np.zeros(_nz_full); _nr = 0
+_da = xr.open_dataset(path3d('ta')); _dp = xr.open_dataset(path3d('pa')); _dh = xr.open_dataset(path3d('hus'))
+for t0 in range(t_stat, n_t, BLOC):
+    t1 = min(t0+BLOC, n_t); sl = {dim_t: slice(t0,t1)}
+    T = _da['ta'].isel(sl).values; P = _dp['pa'].isel(sl).values; Q = _dh['hus'].isel(sl).values
+    Tv = T*(1.0+Q/EPSILON)/(1.0+Q)
+    rho0_full += (P/(Rd*Tv)).mean(axis=(0,2,3))*(t1-t0); _nr += (t1-t0)
+    del T,P,Q,Tv; gc.collect()
+_da.close(); _dp.close(); _dh.close(); del _da,_dp,_dh; gc.collect()
+rho0_full /= _nr
+
+kz = (alt >= ZMIN) & (alt <= ZMAX)        # masque vertical 2-18 km
 
 def coupe_instant(it):
-    """Coupe (z,x) moyennée sur y au pas de temps it. Restreinte 2-18 km.
-    Renvoie U,W (<.>_y), UPWP (<u'w'>_y, anomalie (y,x)), et psi (Poisson)."""
-    U_i  = np.zeros((n_z_full, n_x));  W_i = np.zeros((n_z_full, n_x))
-    UP_i = np.zeros((n_z_full, n_x))
-    ds_u = xr.open_dataset(path3d('ua'))
-    ds_w = xr.open_dataset(path3d('wa'))
-    for iz in range(n_z_full):
-        u_yx = ds_u['ua'].isel({dim_t: it, dim_z: iz}).values   # (ny, nx)
-        w_yx = ds_w['wa'].isel({dim_t: it, dim_z: iz}).values
-        u_p = u_yx - u_yx.mean(axis=(0,1), keepdims=True)
-        w_p = w_yx - w_yx.mean(axis=(0,1), keepdims=True)
-        U_i[iz]  = u_yx.mean(axis=0)          # <u>_y  -> (nx,)
-        W_i[iz]  = w_yx.mean(axis=0)          # <w>_y
-        UP_i[iz] = (u_p * w_p).mean(axis=0)   # <u'w'>_y
+    U_i = np.zeros((_nz_full, n_x)); W_i = np.zeros((_nz_full, n_x)); UP_i = np.zeros((_nz_full, n_x))
+    du = xr.open_dataset(path3d('ua')); dw = xr.open_dataset(path3d('wa'))
+    for iz in range(_nz_full):
+        u_yx = du['ua'].isel({dim_t: it, dim_z: iz}).values
+        w_yx = dw['wa'].isel({dim_t: it, dim_z: iz}).values
+        u_p = u_yx - u_yx.mean(); w_p = w_yx - w_yx.mean()
+        U_i[iz] = u_yx.mean(axis=0); W_i[iz] = w_yx.mean(axis=0)
+        UP_i[iz] = (u_p*w_p).mean(axis=0)
         del u_yx, w_yx, u_p, w_p
-    ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
-
-    # restriction 2-18 km
-    kz = (alt >= 2000.) & (alt <= 18000.)
-    z_i   = alt[kz];  rho_i = rho0_full[kz]
-    return z_i, rho_i, U_i[kz], W_i[kz], UP_i[kz]
+    du.close(); dw.close(); del du, dw; gc.collect()
+    return alt[kz], rho0_full[kz], U_i[kz], W_i[kz], UP_i[kz]
 
 def psi_poisson(U_i, W_i, x, z_i, rho_i):
-    """Fonction de courant de masse par Poisson (Dirichlet psi=0 au bord)."""
     nz, nx = U_i.shape
-    dxl = float(x[1]-x[0]);  dzl = float(z_i[1]-z_i[0])
-    rhoU = rho_i[:,None]*U_i;  rhoW = rho_i[:,None]*W_i
-    omega = (np.gradient(rhoW, dxl, axis=1) - np.gradient(rhoU, dzl, axis=0))
-    Ix = identity(nx-2);  Iz = identity(nz-2)
+    dxl = float(x[1]-x[0]); dzl = float(z_i[1]-z_i[0])
+    rhoU = rho_i[:,None]*U_i; rhoW = rho_i[:,None]*W_i
+    omega = np.gradient(rhoW, dxl, axis=1) - np.gradient(rhoU, dzl, axis=0)
+    Ix = identity(nx-2); Iz = identity(nz-2)
     Lx = diags([1.,-2.,1.],[-1,0,1],shape=(nx-2,nx-2))/dxl**2
     Lz = diags([1.,-2.,1.],[-1,0,1],shape=(nz-2,nz-2))/dzl**2
     A = (kron(Iz,Lx)+kron(Lz,Ix)).tocsr()
@@ -45,50 +50,26 @@ def psi_poisson(U_i, W_i, x, z_i, rho_i):
     psi[1:-1,1:-1] = spsolve(A, omega[1:-1,1:-1].ravel()).reshape(nz-2,nx-2)
     return psi
 
-
-
-
-
-
-
-
-
-# ======================================================================
-#  Tracé : pour chaque instant, (a) lignes de courant + w
-#                               (b) lignes de courant + u'w'
-# ======================================================================
-# n_z_full / rho0_full = grille AVANT restriction 2-18km.
-# Si tes variables s'appellent autrement, adapte ces deux lignes :
-n_z_full  = alt.size
-rho0_full = rho0 if rho0.size == alt.size else None
-assert rho0_full is not None, "rho0 doit être sur la grille complète (alt). Recalcule rho0 avant restriction."
-
 for it in T_SNAPS:
     z_i, rho_i, U_i, W_i, UP_i = coupe_instant(it)
     psi_i = psi_poisson(U_i, W_i, x, z_i, rho_i)
     Xkm, Zkm = x/1000, z_i/1000
 
     fig, axes = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
-    jour = float(time_days[it]) if 'time_days' in dir() else it
-
-    # (a) w
     ax = axes[0]
     wmax = np.percentile(np.abs(W_i), 99) + 1e-12
     pc = ax.pcolormesh(Xkm, Zkm, W_i, shading='auto',
                        norm=TwoSlopeNorm(vcenter=0, vmin=-wmax, vmax=wmax), cmap='RdBu_r')
     ax.contour(Xkm, Zkm, psi_i, levels=14, colors='k', linewidths=0.6)
-    ax.set_title(f"(a) Lignes de courant (ψ) + w   —   t = {jour:.0f} (it={it})")
-    ax.set_ylabel('z [km]')
-    fig.colorbar(pc, ax=ax, label='⟨w⟩_y [m/s]', pad=0.01)
+    ax.set_title(f"(a) Lignes de courant (psi) + <w>_y  -  it = {it}")
+    ax.set_ylabel('z [km]'); fig.colorbar(pc, ax=ax, label='<w>_y [m/s]', pad=0.01)
 
-    # (b) u'w'
     ax = axes[1]
     fmax = np.percentile(np.abs(UP_i), 98) + 1e-12
     pc = ax.pcolormesh(Xkm, Zkm, UP_i, shading='auto',
                        norm=TwoSlopeNorm(vcenter=0, vmin=-fmax, vmax=fmax), cmap='RdBu_r')
     ax.contour(Xkm, Zkm, psi_i, levels=14, colors='k', linewidths=0.6)
-    ax.set_title("(b) Mêmes lignes de courant + ⟨u'w'⟩_y")
-    ax.set_xlabel('x [km]');  ax.set_ylabel('z [km]')
-    fig.colorbar(pc, ax=ax, label="⟨u'w'⟩_y [m²/s²]", pad=0.01)
-
-    plt.tight_layout();  plt.show()
+    ax.set_title("(b) Memes lignes de courant + <u'w'>_y")
+    ax.set_xlabel('x [km]'); ax.set_ylabel('z [km]')
+    fig.colorbar(pc, ax=ax, label="<u'w'>_y [m2/s2]", pad=0.01)
+    plt.tight_layout(); plt.show()
