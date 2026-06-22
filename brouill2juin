@@ -1,51 +1,5 @@
-from scipy.sparse import diags, kron, identity, lil_matrix
-from scipy.sparse.linalg import spsolve
-
-def mass_streamfunction_periodic(U, W, x, z, rho0):
-    """psi de masse, PÉRIODIQUE en x, Dirichlet en z (sol/sommet).
-    Résout nabla^2 psi = d_x(rho0 W) - d_z(rho0 U).
-    psi ancré à 0 en un point (le Laplacien périodique est singulier)."""
-    nz, nx = U.shape
-    dx = float(x[1]-x[0]); dz = float(z[1]-z[0])
-    rhoU = rho0[:, None] * U
-    rhoW = rho0[:, None] * W
-    omega = (np.gradient_periodic_x(rhoW, dx) if False else
-             _ddx_periodic(rhoW, dx)) - np.gradient(rhoU, dz, axis=0)
-
-    # --- Laplacien en x PÉRIODIQUE : toutes les nx colonnes sont inconnues ---
-    main = -2.0*np.ones(nx)
-    off  =  1.0*np.ones(nx)
-    Lx = diags([off[:-1], main, off[:-1]], [-1, 0, 1], shape=(nx, nx), format='lil')
-    Lx[0, nx-1] = 1.0      # le point 0 voit le point nx-1 (wrap)
-    Lx[nx-1, 0] = 1.0      # et réciproquement
-    Lx = (Lx.tocsr()) / dx**2
-
-    # --- Laplacien en z DIRICHLET : seulement les nz-2 niveaux intérieurs ---
-    Lz = diags([1., -2., 1.], [-1, 0, 1], shape=(nz-2, nz-2)).tocsr() / dz**2
-
-    Ix = identity(nx)
-    Iz = identity(nz-2)
-    A = (kron(Iz, Lx) + kron(Lz, Ix)).tolil()
-
-    b = omega[1:-1, :].ravel().copy()      # tous les x, niveaux intérieurs en z
-
-    # --- ancrage : fixer psi=0 au premier point pour lever la singularité ---
-    A[0, :] = 0.0
-    A[0, 0] = 1.0
-    b[0]    = 0.0
-    A = A.tocsr()
-
-    psi = np.zeros((nz, nx))
-    psi[1:-1, :] = spsolve(A, b).reshape(nz-2, nx)
-
-    # diagnostic frac_div (reconstruction périodique en x)
-    rhoU_rot = -np.gradient(psi, dz, axis=0)
-    rhoW_rot =  _ddx_periodic(psi, dx)
-    frac_div = ((np.linalg.norm(rhoU-rhoU_rot)+np.linalg.norm(rhoW-rhoW_rot))
-                / (np.linalg.norm(rhoU)+np.linalg.norm(rhoW)+1e-30))
-    return psi, frac_div
-
-
-def _ddx_periodic(f, dx):
-    """Dérivée centrée en x (axis=1) avec bords périodiques."""
-    return (np.roll(f, -1, axis=1) - np.roll(f, 1, axis=1)) / (2*dx)
+dx = float(x[1]-x[0]); dz = float(z[1]-z[0])
+rhoU = rho0[:,None]*U; rhoW = rho0[:,None]*W
+div  = np.gradient(rhoU, dx, axis=1) + np.gradient(rhoW, dz, axis=0)
+rot  = np.gradient(rhoW, dx, axis=1) - np.gradient(rhoU, dz, axis=0)
+print("‖div‖ / ‖rot‖ =", np.linalg.norm(div)/np.linalg.norm(rot))
