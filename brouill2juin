@@ -1,41 +1,14 @@
-from scipy.sparse import diags, kron, identity, lil_matrix
-from scipy.sparse.linalg import spsolve
+print("raccord gauche-droite de psi :",
+      np.abs(psi_i[:,0] - psi_i[:,-1]).max() / (np.abs(psi_i).max()+1e-30))
 
-def psi_poisson_periodic(U_i, W_i, x, z_i, rho_i):
-    """psi de masse : PÉRIODIQUE en x, DIRICHLET (psi=0) en z (sol/sommet).
-    w ne traverse pas les bords haut/bas ; le domaine se referme en x.
-    psi ancré en un point (le Laplacien périodique est singulier)."""
-    nz, nx = U_i.shape
-    dxl = float(x[1]-x[0]); dzl = float(z_i[1]-z_i[0])
-    rhoU = rho_i[:, None]*U_i
-    rhoW = rho_i[:, None]*W_i
 
-    # --- terme source : dérivée en x PÉRIODIQUE (np.roll fait le wrap) ---
-    ddx_rhoW = (np.roll(rhoW, -1, axis=1) - np.roll(rhoW, 1, axis=1)) / (2*dxl)
-    ddz_rhoU = np.gradient(rhoU, dzl, axis=0)
-    omega = ddx_rhoW - ddz_rhoU
 
-    # --- Lx périodique : toutes les nx colonnes sont inconnues ---
-    Lx = diags([1., -2., 1.], [-1, 0, 1], shape=(nx, nx), format='lil')
-    Lx[0, nx-1] = 1.0       # le point 0 voit le point nx-1 (wrap gauche)
-    Lx[nx-1, 0] = 1.0       # le point nx-1 voit le point 0 (wrap droit)
-    Lx = Lx.tocsr() / dxl**2
+rhoU = rho_i[:,None]*U_i; rhoW = rho_i[:,None]*W_i
+div = (np.roll(rhoU,-1,1)-np.roll(rhoU,1,1))/(2*dxl) + np.gradient(rhoW, dzl, axis=0)
+rot = (np.roll(rhoW,-1,1)-np.roll(rhoW,1,1))/(2*dxl) - np.gradient(rhoU, dzl, axis=0)
+print("‖div‖/‖rot‖ =", np.linalg.norm(div)/np.linalg.norm(rot))
 
-    # --- Lz Dirichlet : seulement les nz-2 niveaux intérieurs ---
-    Lz = diags([1., -2., 1.], [-1, 0, 1], shape=(nz-2, nz-2)).tocsr() / dzl**2
 
-    Ix = identity(nx)
-    Iz = identity(nz-2)
-    A = (kron(Iz, Lx) + kron(Lz, Ix)).tolil()
 
-    b = omega[1:-1, :].ravel().copy()     # tous les x, niveaux intérieurs en z
-
-    # --- ancrage : fixer psi=0 en un point pour lever la singularité ---
-    A[0, :] = 0.0
-    A[0, 0] = 1.0
-    b[0]    = 0.0
-    A = A.tocsr()
-
-    psi = np.zeros((nz, nx))
-    psi[1:-1, :] = spsolve(A, b).reshape(nz-2, nx)
-    return psi
+print("psi au bord bas :", np.abs(psi_i[0,:]).max())
+print("psi au bord haut:", np.abs(psi_i[-1,:]).max())
