@@ -31,18 +31,24 @@ print("  (petit => flux ultra-localisé, incompatible avec un mass-flux étalé)
 # ====================================================================
 fig, ax = plt.subplots(1, 3, figsize=(15, 4.2))
 
-ax[0].pcolormesh(x/1000, z/1000, speed_masse, shading='auto', cmap='viridis')
-ax[0].set_title("|circulation de masse|  (≈ resserrement des ψ)")
+# carte 1 : intensité de la circulation de masse
+m0 = ax[0].pcolormesh(x/1000, z/1000, speed_masse, shading='auto', cmap='viridis')
+ax[0].set_title("|circulation de masse|")
 ax[0].set_xlabel('x [km]'); ax[0].set_ylabel('z [km]')
+fig.colorbar(m0, ax=ax[0], label='|∇ψ|  (flux de masse local)', pad=0.02)
 
-m = ax[1].pcolormesh(x/1000, z/1000, flux_abs, shading='auto', cmap='magma')
+# carte 2 : intensité du flux de moment
+m1 = ax[1].pcolormesh(x/1000, z/1000, flux_abs, shading='auto', cmap='magma')
 ax[1].set_title("|u'w'|  (transport de moment)")
 ax[1].set_xlabel('x [km]')
+fig.colorbar(m1, ax=ax[1], label="|u'w'|  [m²/s²]", pad=0.02)
 
+# graphe 3 : courbe de concentration (pas de colorbar, c'est une courbe)
 ax[2].plot(frac_surface*100, cum*100, lw=2)
 ax[2].axhline(80, color='C3', ls='--', lw=0.8)
 ax[2].set_xlabel('% de la surface (colonnes triées)')
 ax[2].set_ylabel('% du flux cumulé')
 ax[2].set_title('Concentration du flux')
 ax[2].set_xlim(0, 100); ax[2].set_ylim(0, 100)
+
 plt.tight_layout(); plt.show()
