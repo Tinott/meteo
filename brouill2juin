@@ -14,3 +14,21 @@ print("raccord du gradient au bord :", ecart_grad)
 
 print("psi au bord bas :", np.abs(psi_i[0,:]).max())
 print("psi au bord haut:", np.abs(psi_i[-1,:]).max())
+
+
+
+
+dxl = float(x[1]-x[0]); dzl = float(z_i[1]-z_i[0])
+rhoU = rho_i[:,None]*U_i; rhoW = rho_i[:,None]*W_i
+div = (np.roll(rhoU,-1,1)-np.roll(rhoU,1,1))/(2*dxl) + np.gradient(rhoW, dzl, axis=0)
+rot = (np.roll(rhoW,-1,1)-np.roll(rhoW,1,1))/(2*dxl) - np.gradient(rhoU, dzl, axis=0)
+print("‖div‖/‖rot‖ =", np.linalg.norm(div)/np.linalg.norm(rot))
+
+
+
+d2x = (np.roll(psi_i,-1,1) - 2*psi_i + np.roll(psi_i,1,1))/dxl**2
+d2z = (psi_i[2:] - 2*psi_i[1:-1] + psi_i[:-2])/dzl**2
+lap = d2x[1:-1,:] + d2z
+omega = (np.roll(rhoW,-1,1)-np.roll(rhoW,1,1))/(2*dxl) - np.gradient(rhoU, dzl, axis=0)
+res = np.linalg.norm(lap - omega[1:-1,:]) / np.linalg.norm(omega[1:-1,:])
+print("résidu Poisson périodique :", res)
