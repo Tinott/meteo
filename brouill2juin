@@ -1,99 +1,92 @@
 # ======================================================================
-#  Décomposition par zones up/dn/env EN 2D (moyenné sur y)
-#  À un instant it : pour chaque z, on moyenne sur y -> profils <u>_y(x), <w>_y(x)
-#  Puis on classe les COLONNES x en up/dn/env selon <w>_y(x), seuil w_s = C*std_x(<w>_y)
-#
-#    Phi2D(z) = somme_k [ T1_k(z) + T2_k(z) ]                 (identité exacte)
-#    T1_k(z)  = sigma_k * (uc_k - <u>)(wc_k - <w>)            <- organisé en x
-#    T2_k(z)  = sigma_k * < (<u>_y - uc_k)(<w>_y - wc_k) >_k  <- résidu en x intra-cat
-#  où moyennes/std sont prises SUR LES COLONNES x du profil moyenné-y.
+#  Spectre du T2 calculé ci-dessus : à quelle échelle en x vit la covariance within
+#  On reprend EXACTEMENT le T2[k] du code précédent et on le décompose en λ.
+#    T2_k/sigma_k = <u'' w''>_x = somme_λ Co(λ)        (Parseval)
 # ======================================================================
-ZMIN_D, ZMAX_D = 2000., 18000.
-IT_DECOMP = n_t - 1
-C_DECOMP  = 0.6
-W0_MIN    = 0.001
-USE_REG   = False        # True -> ne moyenne que sur les colonnes humides
+CAT = 'up'                        # catégorie dont on spectralise le T2
 
-kz_d   = (alt >= ZMIN_D) & (alt <= ZMAX_D)
-iz_lst = np.where(kz_d)[0]
-z_D    = alt[kz_d]; nz_D = z_D.size
-cats   = ('up', 'dn', 'env')
+nx  = x.size
+dx  = float(x[1] - x[0])
+kx  = np.fft.rfftfreq(nx, d=dx) * 2*np.pi
+lam_km = (2*np.pi / np.maximum(kx, 1e-12)) / 1000
 
-phi2d = np.zeros(nz_D)
-T1    = {k: np.zeros(nz_D) for k in cats}
-T2    = {k: np.zeros(nz_D) for k in cats}
-sig   = {k: np.zeros(nz_D) for k in cats}
+Co_T2   = np.zeros((nz_D, kx.size))   # co-spectre par niveau
+T2_chk  = np.zeros(nz_D)              # T2 reconstruit (contrôle = doit == T2[CAT])
+upp_all = np.zeros((nz_D, nx))        # u''(x) pour les ondelettes
+wpp_all = np.zeros((nz_D, nx))
 
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
 for j, iz in enumerate(iz_lst):
-    u_yx = ds_u['ua'].isel({dim_t: IT_DECOMP, dim_z: iz}).values   # (ny, nx)
+    u_yx = ds_u['ua'].isel({dim_t: IT_DECOMP, dim_z: iz}).values
     w_yx = ds_w['wa'].isel({dim_t: IT_DECOMP, dim_z: iz}).values
+    uy = u_yx.mean(axis=0); wy = w_yx.mean(axis=0)
 
-    # --- moyenne sur y -> profils en x (le "nuage" devient les colonnes x) ---
-    if USE_REG:
-        uy = u_yx[mh].mean(axis=0) if mh.ndim==1 else np.where(mh, u_yx, np.nan)
-        # cas simple : mh est un masque (ny,nx) -> moyenne y pondérée par mh
-        uy = np.nanmean(np.where(mh, u_yx, np.nan), axis=0)
-        wy = np.nanmean(np.where(mh, w_yx, np.nan), axis=0)
-    else:
-        uy = u_yx.mean(axis=0)        # <u>_y(x)  (nx,)
-        wy = w_yx.mean(axis=0)        # <w>_y(x)
-
-    ubar, wbar, Nx = uy.mean(), wy.mean(), uy.size
-
-    # flux Reynolds "2D" : covariance en x des profils moyennés-y
-    phi2d[j] = ((uy - ubar) * (wy - wbar)).mean()
-
-    # seuil sur la dispersion EN x de <w>_y
     ws = max(W0_MIN, C_DECOMP * wy.std())
     masks = {'up': wy > ws, 'dn': wy < -ws, 'env': np.abs(wy) <= ws}
+    m = masks[CAT]
 
-    for k in cats:
-        m = masks[k]; Nk = m.sum()
-        if Nk == 0:
-            continue
-        sk = Nk / Nx
-        uc = uy[m].mean(); wc = wy[m].mean()
-        sig[k][j] = sk
-        T1[k][j] = sk * (uc - ubar) * (wc - wbar)                       # organisé
-        T2[k][j] = sk * ((uy[m] - uc) * (wy[m] - wc)).mean()            # résidu en x
+    # u'', w'' définis sur TOUT x (0 hors catégorie) -> <u''w''>_x == T2[CAT]/... 
+    upp = np.zeros(nx); wpp = np.zeros(nx)
+    if m.any():
+        upp[m] = uy[m] - uy[m].mean()
+        wpp[m] = wy[m] - wy[m].mean()
+    upp_all[j] = upp; wpp_all[j] = wpp
 
+    T2_chk[j] = (upp * wpp).mean()        # == T2[CAT][j] de ton code (à sigma près déjà inclus)
+
+    Fu = np.fft.rfft(upp); Fw = np.fft.rfft(wpp)
+    co = np.real(Fu * np.conj(Fw)) / nx**2
+    co[1:] *= 2
+    Co_T2[j] = co
     del u_yx, w_yx; gc.collect()
 ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
 
-# --- totaux + contrôle d'identité ---
-T1tot = sum(T1[k] for k in cats)
-T2tot = sum(T2[k] for k in cats)
-err = np.abs(phi2d - (T1tot + T2tot)).max()
-print(f"contrôle identité  max|Φ2D − Σ_k(T1_k+T2_k)| = {err:.2e}  (doit être ~1e-18)")
+# --- contrôle 1 : Parseval (somme du spectre == T2) ---
+err_p = np.abs(Co_T2.sum(axis=1) - T2_chk).max()
+print(f"[Parseval]  max|sum_λ Co - T2| = {err_p:.2e}  (doit etre ~1e-18)")
+# --- contrôle 2 : cohérence avec le T2 du code précédent ---
+err_c = np.abs(T2_chk - T2[CAT]).max()
+print(f"[cohérence] max|T2_spectre - T2[{CAT}]| = {err_c:.2e}  (doit etre ~1e-18)")
 
-frac_T1 = np.median(np.abs(T1tot) / (np.abs(phi2d) + 1e-30))
-frac_T2 = np.median(np.abs(T2tot) / (np.abs(phi2d) + 1e-30))
-print(f"poids médian  T1 (organisé x) = {frac_T1:.0%}   T2 (résidu x) = {frac_T2:.0%}")
+k_max = int(np.argmax(np.abs(T2_chk)))
+print(f"niveau |T2_{CAT}| max : z = {z_D[k_max]/1000:.1f} km")
+
+# --- ondelettes (Morlet maison) au niveau k_max ---
+def cwt_morlet(sig, scales, dx, w0=6.0):
+    n = sig.size; sig_hat = np.fft.fft(sig)
+    omega = 2*np.pi * np.fft.fftfreq(n, d=dx)
+    out = np.zeros((scales.size, n), dtype=complex)
+    for i, a in enumerate(scales):
+        psi_hat = (np.pi**-0.25)*np.sqrt(2.0)*np.exp(-0.5*(a*omega-w0)**2)*(omega>0)
+        out[i] = np.fft.ifft(sig_hat * psi_hat * np.sqrt(a))
+    lam = (4*np.pi*scales)/(w0+np.sqrt(2+w0**2))
+    return out, lam
+
+scales = np.geomspace(2, nx//2, 60) * dx
+cwt_u, lam_w = cwt_morlet(upp_all[k_max], scales/dx, dx)
+cwt_w, _     = cwt_morlet(wpp_all[k_max], scales/dx, dx)
+co_xz = np.real(cwt_u * np.conj(cwt_w)); lam_w_km = lam_w/1000
 
 # ======================================================================
-#  FIGURE
+#  FIGURE : (a) co-spectre T2(z,λ)   (b) co-scalogramme au z de |T2| max
 # ======================================================================
-Zkm = z_D / 1000; sc = 1e3
-col = {'up': 'crimson', 'dn': 'royalblue', 'env': 'green'}
-fig, ax = plt.subplots(1, 3, figsize=(16, 6), sharey=True)
+fig, ax = plt.subplots(1, 2, figsize=(15, 5.5))
 
-ax[0].plot(phi2d*sc, Zkm, 'k',   lw=2.5, label=r"$\Phi_{2D}$ (moyenné-y)")
-ax[0].plot(T1tot*sc, Zkm, 'r--', lw=2,   label=r'$T_1$ organisé en x')
-ax[0].plot(T2tot*sc, Zkm, 'b-.', lw=2,   label=r'$T_2$ résidu en x')
-ax[0].axvline(0, color='grey', alpha=.4)
-ax[0].set_xlabel(r'flux ($\times10^{-3}$ m²/s²)'); ax[0].set_ylabel('z [km]')
-ax[0].set_title('Total 2D = organisé + résidu'); ax[0].legend(fontsize=9); ax[0].grid(alpha=.3)
+A  = kx[None,1:] * Co_T2[:,1:]
+mA = np.percentile(np.abs(A), 99) + 1e-30
+pc0 = ax[0].pcolormesh(lam_km[1:], z_D/1000, A, shading='auto',
+                       norm=TwoSlopeNorm(vcenter=0, vmin=-mA, vmax=mA), cmap='RdBu_r')
+ax[0].set_xscale('log'); ax[0].invert_xaxis()
+ax[0].set_xlabel(r'$\lambda$ [km]'); ax[0].set_ylabel('z [km]')
+ax[0].set_title(fr'(a) Co-spectre de $T_2^{{{CAT}}}$ — où vit la covariance')
+fig.colorbar(pc0, ax=ax[0], label=r'$k\,\mathrm{Co}$', pad=0.01)
 
-for k in cats:
-    ax[1].plot((T1[k] + T2[k])*sc, Zkm, color=col[k], lw=2, label=k)
-ax[1].axvline(0, color='grey', alpha=.4)
-ax[1].set_xlabel(r'flux ($\times10^{-3}$)'); ax[1].set_title('Contribution par catégorie')
-ax[1].legend(fontsize=9); ax[1].grid(alpha=.3)
-
-for k in cats:
-    ax[2].plot(sig[k], Zkm, color=col[k], lw=2, label=fr'$\sigma_{{{k}}}$')
-ax[2].set_xlabel('fraction des colonnes x'); ax[2].set_title('Aires des catégories (en x)')
-ax[2].legend(fontsize=9); ax[2].grid(alpha=.3)
+mB = np.percentile(np.abs(co_xz), 99) + 1e-30
+pc1 = ax[1].pcolormesh(x/1000, lam_w_km, co_xz, shading='auto',
+                       norm=TwoSlopeNorm(vcenter=0, vmin=-mB, vmax=mB), cmap='RdBu_r')
+ax[1].set_yscale('log')
+ax[1].set_xlabel('x [km]'); ax[1].set_ylabel(r'échelle $\lambda$ [km]')
+ax[1].set_title(f"(b) Co-scalogramme — z = {z_D[k_max]/1000:.1f} km")
+fig.colorbar(pc1, ax=ax[1], label="flux local", pad=0.01)
 
 plt.tight_layout(); plt.show()
