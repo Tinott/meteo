@@ -1,7 +1,9 @@
-fig, ax = plt.subplots(figsize=(4, 6))
-ax.plot(rho0_full[kz], alt[kz]/1000, 'k-', lw=1.5)
-ax.set_xlabel(r'$\rho_0$ [kg/m$^3$]')
-ax.set_ylabel('z [km]')
-ax.set_title('Densité de référence $\\rho_0(z)$')
-ax.grid(alpha=0.3)
+fig2, ax2 = plt.subplots(figsize=(11, 4))
+pmax = np.percentile(np.abs(psi_i), 99) + 1e-12
+pc2 = ax2.pcolormesh(Xkm, Zkm, psi_i, shading='auto',
+                     norm=TwoSlopeNorm(vcenter=0, vmin=-pmax, vmax=pmax),
+                     cmap='RdBu_r')
+ax2.set_xlabel('x [km]'); ax2.set_ylabel('z [km]')
+ax2.set_title(f"$\\psi$ (fonction de courant de masse) - it = {it}")
+fig2.colorbar(pc2, ax=ax2, label=r'$\psi$ [kg m$^{-1}$ s$^{-1}$]', pad=0.01)
 plt.tight_layout(); plt.show()
