@@ -6,6 +6,9 @@
 # ======================================================================
 import pywt   # pip install PyWavelets
 
+import sys
+!{sys.executable} -m pip install PyWavelets
+
 IT_SPEC = n_t - 1                      # instant analysé
 ZMIN_S, ZMAX_S = 2000., 18000.
 kz_s   = (alt >= ZMIN_S) & (alt <= ZMAX_S)
