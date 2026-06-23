@@ -1,15 +1,74 @@
-# --- rho0 sur la grille COMPLETE (n_z niveaux), au cas où il aurait été tronqué ---
-if rho0.size != n_z:
-    print(f"rho0 tronqué ({rho0.size} != {n_z}) -> recalcul sur grille complète")
-    BLOC = 10
-    rho0 = np.zeros(n_z); _nr = 0
-    _da = xr.open_dataset(path3d('ta')); _dp = xr.open_dataset(path3d('pa')); _dh = xr.open_dataset(path3d('hus'))
-    for t0 in range(t_stat, n_t, BLOC):
-        t1 = min(t0+BLOC, n_t); sl = {dim_t: slice(t0,t1)}
-        T = _da['ta'].isel(sl).values; P = _dp['pa'].isel(sl).values; Q = _dh['hus'].isel(sl).values
-        Tv = T*(1.0+Q/EPSILON)/(1.0+Q)
-        rho0 += (P/(Rd*Tv)).mean(axis=(0,2,3))*(t1-t0); _nr += (t1-t0)
-        del T,P,Q,Tv; gc.collect()
-    _da.close(); _dp.close(); _dh.close(); del _da,_dp,_dh; gc.collect()
-    rho0 /= _nr
-    print("rho0 recalculé, taille =", rho0.size)
+# ======================================================================
+#  Balayage de C : on cherche le C dont T1_tot (rouge) colle le mieux à Phi2D (noir)
+#  Phi2D et T1_tot sont tous deux des covariances (m²/s²) -> comparaison directe.
+# ======================================================================
+ZMIN_D, ZMAX_D = 2000., 15000.
+IT_DECOMP = n_t - 1
+W0_MIN    = 0.001
+Cs = np.array([0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0,
+               1.2, 1.5, 1.8, 2.0, 2.5, 3.0, 4.0, 5.0, 7.0, 10.0])
+
+kz_d   = (alt >= ZMIN_D) & (alt <= ZMAX_D)
+iz_lst = np.where(kz_d)[0]
+z_D    = alt[kz_d]; nz_D = z_D.size
+cats   = ('up', 'dn', 'env')
+
+phi2d  = np.zeros(nz_D)
+T1tot  = {C: np.zeros(nz_D) for C in Cs}      # le "rouge" pour chaque C
+
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for j, iz in enumerate(iz_lst):
+    u_yx = ds_u['ua'].isel({dim_t: IT_DECOMP, dim_z: iz}).values
+    w_yx = ds_w['wa'].isel({dim_t: IT_DECOMP, dim_z: iz}).values
+    uy = u_yx.mean(axis=0); wy = w_yx.mean(axis=0)
+    ubar, wbar, Nx = uy.mean(), wy.mean(), uy.size
+
+    phi2d[j] = ((uy - ubar) * (wy - wbar)).mean()     # noir
+
+    sw = wy.std()
+    for C in Cs:
+        ws = max(W0_MIN, C * sw)
+        masks = {'up': wy > ws, 'dn': wy < -ws, 'env': np.abs(wy) <= ws}
+        acc = 0.0
+        for m in masks.values():
+            Nk = m.sum()
+            if Nk == 0: continue
+            sk = Nk / Nx
+            uc = uy[m].mean(); wc = wy[m].mean()
+            acc += sk * (uc - ubar) * (wc - wbar)     # T1 par catégorie
+        T1tot[C][j] = acc
+    del u_yx, w_yx; gc.collect()
+ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
+
+# --- NSE de chaque C : T1tot vs phi2d ---
+def nse_loc(truth, pred):
+    ok = np.isfinite(truth) & np.isfinite(pred)
+    return 1 - np.nansum((truth[ok]-pred[ok])**2) / np.nansum((truth[ok]-np.nanmean(truth[ok]))**2)
+
+scores = {C: nse_loc(phi2d, T1tot[C]) for C in Cs}
+C_star = max(scores, key=scores.get)
+print(f"{'C':>6} | {'NSE(T1 vs Phi2D)':>18}")
+print('-'*28)
+for C in Cs: print(f"{C:6.2f} | {scores[C]:+18.3f}")
+print(f"\n>> C* = {C_star}   (NSE = {scores[C_star]:+.3f})")
+
+# ======================================================================
+#  FIGURE : (a) NSE(C)   (b) noir vs rouge à quelques C
+# ======================================================================
+Zkm = z_D / 1000; sc = 1e3
+fig, ax = plt.subplots(1, 2, figsize=(13, 6))
+
+ax[0].semilogx(Cs, [scores[C] for C in Cs], 'o-', color='darkgreen')
+ax[0].axvline(C_star, color='orange', ls=':', lw=2, label=fr'$C^\star={C_star}$')
+ax[0].axhline(0, color='grey', alpha=.4)
+ax[0].set_xlabel('C (log)'); ax[0].set_ylabel('NSE'); ax[0].legend()
+ax[0].set_title('Skill de T1 vs seuil C'); ax[0].grid(alpha=.3, which='both')
+
+ax[1].plot(phi2d*sc, Zkm, 'k', lw=2.5, label=r'$\Phi_{2D}$ (noir)')
+for C in [0.2, 0.5, C_star, 2.0]:
+    ax[1].plot(T1tot[C]*sc, Zkm, lw=1.6, alpha=.85, label=fr'$T_1$, C={C}')
+ax[1].axvline(0, color='grey', alpha=.4)
+ax[1].set_xlabel(r'flux ($\times10^{-3}$)'); ax[1].set_ylabel('z [km]')
+ax[1].set_title('T1 (rouge) vs Phi2D (noir)'); ax[1].legend(fontsize=8); ax[1].grid(alpha=.3)
+
+plt.tight_layout(); plt.show()
