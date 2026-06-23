@@ -1,15 +1,9 @@
 # ======================================================================
-#  Analyse spectrale 2D du transport organisé T1 = <[u']_y [w']_y>_x
-#    (A) Co-spectre de Fourier        Co_uw(k,z)   ->  sum_k Co = T1(z)
-#    (B) Co-scalogramme en ondelettes co(a,x)      au niveau de flux max
-#  Identités de Parseval vérifiées pour les deux.
+#  Analyse spectrale 2D de T1 = <[u']_y [w']_y>_x  -  SANS pywt
+#    (A) Co-spectre de Fourier        Co_uw(k,z)
+#    (B) Co-scalogramme ondelettes Morlet (FFT maison) au niveau de flux max
 # ======================================================================
-import pywt   # pip install PyWavelets
-
-import sys
-!{sys.executable} -m pip install PyWavelets
-
-IT_SPEC = n_t - 1                      # instant analysé
+IT_SPEC = n_t - 1
 ZMIN_S, ZMAX_S = 2000., 18000.
 kz_s   = (alt >= ZMIN_S) & (alt <= ZMAX_S)
 iz_lst = np.where(kz_s)[0]
@@ -17,55 +11,59 @@ z_S    = alt[kz_s]; nz_S = z_S.size
 nx     = x.size
 dx     = float(x[1] - x[0])
 
-# --- axes spectraux Fourier ---
-kx     = np.fft.rfftfreq(nx, d=dx) * 2*np.pi          # [rad/m]
-lam_km = (2*np.pi / np.maximum(kx, 1e-12)) / 1000     # longueur d'onde [km]
+kx     = np.fft.rfftfreq(nx, d=dx) * 2*np.pi
+lam_km = (2*np.pi / np.maximum(kx, 1e-12)) / 1000
 
-# --- conteneurs ---
-Co     = np.zeros((nz_S, kx.size))    # co-spectre Fourier
-T1_S   = np.zeros(nz_S)               # T1 par niveau (pour contrôle)
-upy_all = np.zeros((nz_S, nx))        # [u']_y stockés (pour ondelettes)
+Co      = np.zeros((nz_S, kx.size))
+T1_S    = np.zeros(nz_S)
+upy_all = np.zeros((nz_S, nx))
 wpy_all = np.zeros((nz_S, nx))
 
-# --- passe unique de lecture ---
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
 for k, iz in enumerate(iz_lst):
-    u_yx = ds_u['ua'].isel({dim_t: IT_SPEC, dim_z: iz}).values   # (ny,nx)
+    u_yx = ds_u['ua'].isel({dim_t: IT_SPEC, dim_z: iz}).values
     w_yx = ds_w['wa'].isel({dim_t: IT_SPEC, dim_z: iz}).values
-    up_y = (u_yx - u_yx.mean()).mean(axis=0)        # [u']_y (nx,)
+    up_y = (u_yx - u_yx.mean()).mean(axis=0)
     wp_y = (w_yx - w_yx.mean()).mean(axis=0)
     upy_all[k] = up_y; wpy_all[k] = wp_y
     T1_S[k] = (up_y * wp_y).mean()
-
     Fu = np.fft.rfft(up_y); Fw = np.fft.rfft(wp_y)
     co = np.real(Fu * np.conj(Fw)) / nx**2
-    co[1:] *= 2                                       # repli fréquences négatives
+    co[1:] *= 2
     Co[k] = co
     del u_yx, w_yx
 ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
 
-# --- contrôle Parseval Fourier : sum_k Co == T1 ---
 err_f = np.abs(Co.sum(axis=1) - T1_S).max()
 print(f"[Fourier]  max|sum_k Co - T1| = {err_f:.2e}  (doit etre ~1e-18)")
-
-# --- niveau de flux organisé maximal (en valeur absolue) ---
 k_max = int(np.argmax(np.abs(T1_S)))
 print(f"niveau de |T1| max : z = {z_S[k_max]/1000:.1f} km   T1 = {T1_S[k_max]:.3e}")
 
-# --- (B) co-scalogramme ondelettes au niveau k_max ---
-scales = np.geomspace(2, nx//2, 60)
-cwt_u, freqs = pywt.cwt(upy_all[k_max], scales, 'cmor1.5-1.0', sampling_period=dx)
-cwt_w, _     = pywt.cwt(wpy_all[k_max], scales, 'cmor1.5-1.0', sampling_period=dx)
-co_xz = np.real(cwt_u * np.conj(cwt_w))               # (n_scales, nx)
-lam_w_km = (1.0 / freqs) / 1000                        # longueur d'onde [km]
+# --- CWT de Morlet maison (pur NumPy, par FFT) ---
+def cwt_morlet(sig, scales, dx, w0=6.0):
+    n = sig.size
+    sig_hat = np.fft.fft(sig)
+    omega = 2*np.pi * np.fft.fftfreq(n, d=dx)
+    out = np.zeros((scales.size, n), dtype=complex)
+    for i, a in enumerate(scales):
+        psi_hat = (np.pi**-0.25) * np.sqrt(2.0) \
+                  * np.exp(-0.5*(a*omega - w0)**2) * (omega > 0)
+        out[i] = np.fft.ifft(sig_hat * psi_hat * np.sqrt(a))
+    lam = (4*np.pi * scales) / (w0 + np.sqrt(2 + w0**2))   # -> longueur d'onde [m]
+    return out, lam
+
+scales = np.geomspace(2, nx//2, 60) * dx
+cwt_u, lam_w = cwt_morlet(upy_all[k_max], scales/dx, dx)
+cwt_w, _     = cwt_morlet(wpy_all[k_max], scales/dx, dx)
+co_xz    = np.real(cwt_u * np.conj(cwt_w))
+lam_w_km = lam_w / 1000
 
 # ======================================================================
-#  FIGURE : (a) co-spectre Fourier 2D   (b) co-scalogramme ondelettes
+#  FIGURE
 # ======================================================================
 fig, ax = plt.subplots(1, 2, figsize=(15, 5.5))
 
-# (a) co-spectre pondéré k*Co (area-preserving), exclut k=0
-A = kx[None, 1:] * Co[:, 1:]
+A  = kx[None, 1:] * Co[:, 1:]
 mA = np.percentile(np.abs(A), 99) + 1e-30
 pc0 = ax[0].pcolormesh(lam_km[1:], z_S/1000, A, shading='auto',
                        norm=TwoSlopeNorm(vcenter=0, vmin=-mA, vmax=mA), cmap='RdBu_r')
@@ -74,13 +72,12 @@ ax[0].set_xlabel(r'$\lambda$ [km]'); ax[0].set_ylabel('z [km]')
 ax[0].set_title(r'(a) Co-spectre Fourier  $k\,\mathrm{Co}_{uw}(k,z)$')
 fig.colorbar(pc0, ax=ax[0], label=r'$k\,\mathrm{Co}_{uw}$', pad=0.01)
 
-# (b) co-scalogramme au niveau de flux max
 mB = np.percentile(np.abs(co_xz), 99) + 1e-30
 pc1 = ax[1].pcolormesh(x/1000, lam_w_km, co_xz, shading='auto',
                        norm=TwoSlopeNorm(vcenter=0, vmin=-mB, vmax=mB), cmap='RdBu_r')
 ax[1].set_yscale('log')
 ax[1].set_xlabel('x [km]'); ax[1].set_ylabel(r'échelle $\lambda$ [km]')
-ax[1].set_title(f"(b) Co-scalogramme ondelettes  -  z = {z_S[k_max]/1000:.1f} km")
+ax[1].set_title(f"(b) Co-scalogramme Morlet  -  z = {z_S[k_max]/1000:.1f} km")
 fig.colorbar(pc1, ax=ax[1], label="flux local", pad=0.01)
 
 plt.tight_layout(); plt.show()
