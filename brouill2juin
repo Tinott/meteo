@@ -1,3 +1,5 @@
+Xkm, Zkm = x/1000, z_i/1000
+
 fig2, ax2 = plt.subplots(figsize=(11, 4))
 pmax = np.percentile(np.abs(psi_i), 99) + 1e-12
 pc2 = ax2.pcolormesh(Xkm, Zkm, psi_i, shading='auto',
