@@ -1,86 +1,111 @@
 # ======================================================================
-#  Spectre du T2 calculé ci-dessus : à quelle échelle en x vit la covariance within
-#  On reprend EXACTEMENT le T2[k] du code précédent et on le décompose en λ.
-#    T2_k/sigma_k = <u'' w''>_x = somme_λ Co(λ)        (Parseval)
+#  Où vit la covariance within T2 ?  Décomposition Fourier + ondelettes
+#  Part du T2[CAT] calculé dans le bloc up/dn/env (même bande, même instant).
+#    T2_k/.. = <u'' w''>_x = somme_λ Co(λ)   (Parseval, contrôlé)
+#  (a) co-spectre Fourier  Co(λ,z)   -> à quelle échelle
+#  (b) co-scalogramme Morlet (x,λ)   -> à quelle échelle ET où (niveau |T2| max)
+#  (c) profil T2(z) + échelle dominante par niveau  -> lien spectre <-> physique
 # ======================================================================
-CAT = 'up'                        # catégorie dont on spectralise le T2
+CAT = 'up'                         # catégorie dont on spectralise le T2
 
 nx  = x.size
-dx  = float(x[1] - x[0])
-kx  = np.fft.rfftfreq(nx, d=dx) * 2*np.pi
-lam_km = (2*np.pi / np.maximum(kx, 1e-12)) / 1000
+dx  = float(x[1] - x[0])           # pas horizontal [m]
+print(f"nx={nx}  dx={dx/1000:.2f} km  domaine={nx*dx/1000:.0f} km")
 
+# --- garde-fou : T2 doit être sur la même bande que ce bloc ---
+assert T2[CAT].shape[0] == nz_D, (
+    f"T2[{CAT}] a {T2[CAT].shape[0]} niveaux, bande={nz_D} -> "
+    "relance le bloc up/dn/env avec la MÊME bande avant celui-ci.")
+
+# --- axes spectraux Fourier ---
+kx     = np.fft.rfftfreq(nx, d=dx) * 2*np.pi          # nombre d'onde [rad/m]
+lam_km = (2*np.pi / np.maximum(kx, 1e-12)) / 1000     # longueur d'onde [km]
+
+# --- conteneurs ---
 Co_T2   = np.zeros((nz_D, kx.size))   # co-spectre par niveau
-T2_chk  = np.zeros(nz_D)              # T2 reconstruit (contrôle = doit == T2[CAT])
-upp_all = np.zeros((nz_D, nx))        # u''(x) pour les ondelettes
+T2_chk  = np.zeros(nz_D)              # T2 reconstruit (contrôle)
+upp_all = np.zeros((nz_D, nx))        # u''(x) (0 hors catégorie) pour ondelettes
 wpp_all = np.zeros((nz_D, nx))
 
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
 for j, iz in enumerate(iz_lst):
     u_yx = ds_u['ua'].isel({dim_t: IT_DECOMP, dim_z: iz}).values
     w_yx = ds_w['wa'].isel({dim_t: IT_DECOMP, dim_z: iz}).values
-    uy = u_yx.mean(axis=0); wy = w_yx.mean(axis=0)
+    uy = u_yx.mean(axis=0); wy = w_yx.mean(axis=0)      # <u>_y(x), <w>_y(x)
 
     ws = max(W0_MIN, C_DECOMP * wy.std())
     masks = {'up': wy > ws, 'dn': wy < -ws, 'env': np.abs(wy) <= ws}
     m = masks[CAT]
 
-    # u'', w'' définis sur TOUT x (0 hors catégorie) -> <u''w''>_x == T2[CAT]/... 
+    # anomalies intra-catégorie, définies sur TOUT x (0 hors cat)
     upp = np.zeros(nx); wpp = np.zeros(nx)
     if m.any():
         upp[m] = uy[m] - uy[m].mean()
         wpp[m] = wy[m] - wy[m].mean()
     upp_all[j] = upp; wpp_all[j] = wpp
 
-    T2_chk[j] = (upp * wpp).mean()        # == T2[CAT][j] de ton code (à sigma près déjà inclus)
+    T2_chk[j] = (upp * wpp).mean()        # == T2[CAT][j]
 
     Fu = np.fft.rfft(upp); Fw = np.fft.rfft(wpp)
     co = np.real(Fu * np.conj(Fw)) / nx**2
-    co[1:] *= 2
+    co[1:] *= 2                            # repli fréquences négatives
     Co_T2[j] = co
     del u_yx, w_yx; gc.collect()
 ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
 
-# --- contrôle 1 : Parseval (somme du spectre == T2) ---
+# --- contrôles ---
 err_p = np.abs(Co_T2.sum(axis=1) - T2_chk).max()
-print(f"[Parseval]  max|sum_λ Co - T2| = {err_p:.2e}  (doit etre ~1e-18)")
-# --- contrôle 2 : cohérence avec le T2 du code précédent ---
 err_c = np.abs(T2_chk - T2[CAT]).max()
-print(f"[cohérence] max|T2_spectre - T2[{CAT}]| = {err_c:.2e}  (doit etre ~1e-18)")
+print(f"[Parseval]  max|sum_λ Co - T2|       = {err_p:.2e}  (~1e-18)")
+print(f"[cohérence] max|T2_spectre - T2[{CAT}]| = {err_c:.2e}  (~1e-18)")
 
 k_max = int(np.argmax(np.abs(T2_chk)))
-print(f"niveau |T2_{CAT}| max : z = {z_D[k_max]/1000:.1f} km")
+print(f"niveau |T2_{CAT}| max : z = {z_D[k_max]/1000:.1f} km   T2 = {T2_chk[k_max]:.2e}")
 
-# --- ondelettes (Morlet maison) au niveau k_max ---
-def cwt_morlet(sig, scales, dx, w0=6.0):
-    n = sig.size; sig_hat = np.fft.fft(sig)
-    omega = 2*np.pi * np.fft.fftfreq(n, d=dx)
-    out = np.zeros((scales.size, n), dtype=complex)
-    for i, a in enumerate(scales):
+# --- échelle dominante par niveau (barycentre |Co| en log-λ, hors k=0) ---
+lam_dom = np.zeros(nz_D)
+for j in range(nz_D):
+    w_ = np.abs(Co_T2[j, 1:])
+    lam_dom[j] = np.exp(np.sum(w_*np.log(lam_km[1:])) / (w_.sum()+1e-30)) if w_.sum()>0 else np.nan
+
+# --- CWT de Morlet maison (pur NumPy) — ÉCHELLES EN POINTS, conversion propre ---
+def cwt_morlet(sig, scales_pts, dx, w0=6.0):
+    """scales_pts en POINTS de grille. Renvoie cwt (n_scales,n) + lambda [m]."""
+    n = sig.size
+    sig_hat = np.fft.fft(sig)
+    omega = 2*np.pi * np.fft.fftfreq(n)               # cycles/point (pas de dx)
+    out = np.zeros((scales_pts.size, n), dtype=complex)
+    for i, a in enumerate(scales_pts):
         psi_hat = (np.pi**-0.25)*np.sqrt(2.0)*np.exp(-0.5*(a*omega-w0)**2)*(omega>0)
         out[i] = np.fft.ifft(sig_hat * psi_hat * np.sqrt(a))
-    lam = (4*np.pi*scales)/(w0+np.sqrt(2+w0**2))
-    return out, lam
+    lam_pts = (4*np.pi*scales_pts)/(w0+np.sqrt(2+w0**2))   # longueur d'onde [points]
+    return out, lam_pts * dx                                # -> [m]
 
-scales = np.geomspace(2, nx//2, 60) * dx
-cwt_u, lam_w = cwt_morlet(upp_all[k_max], scales/dx, dx)
-cwt_w, _     = cwt_morlet(wpp_all[k_max], scales/dx, dx)
-co_xz = np.real(cwt_u * np.conj(cwt_w)); lam_w_km = lam_w/1000
+scales_pts = np.geomspace(2, nx//2, 80)               # en POINTS (pas *dx !)
+cwt_u, lam_w = cwt_morlet(upp_all[k_max], scales_pts, dx)
+cwt_w, _     = cwt_morlet(wpp_all[k_max], scales_pts, dx)
+co_xz    = np.real(cwt_u * np.conj(cwt_w))
+lam_w_km = lam_w / 1000
+print(f"ondelettes : λ de {lam_w_km.min():.1f} à {lam_w_km.max():.0f} km")
 
 # ======================================================================
-#  FIGURE : (a) co-spectre T2(z,λ)   (b) co-scalogramme au z de |T2| max
+#  FIGURE  (a) co-spectre   (b) co-scalogramme   (c) profil T2 + échelle dom.
 # ======================================================================
-fig, ax = plt.subplots(1, 2, figsize=(15, 5.5))
+fig, ax = plt.subplots(1, 3, figsize=(19, 5.5))
 
+# (a) co-spectre Fourier pondéré k (area-preserving)
 A  = kx[None,1:] * Co_T2[:,1:]
 mA = np.percentile(np.abs(A), 99) + 1e-30
 pc0 = ax[0].pcolormesh(lam_km[1:], z_D/1000, A, shading='auto',
                        norm=TwoSlopeNorm(vcenter=0, vmin=-mA, vmax=mA), cmap='RdBu_r')
+ax[0].plot(lam_dom, z_D/1000, 'k-', lw=1.5, alpha=.6, label='échelle dominante')
 ax[0].set_xscale('log'); ax[0].invert_xaxis()
 ax[0].set_xlabel(r'$\lambda$ [km]'); ax[0].set_ylabel('z [km]')
-ax[0].set_title(fr'(a) Co-spectre de $T_2^{{{CAT}}}$ — où vit la covariance')
+ax[0].set_title(fr'(a) Co-spectre de $T_2^{{{CAT}}}$')
+ax[0].legend(fontsize=8, loc='upper left')
 fig.colorbar(pc0, ax=ax[0], label=r'$k\,\mathrm{Co}$', pad=0.01)
 
+# (b) co-scalogramme au niveau |T2| max
 mB = np.percentile(np.abs(co_xz), 99) + 1e-30
 pc1 = ax[1].pcolormesh(x/1000, lam_w_km, co_xz, shading='auto',
                        norm=TwoSlopeNorm(vcenter=0, vmin=-mB, vmax=mB), cmap='RdBu_r')
@@ -88,5 +113,12 @@ ax[1].set_yscale('log')
 ax[1].set_xlabel('x [km]'); ax[1].set_ylabel(r'échelle $\lambda$ [km]')
 ax[1].set_title(f"(b) Co-scalogramme — z = {z_D[k_max]/1000:.1f} km")
 fig.colorbar(pc1, ax=ax[1], label="flux local", pad=0.01)
+
+# (c) profil T2(z) + échelle dominante
+ax[2].plot(T2_chk*1e3, z_D/1000, 'C3-', lw=2, label=fr'$T_2^{{{CAT}}}$')
+ax[2].axvline(0, color='grey', lw=0.6)
+ax[2].axhline(z_D[k_max]/1000, color='grey', ls=':', lw=1, label='niveau |T2| max')
+ax[2].set_xlabel(r'$T_2$ ($\times10^{-3}$ m²/s²)'); ax[2].set_ylabel('z [km]')
+ax[2].set_title('(c) Profil de $T_2$'); ax[2].legend(fontsize=8); ax[2].grid(alpha=.3)
 
 plt.tight_layout(); plt.show()
