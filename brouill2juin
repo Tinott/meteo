@@ -1,11 +1,14 @@
-Xkm, Zkm = x/1000, z_i/1000
+for it in T_SNAPS:
+    z_i, rho_i, U_i, W_i, UP_i = coupe_instant(it)
+    psi_i = psi_poisson_periodic(U_i, W_i, x, z_i, rho_i)
+    Xkm, Zkm = x/1000, z_i/1000
 
-fig2, ax2 = plt.subplots(figsize=(11, 4))
-pmax = np.percentile(np.abs(psi_i), 99) + 1e-12
-pc2 = ax2.pcolormesh(Xkm, Zkm, psi_i, shading='auto',
-                     norm=TwoSlopeNorm(vcenter=0, vmin=-pmax, vmax=pmax),
-                     cmap='RdBu_r')
-ax2.set_xlabel('x [km]'); ax2.set_ylabel('z [km]')
-ax2.set_title(f"$\\psi$ (fonction de courant de masse) - it = {it}")
-fig2.colorbar(pc2, ax=ax2, label=r'$\psi$ [kg m$^{-1}$ s$^{-1}$]', pad=0.01)
-plt.tight_layout(); plt.show()
+    fig2, ax2 = plt.subplots(figsize=(11, 4))
+    pmax = np.percentile(np.abs(psi_i), 99) + 1e-12
+    pc2 = ax2.pcolormesh(Xkm, Zkm, psi_i, shading='auto',
+                         norm=TwoSlopeNorm(vcenter=0, vmin=-pmax, vmax=pmax),
+                         cmap='RdBu_r')
+    ax2.set_xlabel('x [km]'); ax2.set_ylabel('z [km]')
+    ax2.set_title(f"$\\psi$ (fonction de courant de masse) - it = {it}")
+    fig2.colorbar(pc2, ax=ax2, label=r'$\psi$ [kg m$^{-1}$ s$^{-1}$]', pad=0.01)
+    plt.tight_layout(); plt.show()
