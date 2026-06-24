@@ -1,11 +1,8 @@
-# (a) co-spectre DIRECT (brut, sans pondération)
-A  = Co_T2[:, 1:]                              # <-- plus de kx multiplié
-mA = np.percentile(np.abs(A), 99) + 1e-30
-pc0 = ax[0].pcolormesh(lam_km[1:], z_D/1000, A, shading='auto',
-                       norm=TwoSlopeNorm(vcenter=0, vmin=-mA, vmax=mA), cmap='RdBu_r')
-ax[0].plot(lam_dom, z_D/1000, 'k-', lw=1.5, alpha=.6, label='échelle dominante')
-ax[0].set_xscale('log'); ax[0].invert_xaxis()
-ax[0].set_xlabel(r'$\lambda$ [km]'); ax[0].set_ylabel('z [km]')
-ax[0].set_title(fr'(a) Co-spectre brut de $T_2^{{{CAT}}}$')
-ax[0].legend(fontsize=8, loc='upper left')
-fig.colorbar(pc0, ax=ax[0], label=r'$\mathrm{Co}$', pad=0.01)   # label sans le k
+j0 = k_max
+plt.figure(figsize=(7,4))
+plt.semilogx(lam_km[1:], kx[1:]*Co_T2[j0,1:], 'C3')   # k*Co vs lambda
+plt.gca().invert_xaxis()
+plt.axhline(0, color='grey', lw=.6)
+plt.xlabel(r'$\lambda$ [km]'); plt.ylabel(r'$k\,\mathrm{Co}$')
+plt.title(f'Co-spectre area-preserving, z={z_D[j0]/1000:.1f} km')
+plt.show()
