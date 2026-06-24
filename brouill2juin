@@ -2,10 +2,12 @@
 #  Où vit la covariance within T2 ? — Fourier + ondelettes, MÊME pondération
 #    WEIGHTING = 'k'    -> area-preserving (k·Co) : contribution par décade log
 #    WEIGHTING = 'brut' -> Co brut : amplitude absolue (grandes échelles ressortent)
-#  Les DEUX panneaux (a) et (b) utilisent la même convention -> cohérents.
+#  Les DEUX panneaux (a) Fourier et (b) ondelettes utilisent la même convention.
+#  CWT Morlet "maison" (NumPy seul) -> pas de dépendance externe (cluster CNRM).
 # ======================================================================
 CAT       = 'up'
 WEIGHTING = 'k'                    # 'k' (area-preserving) ou 'brut'
+W0_MORLET = 6.0                    # paramètre adimensionnel de la Morlet (ω0)
 
 nx  = x.size
 dx  = float(x[1] - x[0])
@@ -23,6 +25,9 @@ T2_chk  = np.zeros(nz_D)
 upp_all = np.zeros((nz_D, nx))
 wpp_all = np.zeros((nz_D, nx))
 
+# ----------------------------------------------------------------------
+#  (0) Reconstruction des anomalies intra-catégorie u'',w'' + co-spectre Fourier
+# ----------------------------------------------------------------------
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
 for j, iz in enumerate(iz_lst):
     u_yx = ds_u['ua'].isel({dim_t: IT_DECOMP, dim_z: iz}).values
@@ -51,7 +56,7 @@ for j, iz in enumerate(iz_lst):
     del u_yx, w_yx; gc.collect()
 ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
 
-# --- contrôles ---
+# --- contrôles Fourier ---
 err_p = np.abs(Co_T2.sum(axis=1) - T2_chk).max()
 err_c = np.abs(T2_chk - T2[CAT]).max()
 print(f"[Parseval]  max|sum_λ Co - T2|       = {err_p:.2e}")
@@ -60,37 +65,59 @@ print(f"[cohérence] max|T2_spectre - T2[{CAT}]| = {err_c:.2e}")
 k_max = int(np.argmax(np.abs(T2_chk)))
 print(f"niveau |T2_{CAT}| max : z = {z_D[k_max]/1000:.1f} km")
 
-# --- échelle dominante (barycentre |Co| en log-λ, inchangée par la pondération) ---
+# --- échelle dominante Fourier (barycentre |Co| en log-λ) ---
 lam_dom = np.zeros(nz_D)
 for j in range(nz_D):
     w_ = np.abs(Co_T2[j, 1:])
     lam_dom[j] = np.exp(np.sum(w_*np.log(lam_km[1:])) / (w_.sum()+1e-30)) if w_.sum()>0 else np.nan
 
-# --- CWT de Morlet maison ---
-def cwt_morlet(sig, scales_pts, dx, w0=6.0):
-    n = sig.size
-    sig_hat = np.fft.fft(sig)
-    omega = 2*np.pi * np.fft.fftfreq(n)
-    out = np.zeros((scales_pts.size, n), dtype=complex)
-    for i, a in enumerate(scales_pts):
-        psi_hat = (np.pi**-0.25)*np.sqrt(2.0)*np.exp(-0.5*(a*omega-w0)**2)*(omega>0)
-        out[i] = np.fft.ifft(sig_hat * psi_hat * np.sqrt(a))
-    lam_pts = (4*np.pi*scales_pts)/(w0+np.sqrt(2+w0**2))
-    return out, lam_pts * dx
+# ----------------------------------------------------------------------
+#  (1) CWT Morlet NumPy-only -> co-scalogramme co(λ, z) moyenné en x
+#      Morlet : psi_hat(s·k) = pi^-1/4 · H(k) · exp(-(s·k - w0)^2 / 2)
+#      Relation échelle<->longueur d'onde de Fourier :
+#         lam = 2*pi*s / (w0 + sqrt(2 + w0^2))         (Torrence & Compo 1998)
+# ----------------------------------------------------------------------
+NSCALE = 48
+# bornes d'échelle : de ~2 dx (Nyquist) à ~ la moitié du domaine
+s_min  = 2.0 * dx / (W0_MORLET + np.sqrt(2 + W0_MORLET**2)) * (W0_MORLET + np.sqrt(2 + W0_MORLET**2)) / (2*np.pi) * (2*np.pi)  # = 2 dx en échelle Fourier
+scales = np.geomspace(2*dx, nx*dx/2, NSCALE)               # échelles s [m]
+# facteur de conversion échelle s -> longueur d'onde de Fourier lam
+fourier_factor = (4*np.pi) / (W0_MORLET + np.sqrt(2 + W0_MORLET**2))
+lam_w  = scales * fourier_factor / 1000.0                  # [km], 1 par échelle
 
-scales_pts = np.geomspace(2, nx//2, 80)
-cwt_u, lam_w = cwt_morlet(upp_all[k_max], scales_pts, dx)
-cwt_w, _     = cwt_morlet(wpp_all[k_max], scales_pts, dx)
-co_xz    = np.real(cwt_u * np.conj(cwt_w))
-lam_w_km = lam_w / 1000
-print(f"ondelettes : λ de {lam_w_km.min():.1f} à {lam_w_km.max():.0f} km")
+# fréquences angulaires du domaine périodique (FFT complète)
+k_full = np.fft.fftfreq(nx, d=dx) * 2*np.pi                # [rad/m]
+
+def cwt_morlet(sig):
+    """CWT Morlet via FFT (domaine périodique). Retourne W[n_scale, nx] complexe."""
+    Sig = np.fft.fft(sig)
+    out = np.empty((NSCALE, nx), dtype=complex)
+    norm = (np.pi**-0.25)
+    for i, s in enumerate(scales):
+        sk    = s * k_full
+        psih  = norm * np.sqrt(2*np.pi*s/dx) * (sk > 0) * np.exp(-0.5*(sk - W0_MORLET)**2)
+        out[i] = np.fft.ifft(Sig * psih)
+    return out
+
+# co-scalogramme : moyenne en x du produit croisé Re(Wu · conj(Ww))
+co_xz = np.zeros((nz_D, NSCALE))
+for j in range(nz_D):
+    Wu = cwt_morlet(upp_all[j])
+    Ww = cwt_morlet(wpp_all[j])
+    co_xz[j] = np.real(Wu * np.conj(Ww)).mean(axis=1)      # moyenne sur x -> co(λ) par niveau
+
+# --- échelle dominante ondelettes (barycentre |co_xz| en log-λ) ---
+lam_dom_w = np.zeros(nz_D)
+for j in range(nz_D):
+    w_ = np.abs(co_xz[j])
+    lam_dom_w[j] = np.exp(np.sum(w_*np.log(lam_w)) / (w_.sum()+1e-30)) if w_.sum()>0 else np.nan
 
 # ======================================================================
 #  Application de la pondération choisie aux DEUX panneaux
 # ======================================================================
 if WEIGHTING == 'k':
     A_spec  = kx[None, 1:] * Co_T2[:, 1:]          # k·Co  (Fourier)
-    k_scale = 2*np.pi / lam_w[:, None]             # k de chaque échelle ondelette
+    k_scale = 2*np.pi / (lam_w[None, :] * 1000.0)  # k de chaque échelle ondelette [rad/m]
     A_scal  = co_xz * k_scale                      # k·Co  (ondelettes)
     lab     = r'$k\,\mathrm{Co}$'
 else:  # 'brut'
@@ -99,9 +126,9 @@ else:  # 'brut'
     lab     = r'$\mathrm{Co}$'
 
 # ======================================================================
-#  FIGURE
+#  FIGURE — (a) Fourier   (b) ondelettes Morlet
 # ======================================================================
-fig, ax = plt.subplots(1, 3, figsize=(19, 5.5))
+fig, ax = plt.subplots(1, 2, figsize=(13, 5.5), sharey=True)
 
 # (a) co-spectre Fourier
 mA = np.percentile(np.abs(A_spec), 99) + 1e-30
@@ -110,24 +137,19 @@ pc0 = ax[0].pcolormesh(lam_km[1:], z_D/1000, A_spec, shading='auto',
 ax[0].plot(lam_dom, z_D/1000, 'k-', lw=1.5, alpha=.6, label='échelle dominante')
 ax[0].set_xscale('log'); ax[0].invert_xaxis()
 ax[0].set_xlabel(r'$\lambda$ [km]'); ax[0].set_ylabel('z [km]')
-ax[0].set_title(fr'(a) Co-spectre de $T_2^{{{CAT}}}$ ({WEIGHTING})')
+ax[0].set_title(fr'(a) Co-spectre Fourier de $T_2^{{{CAT}}}$ ({WEIGHTING})')
 ax[0].legend(fontsize=8, loc='upper left')
 fig.colorbar(pc0, ax=ax[0], label=lab, pad=0.01)
 
-# (b) co-scalogramme — MÊME pondération
+# (b) co-scalogramme ondelettes
 mB = np.percentile(np.abs(A_scal), 99) + 1e-30
-pc1 = ax[1].pcolormesh(x/1000, lam_w_km, A_scal, shading='auto',
+pc1 = ax[1].pcolormesh(lam_w, z_D/1000, A_scal, shading='auto',
                        norm=TwoSlopeNorm(vcenter=0, vmin=-mB, vmax=mB), cmap='RdBu_r')
-ax[1].set_yscale('log')
-ax[1].set_xlabel('x [km]'); ax[1].set_ylabel(r'échelle $\lambda$ [km]')
-ax[1].set_title(f"(b) Co-scalogramme ({WEIGHTING}) — z = {z_D[k_max]/1000:.1f} km")
+ax[1].plot(lam_dom_w, z_D/1000, 'k-', lw=1.5, alpha=.6, label='échelle dominante')
+ax[1].set_xscale('log'); ax[1].invert_xaxis()
+ax[1].set_xlabel(r'$\lambda$ [km]')
+ax[1].set_title(fr'(b) Co-scalogramme Morlet de $T_2^{{{CAT}}}$ ({WEIGHTING})')
+ax[1].legend(fontsize=8, loc='upper left')
 fig.colorbar(pc1, ax=ax[1], label=lab, pad=0.01)
-
-# (c) profil T2(z)
-ax[2].plot(T2_chk*1e3, z_D/1000, 'C3-', lw=2, label=fr'$T_2^{{{CAT}}}$')
-ax[2].axvline(0, color='grey', lw=0.6)
-ax[2].axhline(z_D[k_max]/1000, color='grey', ls=':', lw=1, label='niveau |T2| max')
-ax[2].set_xlabel(r'$T_2$ ($\times10^{-3}$ m²/s²)'); ax[2].set_ylabel('z [km]')
-ax[2].set_title('(c) Profil de $T_2$'); ax[2].legend(fontsize=8); ax[2].grid(alpha=.3)
 
 plt.tight_layout(); plt.show()
