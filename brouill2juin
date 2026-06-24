@@ -1,155 +1,426 @@
 # ======================================================================
-#  Où vit la covariance within T2 ? — Fourier + ondelettes, MÊME pondération
-#    WEIGHTING = 'k'    -> area-preserving (k·Co) : contribution par décade log
-#    WEIGHTING = 'brut' -> Co brut : amplitude absolue (grandes échelles ressortent)
-#  Les DEUX panneaux (a) Fourier et (b) ondelettes utilisent la même convention.
-#  CWT Morlet "maison" (NumPy seul) -> pas de dépendance externe (cluster CNRM).
+#  ÉTAPE 1 — Co-spectre Fourier de la covariance ORGANISÉE T1 par niveau
+#  ----------------------------------------------------------------------
+#  Idée : T1(z) = covariance en x des profils "par paliers" reconstruits
+#         u_org(x) = uc[cat(x)] - ubar,  w_org(x) = wc[cat(x)] - wbar
+#  où cat(x) ∈ {up,dn,env} est la catégorie de la colonne x (seuil sur w̄_y).
+#  Le co-spectre de (u_org, w_org) vérifie  Σ_λ Co1(λ) = T1(z)  (Parseval),
+#  et révèle À QUELLE ÉCHELLE horizontale vit le flux de masse organisé.
+#
+#  Dépend de : x, alt, iz_lst, z_D, nz_D, dim_t, dim_z, path3d,
+#              IT_DECOMP, C_DECOMP, W0_MIN  (mêmes conventions que up/dn/env).
 # ======================================================================
-CAT       = 'up'
-WEIGHTING = 'k'                    # 'k' (area-preserving) ou 'brut'
-W0_MORLET = 6.0                    # paramètre adimensionnel de la Morlet (ω0)
+CAT_LIST = ('up', 'dn', 'env')
 
 nx  = x.size
 dx  = float(x[1] - x[0])
-print(f"nx={nx}  dx={dx/1000:.2f} km  domaine={nx*dx/1000:.0f} km  | pondération={WEIGHTING}")
+print(f"[T1 spectre] nx={nx}  dx={dx/1000:.2f} km  domaine={nx*dx/1000:.0f} km")
 
-assert T2[CAT].shape[0] == nz_D, (
-    f"T2[{CAT}] a {T2[CAT].shape[0]} niveaux, bande={nz_D} -> relance le bloc up/dn/env.")
+# --- axes spectraux Fourier (rfft : fréquences positives) ---
+kx     = np.fft.rfftfreq(nx, d=dx) * 2*np.pi          # nombre d'onde [rad/m]
+lam_km = (2*np.pi / np.maximum(kx, 1e-12)) / 1000     # longueur d'onde [km]
 
-# --- axes spectraux Fourier ---
-kx     = np.fft.rfftfreq(nx, d=dx) * 2*np.pi
-lam_km = (2*np.pi / np.maximum(kx, 1e-12)) / 1000
+# --- conteneurs ---
+Co_T1     = np.zeros((nz_D, kx.size))   # co-spectre du flux organisé, par niveau
+T1_chk    = np.zeros(nz_D)              # T1 reconstruit (contrôle Parseval)
+T1_ref    = np.zeros(nz_D)              # T1 "direct" (somme des catégories) pour cohérence
+uorg_all  = np.zeros((nz_D, nx))        # u_org(x) par niveau (utile plus bas)
+worg_all  = np.zeros((nz_D, nx))
 
-Co_T2   = np.zeros((nz_D, kx.size))
-T2_chk  = np.zeros(nz_D)
-upp_all = np.zeros((nz_D, nx))
-wpp_all = np.zeros((nz_D, nx))
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for j, iz in enumerate(iz_lst):
+    u_yx = ds_u['ua'].isel({dim_t: IT_DECOMP, dim_z: iz}).values   # (ny, nx)
+    w_yx = ds_w['wa'].isel({dim_t: IT_DECOMP, dim_z: iz}).values
+
+    # --- moyenne sur y -> profils en x ---
+    uy = u_yx.mean(axis=0); wy = w_yx.mean(axis=0)
+    ubar, wbar = uy.mean(), wy.mean()
+
+    # --- classification des colonnes x (même seuil que le bloc up/dn/env) ---
+    ws = max(W0_MIN, C_DECOMP * wy.std())
+    masks = {'up': wy > ws, 'dn': wy < -ws, 'env': np.abs(wy) <= ws}
+
+    # --- reconstruction par paliers : valeur de catégorie - moyenne globale ---
+    u_org = np.zeros(nx); w_org = np.zeros(nx)
+    t1_direct = 0.0
+    for k in CAT_LIST:
+        m = masks[k]; Nk = m.sum()
+        if Nk == 0:
+            continue
+        uc = uy[m].mean(); wc = wy[m].mean()
+        u_org[m] = uc - ubar
+        w_org[m] = wc - wbar
+        t1_direct += (Nk / nx) * (uc - ubar) * (wc - wbar)   # = σ_k (uc-ū)(wc-w̄)
+
+    uorg_all[j] = u_org; worg_all[j] = w_org
+    T1_ref[j]   = t1_direct
+    T1_chk[j]   = (u_org * w_org).mean()        # doit égaler t1_direct (paliers constants)
+
+    # --- co-spectre Fourier de (u_org, w_org), normalisé Parseval ---
+    Fu = np.fft.rfft(u_org); Fw = np.fft.rfft(w_org)
+    co = np.real(Fu * np.conj(Fw)) / nx**2
+    if nx % 2 == 0:
+        co[1:-1] *= 2          # repli des fréquences négatives (sauf 0 et Nyquist)
+    else:
+        co[1:]   *= 2
+    Co_T1[j] = co
+
+    del u_yx, w_yx; gc.collect()
+ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
 
 # ----------------------------------------------------------------------
-#  (0) Reconstruction des anomalies intra-catégorie u'',w'' + co-spectre Fourier
+#  Contrôles
 # ----------------------------------------------------------------------
+err_parseval = np.abs(Co_T1.sum(axis=1) - T1_chk).max()
+err_direct   = np.abs(T1_chk - T1_ref).max()
+print(f"[Parseval]  max|Σ_λ Co1 - T1_chk|   = {err_parseval:.2e}   (≈ 1e-18)")
+print(f"[cohérence] max|T1_chk - T1_direct| = {err_direct:.2e}     (≈ 1e-18)")
+
+j_max = int(np.argmax(np.abs(T1_chk)))
+print(f"niveau |T1| max : z = {z_D[j_max]/1000:.1f} km   (T1 = {T1_chk[j_max]:.2e} m²/s²)")
+
+# --- échelle dominante par niveau (barycentre de |Co1| en log-λ) ---
+lam_dom_T1 = np.full(nz_D, np.nan)
+for j in range(nz_D):
+    wgt = np.abs(Co_T1[j, 1:])
+    if wgt.sum() > 0:
+        lam_dom_T1[j] = np.exp(np.sum(wgt * np.log(lam_km[1:])) / wgt.sum())
+
+# ======================================================================
+#  FIGURE — co-spectre de T1 (area-preserving k·Co) + échelle dominante
+# ======================================================================
+A1 = kx[None, 1:] * Co_T1[:, 1:]          # k·Co : contribution par décade log
+m1 = np.percentile(np.abs(A1), 99) + 1e-30
+
+fig, ax = plt.subplots(1, 2, figsize=(13, 5.5),
+                       gridspec_kw={'width_ratios': [2, 1]})
+
+# (a) carte échelle-altitude
+pc = ax[0].pcolormesh(lam_km[1:], z_D/1000, A1, shading='auto',
+                      norm=TwoSlopeNorm(vcenter=0, vmin=-m1, vmax=m1), cmap='RdBu_r')
+ax[0].plot(lam_dom_T1, z_D/1000, 'k-', lw=1.6, alpha=.7, label='échelle dominante')
+ax[0].set_xscale('log'); ax[0].invert_xaxis()
+ax[0].set_xlabel(r'$\lambda$ [km]'); ax[0].set_ylabel('z [km]')
+ax[0].set_title(r'(a) Co-spectre du flux organisé $T_1$  ($k\,\mathrm{Co}$)')
+ax[0].legend(fontsize=9, loc='upper left')
+fig.colorbar(pc, ax=ax[0], label=r'$k\,\mathrm{Co}_{T_1}$', pad=0.01)
+
+# (b) profil T1(z) + comparaison au T2 si dispo
+ax[1].plot(T1_chk*1e3, z_D/1000, 'r-', lw=2, label=r'$T_1$ (organisé)')
+if 'T2' in dir() and isinstance(T2, dict) and CAT_DEF_OK := all(T2[k].shape[0]==nz_D for k in T2):
+    T2tot_here = sum(T2[k] for k in T2)
+    ax[1].plot(T2tot_here*1e3, z_D/1000, 'b-.', lw=2, label=r'$T_2$ (résidu)')
+ax[1].axvline(0, color='grey', alpha=.4)
+ax[1].set_xlabel(r'flux ($\times10^{-3}$ m²/s²)'); ax[1].set_title('(b) Profils')
+ax[1].legend(fontsize=9); ax[1].grid(alpha=.3)
+
+plt.tight_layout(); plt.show()
+
+
+
+
+
+
+
+
+
+# ======================================================================
+#  ÉTAPE 2 — Forme et orientation des rouleaux de lignes de courant
+#  ----------------------------------------------------------------------
+#  Un rouleau = une cellule de circulation = une région connexe où ψ garde
+#  un signe constant (bornée par les isolignes ψ = 0). Pour chaque cellule :
+#    • tenseur d'inertie pondéré par |ψ| (intensité de circulation)
+#    • valeurs propres  -> demi-axes a≥b de l'ellipse équivalente
+#    • aspect ratio     AR = a/b           (1 = rond, >>1 = lamelle)
+#    • angle θ          = orientation de l'axe majeur p/r horizontale [deg]
+#    • signe            = sens de rotation (ψ>0 / ψ<0)
+#
+#  Entrées attendues :  psi_i (nz,nx), x [m], z_i [m]   d'un instant donné.
+#  (réutilise la coupe_instant + psi_poisson_periodic des cellules ψ)
+#
+#  Segmentation des composantes connexes : implémentation NumPy-only par
+#  union-find (pas de scipy.ndimage requis -> robuste sur le cluster CNRM,
+#  mais on l'utilise si dispo car bien plus rapide).
+# ======================================================================
+
+# ---------- (2a) étiquetage des composantes connexes (4-connexité) ----------
+def label_connected(mask):
+    """Étiquette les régions connexes True de `mask` (2D bool).
+    Renvoie (labels int [même shape], n_labels). 4-connexité.
+    Utilise scipy.ndimage.label si présent, sinon union-find NumPy-only."""
+    try:
+        from scipy.ndimage import label as _ndlabel
+        lab, n = _ndlabel(mask)              # 4-connexité par défaut
+        return lab, int(n)
+    except Exception:
+        pass
+    # --- repli union-find (sans scipy) ---
+    nz, nx = mask.shape
+    parent = np.full(nz*nx, -1, dtype=np.int64)
+    def find(a):
+        root = a
+        while parent[root] != root:
+            root = parent[root]
+        while parent[a] != root:           # compression de chemin
+            parent[a], a = root, parent[a]
+        return root
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+    idx = lambda i, j: i*nx + j
+    for i in range(nz):
+        for j in range(nx):
+            if not mask[i, j]:
+                continue
+            p = idx(i, j); parent[p] = p
+            if i > 0 and mask[i-1, j]:
+                if parent[idx(i-1, j)] != -1: union(p, idx(i-1, j))
+            if j > 0 and mask[i, j-1]:
+                if parent[idx(i, j-1)] != -1: union(p, idx(i, j-1))
+    labels = np.zeros((nz, nx), dtype=np.int64)
+    remap = {}; nxt = 1
+    for i in range(nz):
+        for j in range(nx):
+            if mask[i, j]:
+                r = find(idx(i, j))
+                if r not in remap:
+                    remap[r] = nxt; nxt += 1
+                labels[i, j] = remap[r]
+    return labels, nxt - 1
+
+
+# ---------- (2b) diagnostics géométriques d'une cellule ----------
+def cell_geometry(ii, jj, wgt, x, z_i):
+    """Tenseur d'inertie pondéré -> (aire, AR, angle_deg, xc_km, zc_km, a_km, b_km).
+    ii,jj : indices (z,x) des pixels de la cellule ; wgt : poids (|ψ|) par pixel."""
+    X = x[jj];  Z = z_i[ii]                       # coordonnées physiques [m]
+    W = wgt.astype(float)
+    Wsum = W.sum() + 1e-30
+    xc = (W * X).sum() / Wsum
+    zc = (W * Z).sum() / Wsum
+    dX = X - xc; dZ = Z - zc
+    # tenseur de covariance spatiale pondéré (2x2)
+    Sxx = (W * dX * dX).sum() / Wsum
+    Szz = (W * dZ * dZ).sum() / Wsum
+    Sxz = (W * dX * dZ).sum() / Wsum
+    C = np.array([[Sxx, Sxz], [Sxz, Szz]])
+    evals, evecs = np.linalg.eigh(C)              # croissant
+    lam_min, lam_max = evals[0], evals[1]
+    a = 2.0 * np.sqrt(max(lam_max, 0.0))          # demi-axe majeur (≈2σ)
+    b = 2.0 * np.sqrt(max(lam_min, 0.0))          # demi-axe mineur
+    AR = a / (b + 1e-30)
+    vmaj = evecs[:, 1]                            # vecteur propre de lam_max = (vx, vz)
+    angle = np.degrees(np.arctan2(vmaj[1], vmaj[0]))   # p/r horizontale
+    if angle < -90: angle += 180
+    if angle >  90: angle -= 180
+    area_px = ii.size
+    return dict(area_px=area_px, AR=AR, angle=angle,
+                xc_km=xc/1000, zc_km=zc/1000,
+                a_km=a/1000, b_km=b/1000)
+
+
+# ---------- (2c) extraction de tous les rouleaux d'une coupe ψ ----------
+def detect_rolls(psi_i, x, z_i, min_area_px=12, rel_amp=0.05):
+    """Détecte les rouleaux (cellules ψ de signe constant) et leurs diagnostics.
+    min_area_px : aire minimale (rejette le bruit) ;
+    rel_amp     : seuil sur |ψ| relatif au max (rejette les cellules atones)."""
+    psi_amp = np.percentile(np.abs(psi_i), 99) + 1e-30
+    strong  = np.abs(psi_i) > rel_amp * psi_amp          # masque "circulation notable"
+
+    rolls = []
+    for sgn, name in ((+1, 'CCW'), (-1, 'CW')):          # ψ>0 vs ψ<0
+        mask = strong & (np.sign(psi_i) == sgn)
+        labels, nlab = label_connected(mask)
+        for L in range(1, nlab + 1):
+            ii, jj = np.where(labels == L)
+            if ii.size < min_area_px:
+                continue
+            wgt = np.abs(psi_i[ii, jj])
+            geo = cell_geometry(ii, jj, wgt, x, z_i)
+            geo['sense'] = name
+            geo['sign']  = sgn
+            geo['circ']  = float(wgt.sum())              # ~ intensité de la cellule
+            rolls.append(geo)
+    # tri par intensité décroissante
+    rolls.sort(key=lambda d: d['circ'], reverse=True)
+    return rolls
+
+
+# ======================================================================
+#  Application à l'instant final + statistiques + figure
+# ======================================================================
+IT_ROLL = n_t - 1                       # même instant que la décompo
+z_R, rho_R, U_R, W_R, UP_R = coupe_instant(IT_ROLL)
+psi_R = psi_poisson_periodic(U_R, W_R, x, z_R, rho_R)
+
+rolls = detect_rolls(psi_R, x, z_R, min_area_px=12, rel_amp=0.05)
+print(f"[rouleaux] {len(rolls)} cellules détectées à it={IT_ROLL}")
+
+# --- statistiques agrégées (ce qui se paramétrise) ---
+if rolls:
+    AR_arr    = np.array([r['AR']    for r in rolls])
+    ang_arr   = np.array([r['angle'] for r in rolls])
+    a_arr     = np.array([r['a_km']  for r in rolls])
+    circ_arr  = np.array([r['circ']  for r in rolls])
+    w = circ_arr / circ_arr.sum()                    # pondération par intensité
+    print(f"  aspect ratio   : médian {np.median(AR_arr):.2f}   "
+          f"moyen-pondéré {np.sum(w*AR_arr):.2f}")
+    print(f"  orientation    : médiane {np.median(ang_arr):+.1f}°  "
+          f"moyenne-pondérée {np.sum(w*ang_arr):+.1f}°")
+    print(f"  demi-axe majeur: médian {np.median(a_arr):.1f} km")
+
+# ======================================================================
+#  FIGURE — coupe ψ + ellipses ajustées + histogrammes AR/angle
+# ======================================================================
+from matplotlib.patches import Ellipse
+
+fig = plt.figure(figsize=(14, 5.5))
+gs  = fig.add_gridspec(2, 2, width_ratios=[2.2, 1])
+
+# (a) coupe ψ + ellipses des rouleaux
+axA = fig.add_subplot(gs[:, 0])
+Xkm, Zkm = x/1000, z_R/1000
+pmax = np.percentile(np.abs(psi_R), 99) + 1e-12
+axA.pcolormesh(Xkm, Zkm, psi_R, shading='auto',
+               norm=TwoSlopeNorm(vcenter=0, vmin=-pmax, vmax=pmax), cmap='RdBu_r')
+axA.contour(Xkm, Zkm, psi_R, levels=[0], colors='k', linewidths=0.8, alpha=.5)
+for r in rolls[:40]:                                  # 40 plus intenses
+    e = Ellipse((r['xc_km'], r['zc_km']),
+                width=2*r['a_km'], height=2*r['b_km'],
+                angle=r['angle'], fill=False,
+                edgecolor='k' if r['sign'] > 0 else 'magenta', lw=1.3)
+    axA.add_patch(e)
+axA.set_xlabel('x [km]'); axA.set_ylabel('z [km]')
+axA.set_title(f"(a) Rouleaux (ellipses) sur ψ — it={IT_ROLL}\n"
+              "noir = ψ>0 (CCW), magenta = ψ<0 (CW)")
+
+# (b) histogramme aspect ratio
+axB = fig.add_subplot(gs[0, 1])
+if rolls:
+    axB.hist(AR_arr, bins=np.linspace(1, max(6, AR_arr.max()), 20),
+             weights=w, color='steelblue', edgecolor='k', alpha=.8)
+    axB.axvline(np.median(AR_arr), color='r', ls='--', label=f'médiane {np.median(AR_arr):.2f}')
+    axB.legend(fontsize=8)
+axB.set_xlabel('aspect ratio  a/b'); axB.set_ylabel('poids (∝ circ.)')
+axB.set_title('(b) Allongement des rouleaux')
+
+# (c) histogramme orientation
+axC = fig.add_subplot(gs[1, 1])
+if rolls:
+    axC.hist(ang_arr, bins=np.linspace(-90, 90, 19),
+             weights=w, color='seagreen', edgecolor='k', alpha=.8)
+    axC.axvline(np.median(ang_arr), color='r', ls='--',
+                label=f'médiane {np.median(ang_arr):+.1f}°')
+    axC.legend(fontsize=8)
+axC.set_xlabel('orientation θ [deg]'); axC.set_ylabel('poids (∝ circ.)')
+axC.set_title('(c) Inclinaison des rouleaux')
+
+plt.tight_layout(); plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+# ======================================================================
+#  ÉTAPE 3 — w̄_up / w̄_dn / w̄_env (après moyenne-y) et leur rôle dans T1/T2
+#  ----------------------------------------------------------------------
+#  À it = IT_DECOMP, pour chaque z :
+#    profils moyennés-y  uy(x), wy(x)  ->  catégories up/dn/env (seuil w_s)
+#    w̄_k(z) = moyenne de wy sur les colonnes de la catégorie k
+#    u_k(z) = idem pour u   ;   σ_k(z) = fraction de colonnes de k
+#    T1_k(z)= σ_k (u_k-ū)(w̄_k-w̄)              (organisé)
+#    T2_k(z)= σ_k ⟨(uy-u_k)(wy-w̄_k)⟩_{x∈k}     (résidu intra-catégorie)
+#  -> on visualise w̄_k(z) et on les confronte à T1_k, T2_k.
+#  Mêmes conventions que le bloc up/dn/env (IT_DECOMP, C_DECOMP, W0_MIN).
+# ======================================================================
+CATS = ('up', 'dn', 'env')
+
+wbar_k = {k: np.zeros(nz_D) for k in CATS}     # w̄_k(z)
+ubar_k = {k: np.zeros(nz_D) for k in CATS}     # u_k(z)
+sig_k  = {k: np.zeros(nz_D) for k in CATS}     # σ_k(z)
+T1_k   = {k: np.zeros(nz_D) for k in CATS}
+T2_k   = {k: np.zeros(nz_D) for k in CATS}
+wbar_glob = np.zeros(nz_D)                     # w̄ global (référence)
+
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
 for j, iz in enumerate(iz_lst):
     u_yx = ds_u['ua'].isel({dim_t: IT_DECOMP, dim_z: iz}).values
     w_yx = ds_w['wa'].isel({dim_t: IT_DECOMP, dim_z: iz}).values
     uy = u_yx.mean(axis=0); wy = w_yx.mean(axis=0)
+    ubar, wbar, Nx = uy.mean(), wy.mean(), uy.size
+    wbar_glob[j] = wbar
 
     ws = max(W0_MIN, C_DECOMP * wy.std())
     masks = {'up': wy > ws, 'dn': wy < -ws, 'env': np.abs(wy) <= ws}
-    m = masks[CAT]
 
-    upp = np.zeros(nx); wpp = np.zeros(nx)
-    if m.any():
-        upp[m] = uy[m] - uy[m].mean()
-        wpp[m] = wy[m] - wy[m].mean()
-    upp_all[j] = upp; wpp_all[j] = wpp
+    for k in CATS:
+        m = masks[k]; Nk = m.sum()
+        if Nk == 0:
+            wbar_k[k][j] = np.nan; ubar_k[k][j] = np.nan
+            continue
+        sk = Nk / Nx
+        uc = uy[m].mean(); wc = wy[m].mean()
+        sig_k[k][j]  = sk
+        ubar_k[k][j] = uc
+        wbar_k[k][j] = wc                                   # <-- w̄_k(z)
+        T1_k[k][j]   = sk * (uc - ubar) * (wc - wbar)
+        T2_k[k][j]   = sk * ((uy[m] - uc) * (wy[m] - wc)).mean()
 
-    T2_chk[j] = (upp * wpp).mean()
-
-    Fu = np.fft.rfft(upp); Fw = np.fft.rfft(wpp)
-    co = np.real(Fu * np.conj(Fw)) / nx**2
-    if nx % 2 == 0:               # normalisation Nyquist correcte
-        co[1:-1] *= 2
-    else:
-        co[1:]   *= 2
-    Co_T2[j] = co
     del u_yx, w_yx; gc.collect()
 ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
 
-# --- contrôles Fourier ---
-err_p = np.abs(Co_T2.sum(axis=1) - T2_chk).max()
-err_c = np.abs(T2_chk - T2[CAT]).max()
-print(f"[Parseval]  max|sum_λ Co - T2|       = {err_p:.2e}")
-print(f"[cohérence] max|T2_spectre - T2[{CAT}]| = {err_c:.2e}")
-
-k_max = int(np.argmax(np.abs(T2_chk)))
-print(f"niveau |T2_{CAT}| max : z = {z_D[k_max]/1000:.1f} km")
-
-# --- échelle dominante Fourier (barycentre |Co| en log-λ) ---
-lam_dom = np.zeros(nz_D)
-for j in range(nz_D):
-    w_ = np.abs(Co_T2[j, 1:])
-    lam_dom[j] = np.exp(np.sum(w_*np.log(lam_km[1:])) / (w_.sum()+1e-30)) if w_.sum()>0 else np.nan
-
-# ----------------------------------------------------------------------
-#  (1) CWT Morlet NumPy-only -> co-scalogramme co(λ, z) moyenné en x
-#      Morlet : psi_hat(s·k) = pi^-1/4 · H(k) · exp(-(s·k - w0)^2 / 2)
-#      Relation échelle<->longueur d'onde de Fourier :
-#         lam = 2*pi*s / (w0 + sqrt(2 + w0^2))         (Torrence & Compo 1998)
-# ----------------------------------------------------------------------
-NSCALE = 48
-# bornes d'échelle : de ~2 dx (Nyquist) à ~ la moitié du domaine
-s_min  = 2.0 * dx / (W0_MORLET + np.sqrt(2 + W0_MORLET**2)) * (W0_MORLET + np.sqrt(2 + W0_MORLET**2)) / (2*np.pi) * (2*np.pi)  # = 2 dx en échelle Fourier
-scales = np.geomspace(2*dx, nx*dx/2, NSCALE)               # échelles s [m]
-# facteur de conversion échelle s -> longueur d'onde de Fourier lam
-fourier_factor = (4*np.pi) / (W0_MORLET + np.sqrt(2 + W0_MORLET**2))
-lam_w  = scales * fourier_factor / 1000.0                  # [km], 1 par échelle
-
-# fréquences angulaires du domaine périodique (FFT complète)
-k_full = np.fft.fftfreq(nx, d=dx) * 2*np.pi                # [rad/m]
-
-def cwt_morlet(sig):
-    """CWT Morlet via FFT (domaine périodique). Retourne W[n_scale, nx] complexe."""
-    Sig = np.fft.fft(sig)
-    out = np.empty((NSCALE, nx), dtype=complex)
-    norm = (np.pi**-0.25)
-    for i, s in enumerate(scales):
-        sk    = s * k_full
-        psih  = norm * np.sqrt(2*np.pi*s/dx) * (sk > 0) * np.exp(-0.5*(sk - W0_MORLET)**2)
-        out[i] = np.fft.ifft(Sig * psih)
-    return out
-
-# co-scalogramme : moyenne en x du produit croisé Re(Wu · conj(Ww))
-co_xz = np.zeros((nz_D, NSCALE))
-for j in range(nz_D):
-    Wu = cwt_morlet(upp_all[j])
-    Ww = cwt_morlet(wpp_all[j])
-    co_xz[j] = np.real(Wu * np.conj(Ww)).mean(axis=1)      # moyenne sur x -> co(λ) par niveau
-
-# --- échelle dominante ondelettes (barycentre |co_xz| en log-λ) ---
-lam_dom_w = np.zeros(nz_D)
-for j in range(nz_D):
-    w_ = np.abs(co_xz[j])
-    lam_dom_w[j] = np.exp(np.sum(w_*np.log(lam_w)) / (w_.sum()+1e-30)) if w_.sum()>0 else np.nan
+# --- bilan de masse conditionnel : Σ_k σ_k w̄_k doit ≈ w̄ global ---
+mass_resid = np.nanmax(np.abs(
+    sum(sig_k[k]*np.nan_to_num(wbar_k[k]) for k in CATS) - wbar_glob))
+print(f"[contrôle masse] max|Σ σ_k w̄_k − w̄| = {mass_resid:.2e}")
 
 # ======================================================================
-#  Application de la pondération choisie aux DEUX panneaux
+#  FIGURE — w̄_k(z)  |  T1_k(z)  |  T2_k(z)
 # ======================================================================
-if WEIGHTING == 'k':
-    A_spec  = kx[None, 1:] * Co_T2[:, 1:]          # k·Co  (Fourier)
-    k_scale = 2*np.pi / (lam_w[None, :] * 1000.0)  # k de chaque échelle ondelette [rad/m]
-    A_scal  = co_xz * k_scale                      # k·Co  (ondelettes)
-    lab     = r'$k\,\mathrm{Co}$'
-else:  # 'brut'
-    A_spec  = Co_T2[:, 1:]
-    A_scal  = co_xz
-    lab     = r'$\mathrm{Co}$'
+col = {'up': 'crimson', 'dn': 'royalblue', 'env': 'seagreen'}
+Zkm = z_D / 1000; sc = 1e3
 
-# ======================================================================
-#  FIGURE — (a) Fourier   (b) ondelettes Morlet
-# ======================================================================
-fig, ax = plt.subplots(1, 2, figsize=(13, 5.5), sharey=True)
+fig, ax = plt.subplots(1, 3, figsize=(16, 6), sharey=True)
 
-# (a) co-spectre Fourier
-mA = np.percentile(np.abs(A_spec), 99) + 1e-30
-pc0 = ax[0].pcolormesh(lam_km[1:], z_D/1000, A_spec, shading='auto',
-                       norm=TwoSlopeNorm(vcenter=0, vmin=-mA, vmax=mA), cmap='RdBu_r')
-ax[0].plot(lam_dom, z_D/1000, 'k-', lw=1.5, alpha=.6, label='échelle dominante')
-ax[0].set_xscale('log'); ax[0].invert_xaxis()
-ax[0].set_xlabel(r'$\lambda$ [km]'); ax[0].set_ylabel('z [km]')
-ax[0].set_title(fr'(a) Co-spectre Fourier de $T_2^{{{CAT}}}$ ({WEIGHTING})')
-ax[0].legend(fontsize=8, loc='upper left')
-fig.colorbar(pc0, ax=ax[0], label=lab, pad=0.01)
+# (a) vitesses verticales conditionnelles
+for k in CATS:
+    ax[0].plot(wbar_k[k], Zkm, color=col[k], lw=2, label=fr'$\bar w_{{{k}}}$')
+ax[0].plot(wbar_glob, Zkm, 'k--', lw=1.4, alpha=.7, label=r'$\bar w$ global')
+ax[0].axvline(0, color='grey', alpha=.4)
+ax[0].set_xlabel(r'$\bar w_k$ [m/s]'); ax[0].set_ylabel('z [km]')
+ax[0].set_title('(a) Vitesse verticale conditionnelle'); ax[0].legend(fontsize=9); ax[0].grid(alpha=.3)
 
-# (b) co-scalogramme ondelettes
-mB = np.percentile(np.abs(A_scal), 99) + 1e-30
-pc1 = ax[1].pcolormesh(lam_w, z_D/1000, A_scal, shading='auto',
-                       norm=TwoSlopeNorm(vcenter=0, vmin=-mB, vmax=mB), cmap='RdBu_r')
-ax[1].plot(lam_dom_w, z_D/1000, 'k-', lw=1.5, alpha=.6, label='échelle dominante')
-ax[1].set_xscale('log'); ax[1].invert_xaxis()
-ax[1].set_xlabel(r'$\lambda$ [km]')
-ax[1].set_title(fr'(b) Co-scalogramme Morlet de $T_2^{{{CAT}}}$ ({WEIGHTING})')
-ax[1].legend(fontsize=8, loc='upper left')
-fig.colorbar(pc1, ax=ax[1], label=lab, pad=0.01)
+# (b) rôle dans T1 (organisé)
+for k in CATS:
+    ax[1].plot(T1_k[k]*sc, Zkm, color=col[k], lw=2, label=fr'$T_1^{{{k}}}$')
+ax[1].plot(sum(T1_k[k] for k in CATS)*sc, Zkm, 'k', lw=2.2, label=r'$T_1$ total')
+ax[1].axvline(0, color='grey', alpha=.4)
+ax[1].set_xlabel(r'$T_1$ ($\times10^{-3}$ m²/s²)')
+ax[1].set_title('(b) Rôle dans $T_1$ (organisé)'); ax[1].legend(fontsize=9); ax[1].grid(alpha=.3)
+
+# (c) rôle dans T2 (résidu)
+for k in CATS:
+    ax[2].plot(T2_k[k]*sc, Zkm, color=col[k], lw=2, label=fr'$T_2^{{{k}}}$')
+ax[2].plot(sum(T2_k[k] for k in CATS)*sc, Zkm, 'k', lw=2.2, label=r'$T_2$ total')
+ax[2].axvline(0, color='grey', alpha=.4)
+ax[2].set_xlabel(r'$T_2$ ($\times10^{-3}$ m²/s²)')
+ax[2].set_title('(c) Rôle dans $T_2$ (résidu)'); ax[2].legend(fontsize=9); ax[2].grid(alpha=.3)
 
 plt.tight_layout(); plt.show()
+
+# --- petit tableau récap au niveau du T1 max ---
+jm = int(np.nanargmax(np.abs(sum(T1_k[k] for k in CATS))))
+print(f"\nAu niveau T1 max (z = {Zkm[jm]:.1f} km) :")
+print(f"{'cat':>5} | {'σ_k':>6} | {'w̄_k [m/s]':>10} | {'T1_k':>10} | {'T2_k':>10}")
+print('-'*52)
+for k in CATS:
+    print(f"{k:>5} | {sig_k[k][jm]:6.3f} | {wbar_k[k][jm]:10.4f} | "
+          f"{T1_k[k][jm]:10.2e} | {T2_k[k][jm]:10.2e}")
