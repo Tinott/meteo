@@ -1,86 +1,62 @@
 # ======================================================================
-#  CO-SCALOGRAMME (x, λ) — VERSION LISIBLE
-#  Réutilise : cwt_morlet_x, coscalogram_level (ou coscalogram_T1),
-#              uorg_all, worg_all, x, z_D, lam_w_km, scales
+#  CO-SCALOGRAMME (x, λ) — AXES GRADUÉS + LIGNES DE RÉFÉRENCE
+#  Réutilise : coscalogram_level, uorg_all, worg_all, x, z_D, lam_w_km
 # ======================================================================
 Z_PICK_KM = 5.0
 j_pick = int(np.argmin(np.abs(z_D/1000 - Z_PICK_KM)))
-Co_xl  = coscalogram_level(j_pick)               # (NSCALE, nx)
+Co_xl  = coscalogram_level(j_pick)
+xkm    = x / 1000.0
+Lx     = xkm[-1] + (xkm[1]-xkm[0])               # largeur domaine [km]
 
-xkm = x / 1000.0
-T1_lvl = (uorg_all[j_pick] * worg_all[j_pick]).mean()
-
-# échelle dominante (barycentre en log-λ de la marginale |Co|)
-marg = np.abs(Co_xl).mean(axis=1)
+# échelle dominante
+marg    = np.abs(Co_xl).mean(axis=1)
 lam_dom = np.exp(np.sum(marg*np.log(lam_w_km)) / (marg.sum()+1e-30))
 
-fig = plt.figure(figsize=(13, 7))
-gs  = fig.add_gridspec(2, 2, width_ratios=[4, 1.1], height_ratios=[1, 3],
-                       hspace=0.08, wspace=0.06)
+fig, ax = plt.subplots(figsize=(13, 6))
 
-# ----------------------------------------------------------------------
-#  (haut) profils organisés u_org et w_org, sur deux axes y distincts
-# ----------------------------------------------------------------------
-axu = fig.add_subplot(gs[0, 0])
-axu.plot(xkm, uorg_all[j_pick], color='navy', lw=1.0, label=r'$u_{org}(x)$')
-axu.set_ylabel(r'$u_{org}$  [m/s]', color='navy', fontsize=9)
-axu.tick_params(axis='y', labelcolor='navy', labelsize=8)
-axu.set_xticklabels([]); axu.margins(x=0)
-axu.axhline(0, color='grey', lw=.6, alpha=.5)
-
-axw = axu.twinx()                                # 2e axe y pour w_org
-axw.plot(xkm, worg_all[j_pick], color='firebrick', lw=1.0, alpha=.8, label=r'$w_{org}(x)$')
-axw.set_ylabel(r'$w_{org}$  [m/s]', color='firebrick', fontsize=9)
-axw.tick_params(axis='y', labelcolor='firebrick', labelsize=8)
-axw.margins(x=0)
-axu.set_title(f"Co-scalogramme du flux organisé $T_1$  —  z = {z_D[j_pick]/1000:.1f} km   "
-              f"($T_1$ = {T1_lvl:.2e} m²/s²)", fontsize=11)
-
-# ----------------------------------------------------------------------
-#  (centre) carte (x, λ) — le cœur
-# ----------------------------------------------------------------------
-axm = fig.add_subplot(gs[1, 0], sharex=axu)
 mC = np.percentile(np.abs(Co_xl), 99) + 1e-30
-pc = axm.pcolormesh(xkm, lam_w_km, Co_xl, shading='auto',
-                    norm=TwoSlopeNorm(vcenter=0, vmin=-mC, vmax=mC), cmap='RdBu_r')
-axm.set_yscale('log'); axm.invert_yaxis()        # grandes échelles en bas
-# graduations λ explicites en km
-lam_ticks = [2, 5, 10, 20, 50, 100, 200]
-lam_ticks = [t for t in lam_ticks if lam_w_km.min() <= t <= lam_w_km.max()]
-axm.set_yticks(lam_ticks); axm.set_yticklabels([str(t) for t in lam_ticks])
-axm.axhline(lam_dom, color='k', lw=1.2, ls='--', alpha=.7)
-axm.text(xkm[2], lam_dom, f'  λ dom ≈ {lam_dom:.0f} km',
-         va='bottom', ha='left', fontsize=8, color='k')
-axm.set_xlabel('position  x  [km]', fontsize=10)
-axm.set_ylabel(r'échelle  $\lambda$  [km]', fontsize=10)
-axm.margins(x=0)
+pc = ax.pcolormesh(xkm, lam_w_km, Co_xl, shading='auto',
+                   norm=TwoSlopeNorm(vcenter=0, vmin=-mC, vmax=mC), cmap='RdBu_r')
 
-# ----------------------------------------------------------------------
-#  (droite) marginale : co-spectre moyenné en x (= ce que donnerait Fourier)
-# ----------------------------------------------------------------------
-axr = fig.add_subplot(gs[1, 1], sharey=axm)
-axr.plot(Co_xl.mean(axis=1), lam_w_km, 'k', lw=1.5)
-axr.axvline(0, color='grey', alpha=.5)
-axr.axhline(lam_dom, color='k', lw=1.0, ls='--', alpha=.6)
-axr.set_yscale('log'); axr.invert_yaxis()
-axr.set_yticks(lam_ticks); axr.set_yticklabels([])
-axr.set_xlabel(r'$\langle Co\rangle_x$', fontsize=9)
-axr.tick_params(labelsize=8)
-axr.set_title('moyenne en x', fontsize=9)
-axr.margins(y=0)
+# --- axe Y : λ en km, log, grandes échelles en bas ---
+ax.set_yscale('log'); ax.invert_yaxis()
+lam_ticks = [t for t in [2, 5, 10, 20, 50, 100, 200, 300]
+             if lam_w_km.min() <= t <= lam_w_km.max()]
+ax.set_yticks(lam_ticks)
+ax.set_yticklabels([str(t) for t in lam_ticks])
+ax.set_ylabel(r'échelle  $\lambda$  [km]', fontsize=11)
 
-cbar = fig.colorbar(pc, ax=[axm, axr], label=r'co-flux  $\mathrm{Co}(x,\lambda)$  [m²/s²]',
-                    pad=0.02, location='bottom', shrink=0.9)
-plt.show()
+# --- axe X : position en km, ticks tous les 50 km ---
+xtick_step = 50
+xticks = np.arange(0, Lx + 1, xtick_step)
+ax.set_xticks(xticks)
+ax.set_xticklabels([f'{int(t)}' for t in xticks])
+ax.set_xlabel('position  x  [km]', fontsize=11)
+ax.margins(x=0)
 
-# ----------------------------------------------------------------------
-#  légende textuelle imprimée (aide-mémoire de lecture)
-# ----------------------------------------------------------------------
-print("COMMENT LIRE :")
-print(f"  • axe x (horizontal) = position dans le domaine [km]")
-print(f"  • axe λ (vertical)   = taille de la structure [km], grandes échelles en bas")
-print(f"  • ROUGE  = flux organisé POSITIF localisé là, à cette échelle")
-print(f"  • BLEU   = flux organisé NÉGATIF")
-print(f"  • BLANC  = pas de structure (plage calme)")
-print(f"  • chaque 'bulbe' = une structure cohérente (un updraft/downdraft)")
-print(f"  • λ dominante de ce niveau ≈ {lam_dom:.0f} km")
+# --- lignes de référence HORIZONTALES (échelles repères) ---
+for lam_ref in [10, 50, 100]:
+    if lam_w_km.min() <= lam_ref <= lam_w_km.max():
+        ax.axhline(lam_ref, color='grey', lw=0.6, ls=':', alpha=0.6)
+# échelle dominante en évidence
+ax.axhline(lam_dom, color='k', lw=1.3, ls='--', alpha=0.8)
+ax.text(xkm[2], lam_dom, f'  λ dom ≈ {lam_dom:.0f} km',
+        va='bottom', ha='left', fontsize=9, color='k',
+        bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='none', alpha=0.7))
+
+# --- lignes de référence VERTICALES (positions repères) ---
+for x_ref in xticks[1:-1]:
+    ax.axvline(x_ref, color='grey', lw=0.4, ls=':', alpha=0.4)
+
+ax.set_title(f'Co-scalogramme du flux organisé $T_1$  —  z = {z_D[j_pick]/1000:.1f} km',
+             fontsize=12)
+
+cbar = fig.colorbar(pc, ax=ax, label=r'co-flux  $\mathrm{Co}(x,\lambda)$  [m²/s²]', pad=0.02)
+plt.tight_layout(); plt.show()
+
+print("Repères :")
+print(f"  x : 0 → {Lx:.0f} km, graduations tous les {xtick_step} km")
+print(f"  λ : {lam_w_km.min():.1f} → {lam_w_km.max():.0f} km  "
+      f"(petites échelles en HAUT, grandes en BAS)")
+print(f"  ─ ─  pointillés gris = échelles repères 10/50/100 km + positions tous les 50 km")
+print(f"  ─ ─  tiret noir      = échelle dominante ≈ {lam_dom:.0f} km")
