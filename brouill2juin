@@ -1,126 +1,138 @@
 # ======================================================================
-#  CO-SCALOGRAMME (x, λ) — variance-preserving + options A & B
+#  CO-SCALOGRAMME 1D-EN-X PAR NIVEAU — préserve l'info en x
 #  ----------------------------------------------------------------------
-#  Pondération Co/s (= k·Co) : retire le biais d'échelle du scalogramme
-#    -> l'aire sous la courbe en log-λ est ∝ à la covariance (flux).
-#    -> les gros λ ne sont plus gonflés artificiellement.
-#  OPTION A : couper le λ max à domaine/LAMBDA_MAX_FRAC
-#  OPTION B : filtre passe-haut doux en x sur u_org, w_org avant la CWT
-#  Réutilise : uorg_all, worg_all, x, z_D, nz_D, nx
+#  CWT Morlet sur x (à z fixé) de u_org et w_org :
+#      Wu(b,s) = (u_org ⋆ ψ*_{s,b}),   Ww(b,s) = (w_org ⋆ ψ*_{s,b})
+#  Co-scalogramme local :  Co(b,s) = Re[ Wu(b,s) · conj(Ww(b,s)) ]
+#  -> carte (x, λ) : OÙ en x vit le flux organisé ET à quelle échelle.
+#
+#  Reconstruction admissible (Torrence & Compo 1998) :
+#      T1(z) ≈ (δj·δt / C_δ) · Σ_s Co(b,s)/s      moyenné en b
+#  -> on vérifie que le co-scalogramme intègre bien vers T1 (à C_δ près).
+#
+#  x périodique -> CWT par FFT exacte (pas de bord en x).
+#  Réutilise : uorg_all, worg_all (de l'ÉTAPE 1), x, z_D, nz_D, nx, dx.
 # ======================================================================
-USE_OPTION_A    = True       # couper le λ max
-USE_OPTION_B    = True       # filtre passe-haut
-LAMBDA_MAX_FRAC = 4          # (A) domaine/4 ; mets 2 pour pleine gamme
-LAMBDA_CUT_KM   = 80.0       # (B) retire les structures plus larges que ça [km]
-W0_MORLET = 6.0
+W0_MORLET = 6.0                                  # ω0 (Morlet standard)
 NSCALE    = 64
-Z_PICK_KM = 5.0
 
-dx = float(x[1] - x[0]); nx = x.size
-
-# --- OPTION A : gamme d'échelles ---
-lam_max_phys = (nx*dx/LAMBDA_MAX_FRAC) if USE_OPTION_A else (nx*dx/2)
-scales = np.geomspace(2*dx, lam_max_phys, NSCALE)
+dx = float(x[1] - x[0])
+# --- échelles : de ~2 dx (Nyquist) à ~domaine/2, espacées en log ---
+scales = np.geomspace(2*dx, nx*dx/2, NSCALE)     # [m]
+# facteur échelle s -> longueur d'onde de Fourier λ (Torrence & Compo)
 fourier_factor = (4*np.pi) / (W0_MORLET + np.sqrt(2 + W0_MORLET**2))
-lam_w_km = scales * fourier_factor / 1000.0
-C_DELTA = 0.776
-dj = np.log2(scales[1]/scales[0])
-k_full = np.fft.fftfreq(nx, d=dx) * 2*np.pi
-print(f"[A] λ ∈ [{lam_w_km.min():.1f}, {lam_w_km.max():.0f}] km  "
-      f"({'coupe domaine/'+str(LAMBDA_MAX_FRAC) if USE_OPTION_A else 'pleine gamme'})")
+lam_w_km = scales * fourier_factor / 1000.0      # [km], 1 par échelle
 
-# --- OPTION B : filtre passe-haut doux en x (périodique, via FFT) ---
-def highpass_x(sig, lam_cut_km, soft=0.5):
-    k_cut = 2*np.pi / (lam_cut_km*1000.0)
-    kk = np.abs(np.fft.fftfreq(nx, d=dx) * 2*np.pi)
-    k_lo = (1-soft)*k_cut; k_hi = (1+soft)*k_cut
-    gain = np.clip((kk - k_lo) / max(k_hi - k_lo, 1e-30), 0, 1)
-    gain = 0.5*(1 - np.cos(np.pi*gain))
-    gain[kk == 0] = 0.0
-    return np.real(np.fft.ifft(np.fft.fft(sig) * gain))
-if USE_OPTION_B:
-    print(f"[B] passe-haut actif : retire λ > {LAMBDA_CUT_KM:.0f} km")
+# constante d'admissibilité de la Morlet (pour la reconstruction)
+C_DELTA = 0.776                                  # valeur tabulée pour ω0=6
+dj = np.log2(scales[1]/scales[0])                # pas log2 entre échelles
 
-def prep(sig):
-    return highpass_x(sig, LAMBDA_CUT_KM) if USE_OPTION_B else sig
+# fréquences angulaires du domaine périodique
+k_full = np.fft.fftfreq(nx, d=dx) * 2*np.pi      # [rad/m]
 
-# --- CWT Morlet ---
 def cwt_morlet_x(sig):
+    """CWT Morlet de `sig` (périodique en x) via FFT. Retourne W[NSCALE, nx] complexe."""
     Sig = np.fft.fft(sig)
     out = np.empty((NSCALE, nx), dtype=complex)
     for i, s in enumerate(scales):
-        sk = s * k_full
-        psih = (np.pi**-0.25)*np.sqrt(2*np.pi*s/dx)*(sk > 0)*np.exp(-0.5*(sk - W0_MORLET)**2)
+        sk   = s * k_full
+        # Morlet dans Fourier : normalisée énergie, partie analytique (sk>0)
+        psih = (np.pi**-0.25) * np.sqrt(2*np.pi*s/dx) * (sk > 0) * np.exp(-0.5*(sk - W0_MORLET)**2)
         out[i] = np.fft.ifft(Sig * psih)
     return out
 
 def coscalogram_level(j):
-    Wu = cwt_morlet_x(prep(uorg_all[j]))
-    Ww = cwt_morlet_x(prep(worg_all[j]))
+    """Co-scalogramme Co(λ, x) au niveau j (indice dans la bande z_D)."""
+    Wu = cwt_morlet_x(uorg_all[j])
+    Ww = cwt_morlet_x(worg_all[j])
     return np.real(Wu * np.conj(Ww))             # (NSCALE, nx)
 
-# ----------------------------------------------------------------------
-#  Niveau choisi + co-scalogramme + pondération variance-preserving
-# ----------------------------------------------------------------------
+# ======================================================================
+#  CO-SCALOGRAMME (x, λ) — VERSION LISIBLE
+#  Réutilise : cwt_morlet_x, coscalogram_level (ou coscalogram_T1),
+#              uorg_all, worg_all, x, z_D, lam_w_km, scales
+# ======================================================================
+Z_PICK_KM = 5.0
 j_pick = int(np.argmin(np.abs(z_D/1000 - Z_PICK_KM)))
-Co_xl  = coscalogram_level(j_pick)               # co-scalo BRUT
-Co_vp  = Co_xl / scales[:, None]                 # <-- variance-preserving (Co/s)
+Co_xl  = coscalogram_level(j_pick)               # (NSCALE, nx)
 
-# champs effectivement analysés (pour le profil du haut)
-u_show = prep(uorg_all[j_pick]); w_show = prep(worg_all[j_pick])
+xkm = x / 1000.0
+T1_lvl = (uorg_all[j_pick] * worg_all[j_pick]).mean()
 
-# contrôle de reconstruction (le ratio doit rester stable entre niveaux)
-T1_from_cwt = (dj * dx / C_DELTA) * np.sum(Co_xl / scales[:, None], axis=0).mean()
-T1_direct   = (uorg_all[j_pick] * worg_all[j_pick]).mean()
-print(f"[z={z_D[j_pick]/1000:.1f} km] T1 direct={T1_direct:.3e}  "
-      f"T1(CWT)={T1_from_cwt:.3e}  ratio={T1_from_cwt/(T1_direct+1e-30):.2f}")
-
-# échelle dominante (sur le co-scalo variance-preserving)
-marg    = np.abs(Co_vp).mean(axis=1)
+# échelle dominante (barycentre en log-λ de la marginale |Co|)
+marg = np.abs(Co_xl).mean(axis=1)
 lam_dom = np.exp(np.sum(marg*np.log(lam_w_km)) / (marg.sum()+1e-30))
 
-# ======================================================================
-#  FIGURE — profil (haut) + carte (x,λ) (centre) + marginale (droite)
-#  Tout est affiché en variance-preserving (Co/s).
-# ======================================================================
-fig = plt.figure(figsize=(13, 6))
-gs  = fig.add_gridspec(2, 2, width_ratios=[4, 1], height_ratios=[1, 3],
-                       hspace=0.05, wspace=0.05)
+fig = plt.figure(figsize=(13, 7))
+gs  = fig.add_gridspec(2, 2, width_ratios=[4, 1.1], height_ratios=[1, 3],
+                       hspace=0.08, wspace=0.06)
 
-# (haut) profils organisés effectivement analysés
+# ----------------------------------------------------------------------
+#  (haut) profils organisés u_org et w_org, sur deux axes y distincts
+# ----------------------------------------------------------------------
 axu = fig.add_subplot(gs[0, 0])
-axu.plot(x/1000, u_show, 'k', lw=.8, label='u_org')
-axu.plot(x/1000, w_show*np.std(u_show)/(np.std(w_show)+1e-30),
-         'r', lw=.8, alpha=.6, label='w_org (rescalé)')
-axu.set_xticklabels([]); axu.set_ylabel('org.'); axu.legend(fontsize=7, loc='upper right')
-ttl = f"Co-scalogramme Morlet en x (variance-preserving) — z = {z_D[j_pick]/1000:.1f} km"
-ttl += f"   [A:{'on' if USE_OPTION_A else 'off'} B:{'on' if USE_OPTION_B else 'off'}]"
-axu.set_title(ttl)
-axu.margins(x=0)
+axu.plot(xkm, uorg_all[j_pick], color='navy', lw=1.0, label=r'$u_{org}(x)$')
+axu.set_ylabel(r'$u_{org}$  [m/s]', color='navy', fontsize=9)
+axu.tick_params(axis='y', labelcolor='navy', labelsize=8)
+axu.set_xticklabels([]); axu.margins(x=0)
+axu.axhline(0, color='grey', lw=.6, alpha=.5)
 
-# (centre) carte (x, λ) variance-preserving
+axw = axu.twinx()                                # 2e axe y pour w_org
+axw.plot(xkm, worg_all[j_pick], color='firebrick', lw=1.0, alpha=.8, label=r'$w_{org}(x)$')
+axw.set_ylabel(r'$w_{org}$  [m/s]', color='firebrick', fontsize=9)
+axw.tick_params(axis='y', labelcolor='firebrick', labelsize=8)
+axw.margins(x=0)
+axu.set_title(f"Co-scalogramme du flux organisé $T_1$  —  z = {z_D[j_pick]/1000:.1f} km   "
+              f"($T_1$ = {T1_lvl:.2e} m²/s²)", fontsize=11)
+
+# ----------------------------------------------------------------------
+#  (centre) carte (x, λ) — le cœur
+# ----------------------------------------------------------------------
 axm = fig.add_subplot(gs[1, 0], sharex=axu)
-mC = np.percentile(np.abs(Co_vp), 99) + 1e-30
-pc = axm.pcolormesh(x/1000, lam_w_km, Co_vp, shading='auto',
+mC = np.percentile(np.abs(Co_xl), 99) + 1e-30
+pc = axm.pcolormesh(xkm, lam_w_km, Co_xl, shading='auto',
                     norm=TwoSlopeNorm(vcenter=0, vmin=-mC, vmax=mC), cmap='RdBu_r')
-axm.set_yscale('log'); axm.invert_yaxis()
-lam_ticks = [t for t in [2,5,10,20,50,100,200] if lam_w_km.min()<=t<=lam_w_km.max()]
+axm.set_yscale('log'); axm.invert_yaxis()        # grandes échelles en bas
+# graduations λ explicites en km
+lam_ticks = [2, 5, 10, 20, 50, 100, 200]
+lam_ticks = [t for t in lam_ticks if lam_w_km.min() <= t <= lam_w_km.max()]
 axm.set_yticks(lam_ticks); axm.set_yticklabels([str(t) for t in lam_ticks])
 axm.axhline(lam_dom, color='k', lw=1.2, ls='--', alpha=.7)
-axm.text(x[2]/1000, lam_dom, f'  λ dom ≈ {lam_dom:.0f} km',
-         va='bottom', ha='left', fontsize=8,
-         bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='none', alpha=0.7))
-axm.set_xlabel('x [km]'); axm.set_ylabel(r'$\lambda$ [km]')
+axm.text(xkm[2], lam_dom, f'  λ dom ≈ {lam_dom:.0f} km',
+         va='bottom', ha='left', fontsize=8, color='k')
+axm.set_xlabel('position  x  [km]', fontsize=10)
+axm.set_ylabel(r'échelle  $\lambda$  [km]', fontsize=10)
 axm.margins(x=0)
 
-# (droite) marginale en λ (variance-preserving)
+# ----------------------------------------------------------------------
+#  (droite) marginale : co-spectre moyenné en x (= ce que donnerait Fourier)
+# ----------------------------------------------------------------------
 axr = fig.add_subplot(gs[1, 1], sharey=axm)
-axr.plot(Co_vp.mean(axis=1), lam_w_km, 'k', lw=1.5)
-axr.axvline(0, color='grey', alpha=.4)
+axr.plot(Co_xl.mean(axis=1), lam_w_km, 'k', lw=1.5)
+axr.axvline(0, color='grey', alpha=.5)
 axr.axhline(lam_dom, color='k', lw=1.0, ls='--', alpha=.6)
-axr.set_yscale('log')
+axr.set_yscale('log'); axr.invert_yaxis()
 axr.set_yticks(lam_ticks); axr.set_yticklabels([])
-axr.set_xlabel(r'$\langle Co/s\rangle_x$'); axr.margins(y=0)
+axr.set_xlabel(r'$\langle Co\rangle_x$', fontsize=9)
+axr.tick_params(labelsize=8)
+axr.set_title('moyenne en x', fontsize=9)
+axr.margins(y=0)
+
+cbar = fig.colorbar(pc, ax=[axm, axr], label=r'co-flux  $\mathrm{Co}(x,\lambda)$  [m²/s²]',
+                    pad=0.02, location='bottom', shrink=0.9)
+plt.show()
+
+# ----------------------------------------------------------------------
+#  légende textuelle imprimée (aide-mémoire de lecture)
+# ----------------------------------------------------------------------
+print("COMMENT LIRE :")
+print(f"  • axe x (horizontal) = position dans le domaine [km]")
+print(f"  • axe λ (vertical)   = taille de la structure [km], grandes échelles en bas")
+print(f"  • ROUGE  = flux organisé POSITIF localisé là, à cette échelle")
+print(f"  • BLEU   = flux organisé NÉGATIF")
+print(f"  • BLANC  = pas de structure (plage calme)")
+print(f"  • chaque 'bulbe' = une structure cohérente (un updraft/downdraft)")
+print(f"  • λ dominante de ce niveau ≈ {lam_dom:.0f} km")
 
 fig.colorbar(pc, ax=[axm, axr], label=r'co-flux variance-preserving  $\mathrm{Co}(x,\lambda)/s$',
              pad=0.01, location='bottom')
