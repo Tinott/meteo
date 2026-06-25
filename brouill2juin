@@ -1,62 +1,130 @@
 # ======================================================================
-#  CO-SCALOGRAMME (x, λ) — AXES GRADUÉS + LIGNES DE RÉFÉRENCE
-#  Réutilise : coscalogram_level, uorg_all, worg_all, x, z_D, lam_w_km
+#  BLOC (2) — CUBE (z, x, λ) avec NETTOYAGE des grandes échelles
+#  ----------------------------------------------------------------------
+#  Deux options, combinables, pour retirer le co-flux peu fiable aux gros λ :
+#    OPTION A — couper la gamme d'échelles à domaine/LAMBDA_MAX_FRAC
+#               (les ondelettes trop larges sont mal localisées)
+#    OPTION B — filtre passe-haut doux en x sur u_org, w_org avant la CWT
+#               (retire la composante de très grande échelle / la moyenne)
+#  Réutilise : uorg_all, worg_all, x, z_D, nz_D, nx, W0_MORLET
 # ======================================================================
-Z_PICK_KM = 5.0
-j_pick = int(np.argmin(np.abs(z_D/1000 - Z_PICK_KM)))
-Co_xl  = coscalogram_level(j_pick)
-xkm    = x / 1000.0
-Lx     = xkm[-1] + (xkm[1]-xkm[0])               # largeur domaine [km]
 
-# échelle dominante
-marg    = np.abs(Co_xl).mean(axis=1)
-lam_dom = np.exp(np.sum(marg*np.log(lam_w_km)) / (marg.sum()+1e-30))
+# ----------------------------------------------------------------------
+#  RÉGLAGES — choisis ce que tu actives
+# ----------------------------------------------------------------------
+USE_OPTION_A   = True       # couper le λ max
+USE_OPTION_B   = True       # filtre passe-haut
+LAMBDA_MAX_FRAC = 4         # (A) domaine/4 ; mets 2 pour l'ancien comportement
+LAMBDA_CUT_KM   = 80.0      # (B) on retire les structures plus larges que ça [km]
+NSCALE          = 64
 
-fig, ax = plt.subplots(figsize=(13, 6))
+dx = float(x[1] - x[0])
+nx = x.size
 
-mC = np.percentile(np.abs(Co_xl), 99) + 1e-30
-pc = ax.pcolormesh(xkm, lam_w_km, Co_xl, shading='auto',
-                   norm=TwoSlopeNorm(vcenter=0, vmin=-mC, vmax=mC), cmap='RdBu_r')
+# ----------------------------------------------------------------------
+#  OPTION A : gamme d'échelles
+# ----------------------------------------------------------------------
+lam_max_phys = (nx*dx/LAMBDA_MAX_FRAC) if USE_OPTION_A else (nx*dx/2)
+scales   = np.geomspace(2*dx, lam_max_phys, NSCALE)
+fourier_factor = (4*np.pi) / (W0_MORLET + np.sqrt(2 + W0_MORLET**2))
+lam_w_km = scales * fourier_factor / 1000.0
+C_DELTA  = 0.776
+dj       = np.log2(scales[1]/scales[0])
+k_full   = np.fft.fftfreq(nx, d=dx) * 2*np.pi
 
-# --- axe Y : λ en km, log, grandes échelles en bas ---
-ax.set_yscale('log'); ax.invert_yaxis()
-lam_ticks = [t for t in [2, 5, 10, 20, 50, 100, 200, 300]
-             if lam_w_km.min() <= t <= lam_w_km.max()]
-ax.set_yticks(lam_ticks)
-ax.set_yticklabels([str(t) for t in lam_ticks])
-ax.set_ylabel(r'échelle  $\lambda$  [km]', fontsize=11)
+print(f"[A] λ ∈ [{lam_w_km.min():.1f}, {lam_w_km.max():.0f}] km  "
+      f"({'coupe domaine/'+str(LAMBDA_MAX_FRAC) if USE_OPTION_A else 'pleine gamme'})")
 
-# --- axe X : position en km, ticks tous les 50 km ---
-xtick_step = 50
-xticks = np.arange(0, Lx + 1, xtick_step)
-ax.set_xticks(xticks)
-ax.set_xticklabels([f'{int(t)}' for t in xticks])
-ax.set_xlabel('position  x  [km]', fontsize=11)
-ax.margins(x=0)
+# ----------------------------------------------------------------------
+#  OPTION B : filtre passe-haut doux en x (périodique -> via FFT)
+#  on atténue les nombres d'onde k < k_cut = 2π/λ_cut avec une transition
+#  douce (demi-cosinus) pour éviter les oscillations de Gibbs.
+# ----------------------------------------------------------------------
+def highpass_x(sig, lam_cut_km, soft=0.5):
+    """Retire les structures de longueur d'onde > lam_cut_km (en x, périodique).
+       `soft` : largeur relative de la transition douce (0 = brutal, 0.5 = très doux)."""
+    k_cut = 2*np.pi / (lam_cut_km*1000.0)             # [rad/m]
+    kk = np.abs(np.fft.fftfreq(nx, d=dx) * 2*np.pi)
+    # gain passe-haut : 0 sous (1-soft)·k_cut, 1 au-dessus de (1+soft)·k_cut, cosinus entre
+    k_lo = (1-soft)*k_cut; k_hi = (1+soft)*k_cut
+    gain = np.clip((kk - k_lo) / max(k_hi - k_lo, 1e-30), 0, 1)
+    gain = 0.5*(1 - np.cos(np.pi*gain))               # lissage demi-cosinus
+    gain[kk == 0] = 0.0                               # on tue la moyenne
+    return np.real(np.fft.ifft(np.fft.fft(sig) * gain))
 
-# --- lignes de référence HORIZONTALES (échelles repères) ---
-for lam_ref in [10, 50, 100]:
-    if lam_w_km.min() <= lam_ref <= lam_w_km.max():
-        ax.axhline(lam_ref, color='grey', lw=0.6, ls=':', alpha=0.6)
-# échelle dominante en évidence
-ax.axhline(lam_dom, color='k', lw=1.3, ls='--', alpha=0.8)
-ax.text(xkm[2], lam_dom, f'  λ dom ≈ {lam_dom:.0f} km',
-        va='bottom', ha='left', fontsize=9, color='k',
-        bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='none', alpha=0.7))
+if USE_OPTION_B:
+    print(f"[B] passe-haut actif : on retire λ > {LAMBDA_CUT_KM:.0f} km en x")
 
-# --- lignes de référence VERTICALES (positions repères) ---
-for x_ref in xticks[1:-1]:
-    ax.axvline(x_ref, color='grey', lw=0.4, ls=':', alpha=0.4)
+# ----------------------------------------------------------------------
+#  CWT Morlet (inchangée)
+# ----------------------------------------------------------------------
+def cwt_morlet_x(sig):
+    Sig = np.fft.fft(sig)
+    out = np.empty((NSCALE, nx), dtype=complex)
+    for i, s in enumerate(scales):
+        sk = s * k_full
+        psih = (np.pi**-0.25)*np.sqrt(2*np.pi*s/dx)*(sk > 0)*np.exp(-0.5*(sk - W0_MORLET)**2)
+        out[i] = np.fft.ifft(Sig * psih)
+    return out
 
-ax.set_title(f'Co-scalogramme du flux organisé $T_1$  —  z = {z_D[j_pick]/1000:.1f} km',
-             fontsize=12)
+def prep(sig):
+    """Applique le passe-haut si OPTION B activée, sinon renvoie tel quel."""
+    return highpass_x(sig, LAMBDA_CUT_KM) if USE_OPTION_B else sig
 
-cbar = fig.colorbar(pc, ax=ax, label=r'co-flux  $\mathrm{Co}(x,\lambda)$  [m²/s²]', pad=0.02)
+def coscalo(j):
+    Wu = cwt_morlet_x(prep(uorg_all[j]))
+    Ww = cwt_morlet_x(prep(worg_all[j]))
+    return np.real(Wu * np.conj(Ww))
+
+# ----------------------------------------------------------------------
+#  CONSTRUCTION DU CUBE (z, λ, x)
+# ----------------------------------------------------------------------
+cube = np.empty((nz_D, NSCALE, nx))
+for j in range(nz_D):
+    cube[j] = coscalo(j)
+print(f"[cube] (z={nz_D}, λ={NSCALE}, x={nx})  ≈ {cube.nbytes/1e6:.0f} Mo")
+
+# ----------------------------------------------------------------------
+#  VUE A — coupe (z, x) à une échelle fixe : localisation des structures
+# ----------------------------------------------------------------------
+LAM_PICK_KM = 40.0
+i_lam = int(np.argmin(np.abs(lam_w_km - LAM_PICK_KM)))
+slice_zx = cube[:, i_lam, :]
+
+# ----------------------------------------------------------------------
+#  VUE B — carte (z, λ) moyennée en x : comparable au co-spectre Fourier
+# ----------------------------------------------------------------------
+co_zl = cube.mean(axis=2)
+lam_dom = np.array([
+    np.exp(np.sum(np.abs(co_zl[j])*np.log(lam_w_km)) / (np.abs(co_zl[j]).sum()+1e-30))
+    for j in range(nz_D)])
+
+xkm = x/1000.0; Lx = xkm[-1]+(xkm[1]-xkm[0])
+fig, ax = plt.subplots(1, 2, figsize=(15, 6))
+
+# --- VUE A ---
+mA = np.percentile(np.abs(slice_zx), 99) + 1e-30
+pcA = ax[0].pcolormesh(xkm, z_D/1000, slice_zx, shading='auto',
+                       norm=TwoSlopeNorm(vcenter=0, vmin=-mA, vmax=mA), cmap='RdBu_r')
+ax[0].set_xticks(np.arange(0, Lx+1, 50))
+ax[0].set_xlabel('position  x  [km]'); ax[0].set_ylabel('z  [km]')
+ax[0].set_title(f'(A) Co-flux localisé à λ ≈ {lam_w_km[i_lam]:.0f} km')
+fig.colorbar(pcA, ax=ax[0], label=r'Co  [m²/s²]', pad=0.01)
+
+# --- VUE B ---
+A = co_zl * (2*np.pi/np.sqrt(2)) / (scales[None, :])
+mB = np.percentile(np.abs(A), 99) + 1e-30
+pcB = ax[1].pcolormesh(lam_w_km, z_D/1000, A, shading='auto',
+                       norm=TwoSlopeNorm(vcenter=0, vmin=-mB, vmax=mB), cmap='RdBu_r')
+ax[1].plot(lam_dom, z_D/1000, 'k-', lw=1.6, alpha=.7, label='échelle dominante')
+ax[1].set_xscale('log'); ax[1].invert_xaxis()
+lam_ticks = [t for t in [2,5,10,20,50,100,200] if lam_w_km.min()<=t<=lam_w_km.max()]
+ax[1].set_xticks(lam_ticks); ax[1].set_xticklabels([str(t) for t in lam_ticks])
+ax[1].set_xlabel(r'échelle  $\lambda$  [km]'); ax[1].set_ylabel('z  [km]')
+ax[1].set_title('(B) Co-scalogramme ⟨·⟩ₓ  (comparable au Fourier)')
+ax[1].legend(fontsize=9)
+fig.colorbar(pcB, ax=ax[1], label=r'co ($\times k$)', pad=0.01)
+
+plt.suptitle(f"Cube co-scalogramme  —  A:{'on' if USE_OPTION_A else 'off'}  "
+             f"B:{'on' if USE_OPTION_B else 'off'}", fontsize=11)
 plt.tight_layout(); plt.show()
-
-print("Repères :")
-print(f"  x : 0 → {Lx:.0f} km, graduations tous les {xtick_step} km")
-print(f"  λ : {lam_w_km.min():.1f} → {lam_w_km.max():.0f} km  "
-      f"(petites échelles en HAUT, grandes en BAS)")
-print(f"  ─ ─  pointillés gris = échelles repères 10/50/100 km + positions tous les 50 km")
-print(f"  ─ ─  tiret noir      = échelle dominante ≈ {lam_dom:.0f} km")
