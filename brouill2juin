@@ -1,74 +1,60 @@
 # ======================================================================
-#  CO-SCALOGRAMME 1D-EN-X PAR NIVEAU — préserve l'info en x
+#  CO-SCALOGRAMME 1D-EN-X PAR NIVEAU — variance-preserving + axes gradués
 #  ----------------------------------------------------------------------
-#  CWT Morlet sur x (à z fixé) de u_org et w_org :
-#      Wu(b,s) = (u_org ⋆ ψ*_{s,b}),   Ww(b,s) = (w_org ⋆ ψ*_{s,b})
-#  Co-scalogramme local :  Co(b,s) = Re[ Wu(b,s) · conj(Ww(b,s)) ]
-#  -> carte (x, λ) : OÙ en x vit le flux organisé ET à quelle échelle.
-#
-#  Reconstruction admissible (Torrence & Compo 1998) :
-#      T1(z) ≈ (δj·δt / C_δ) · Σ_s Co(b,s)/s      moyenné en b
-#  -> on vérifie que le co-scalogramme intègre bien vers T1 (à C_δ près).
-#
-#  x périodique -> CWT par FFT exacte (pas de bord en x).
-#  Réutilise : uorg_all, worg_all (de l'ÉTAPE 1), x, z_D, nz_D, nx, dx.
+#  Pondération Co/s : retire le biais d'échelle du scalogramme (les gros λ
+#  ne sont plus gonflés artificiellement ; aire en log-λ ∝ flux).
+#  x périodique -> CWT par FFT exacte. Réutilise uorg_all, worg_all, x, z_D.
 # ======================================================================
-W0_MORLET = 6.0                                  # ω0 (Morlet standard)
+W0_MORLET = 6.0
 NSCALE    = 64
 
-dx = float(x[1] - x[0])
-# --- échelles : de ~2 dx (Nyquist) à ~domaine/2, espacées en log ---
-scales = np.geomspace(2*dx, nx*dx/2, NSCALE)     # [m]
-# facteur échelle s -> longueur d'onde de Fourier λ (Torrence & Compo)
+dx = float(x[1] - x[0]); nx = x.size
+scales = np.geomspace(2*dx, nx*dx/2, NSCALE)
 fourier_factor = (4*np.pi) / (W0_MORLET + np.sqrt(2 + W0_MORLET**2))
-lam_w_km = scales * fourier_factor / 1000.0      # [km], 1 par échelle
-
-# constante d'admissibilité de la Morlet (pour la reconstruction)
-C_DELTA = 0.776                                  # valeur tabulée pour ω0=6
-dj = np.log2(scales[1]/scales[0])                # pas log2 entre échelles
-
-# fréquences angulaires du domaine périodique
-k_full = np.fft.fftfreq(nx, d=dx) * 2*np.pi      # [rad/m]
+lam_w_km = scales * fourier_factor / 1000.0
+C_DELTA = 0.776
+dj = np.log2(scales[1]/scales[0])
+k_full = np.fft.fftfreq(nx, d=dx) * 2*np.pi
 
 def cwt_morlet_x(sig):
-    """CWT Morlet de `sig` (périodique en x) via FFT. Retourne W[NSCALE, nx] complexe."""
     Sig = np.fft.fft(sig)
     out = np.empty((NSCALE, nx), dtype=complex)
     for i, s in enumerate(scales):
-        sk   = s * k_full
-        # Morlet dans Fourier : normalisée énergie, partie analytique (sk>0)
+        sk = s * k_full
         psih = (np.pi**-0.25) * np.sqrt(2*np.pi*s/dx) * (sk > 0) * np.exp(-0.5*(sk - W0_MORLET)**2)
         out[i] = np.fft.ifft(Sig * psih)
     return out
 
 def coscalogram_level(j):
-    """Co-scalogramme Co(λ, x) au niveau j (indice dans la bande z_D)."""
     Wu = cwt_morlet_x(uorg_all[j])
     Ww = cwt_morlet_x(worg_all[j])
-    return np.real(Wu * np.conj(Ww))             # (NSCALE, nx)
+    return np.real(Wu * np.conj(Ww))
 
-# ======================================================================
-#  CO-SCALOGRAMME (x, λ) — VERSION LISIBLE
-#  Réutilise : cwt_morlet_x, coscalogram_level (ou coscalogram_T1),
-#              uorg_all, worg_all, x, z_D, lam_w_km, scales
-# ======================================================================
+# ----------------------------------------------------------------------
+#  Niveau choisi
+# ----------------------------------------------------------------------
 Z_PICK_KM = 5.0
 j_pick = int(np.argmin(np.abs(z_D/1000 - Z_PICK_KM)))
-Co_xl  = coscalogram_level(j_pick)               # (NSCALE, nx)
+Co_xl  = coscalogram_level(j_pick)               # co-scalo BRUT
+Co_vp  = Co_xl / scales[:, None]                 # <-- variance-preserving (Co/s)
 
 xkm = x / 1000.0
+Lx  = xkm[-1] + (xkm[1] - xkm[0])
 T1_lvl = (uorg_all[j_pick] * worg_all[j_pick]).mean()
 
-# échelle dominante (barycentre en log-λ de la marginale |Co|)
-marg = np.abs(Co_xl).mean(axis=1)
+# échelle dominante (sur la version variance-preserving)
+marg = np.abs(Co_vp).mean(axis=1)
 lam_dom = np.exp(np.sum(marg*np.log(lam_w_km)) / (marg.sum()+1e-30))
 
+# ======================================================================
+#  FIGURE
+# ======================================================================
 fig = plt.figure(figsize=(13, 7))
 gs  = fig.add_gridspec(2, 2, width_ratios=[4, 1.1], height_ratios=[1, 3],
                        hspace=0.08, wspace=0.06)
 
 # ----------------------------------------------------------------------
-#  (haut) profils organisés u_org et w_org, sur deux axes y distincts
+#  (haut) profils organisés u_org et w_org, deux axes y distincts
 # ----------------------------------------------------------------------
 axu = fig.add_subplot(gs[0, 0])
 axu.plot(xkm, uorg_all[j_pick], color='navy', lw=1.0, label=r'$u_{org}(x)$')
@@ -77,63 +63,72 @@ axu.tick_params(axis='y', labelcolor='navy', labelsize=8)
 axu.set_xticklabels([]); axu.margins(x=0)
 axu.axhline(0, color='grey', lw=.6, alpha=.5)
 
-axw = axu.twinx()                                # 2e axe y pour w_org
+axw = axu.twinx()
 axw.plot(xkm, worg_all[j_pick], color='firebrick', lw=1.0, alpha=.8, label=r'$w_{org}(x)$')
 axw.set_ylabel(r'$w_{org}$  [m/s]', color='firebrick', fontsize=9)
 axw.tick_params(axis='y', labelcolor='firebrick', labelsize=8)
 axw.margins(x=0)
-axu.set_title(f"Co-scalogramme du flux organisé $T_1$  —  z = {z_D[j_pick]/1000:.1f} km   "
-              f"($T_1$ = {T1_lvl:.2e} m²/s²)", fontsize=11)
+axu.set_title(f"Co-scalogramme du flux organisé $T_1$ (variance-preserving) — "
+              f"z = {z_D[j_pick]/1000:.1f} km   ($T_1$ = {T1_lvl:.2e} m²/s²)", fontsize=11)
 
 # ----------------------------------------------------------------------
-#  (centre) carte (x, λ) — le cœur
+#  (centre) carte (x, λ) variance-preserving
 # ----------------------------------------------------------------------
 axm = fig.add_subplot(gs[1, 0], sharex=axu)
-mC = np.percentile(np.abs(Co_xl), 99) + 1e-30
-pc = axm.pcolormesh(xkm, lam_w_km, Co_xl, shading='auto',
+mC = np.percentile(np.abs(Co_vp), 99) + 1e-30
+pc = axm.pcolormesh(xkm, lam_w_km, Co_vp, shading='auto',
                     norm=TwoSlopeNorm(vcenter=0, vmin=-mC, vmax=mC), cmap='RdBu_r')
 axm.set_yscale('log'); axm.invert_yaxis()        # grandes échelles en bas
-# graduations λ explicites en km
-lam_ticks = [2, 5, 10, 20, 50, 100, 200]
-lam_ticks = [t for t in lam_ticks if lam_w_km.min() <= t <= lam_w_km.max()]
-axm.set_yticks(lam_ticks); axm.set_yticklabels([str(t) for t in lam_ticks])
-axm.axhline(lam_dom, color='k', lw=1.2, ls='--', alpha=.7)
-axm.text(xkm[2], lam_dom, f'  λ dom ≈ {lam_dom:.0f} km',
-         va='bottom', ha='left', fontsize=8, color='k')
-axm.set_xlabel('position  x  [km]', fontsize=10)
+
+# --- axe Y : λ en km, graduations explicites ---
+lam_ticks = [t for t in [2, 5, 10, 20, 50, 100, 200] if lam_w_km.min() <= t <= lam_w_km.max()]
+axm.set_yticks(lam_ticks)
+axm.set_yticklabels([str(t) for t in lam_ticks])
 axm.set_ylabel(r'échelle  $\lambda$  [km]', fontsize=10)
+
+# --- axe X : position en km, graduations tous les 50 km + lignes repères ---
+xticks = np.arange(0, Lx + 1, 50)
+axm.set_xticks(xticks)
+axm.set_xticklabels([f'{int(t)}' for t in xticks])
+axm.set_xlabel('position  x  [km]', fontsize=10)
+for xr_ in xticks[1:-1]:
+    axm.axvline(xr_, color='grey', lw=0.4, ls=':', alpha=0.4)
+for lam_ref in [10, 50, 100]:
+    if lam_w_km.min() <= lam_ref <= lam_w_km.max():
+        axm.axhline(lam_ref, color='grey', lw=0.5, ls=':', alpha=0.5)
+
+# échelle dominante en évidence
+axm.axhline(lam_dom, color='k', lw=1.3, ls='--', alpha=.8)
+axm.text(xkm[2], lam_dom, f'  λ dom ≈ {lam_dom:.0f} km',
+         va='bottom', ha='left', fontsize=8, color='k',
+         bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='none', alpha=0.7))
 axm.margins(x=0)
 
 # ----------------------------------------------------------------------
-#  (droite) marginale : co-spectre moyenné en x (= ce que donnerait Fourier)
+#  (droite) marginale variance-preserving : ⟨Co/s⟩_x
 # ----------------------------------------------------------------------
 axr = fig.add_subplot(gs[1, 1], sharey=axm)
-axr.plot(Co_xl.mean(axis=1), lam_w_km, 'k', lw=1.5)
+axr.plot(Co_vp.mean(axis=1), lam_w_km, 'k', lw=1.5)
 axr.axvline(0, color='grey', alpha=.5)
 axr.axhline(lam_dom, color='k', lw=1.0, ls='--', alpha=.6)
 axr.set_yscale('log'); axr.invert_yaxis()
 axr.set_yticks(lam_ticks); axr.set_yticklabels([])
-axr.set_xlabel(r'$\langle Co\rangle_x$', fontsize=9)
+axr.set_xlabel(r'$\langle Co/s\rangle_x$', fontsize=9)
 axr.tick_params(labelsize=8)
 axr.set_title('moyenne en x', fontsize=9)
 axr.margins(y=0)
 
-cbar = fig.colorbar(pc, ax=[axm, axr], label=r'co-flux  $\mathrm{Co}(x,\lambda)$  [m²/s²]',
+cbar = fig.colorbar(pc, ax=[axm, axr],
+                    label=r'co-flux variance-preserving  $\mathrm{Co}(x,\lambda)/s$',
                     pad=0.02, location='bottom', shrink=0.9)
 plt.show()
 
 # ----------------------------------------------------------------------
-#  légende textuelle imprimée (aide-mémoire de lecture)
+#  aide-mémoire de lecture
 # ----------------------------------------------------------------------
 print("COMMENT LIRE :")
-print(f"  • axe x (horizontal) = position dans le domaine [km]")
-print(f"  • axe λ (vertical)   = taille de la structure [km], grandes échelles en bas")
-print(f"  • ROUGE  = flux organisé POSITIF localisé là, à cette échelle")
-print(f"  • BLEU   = flux organisé NÉGATIF")
-print(f"  • BLANC  = pas de structure (plage calme)")
-print(f"  • chaque 'bulbe' = une structure cohérente (un updraft/downdraft)")
-print(f"  • λ dominante de ce niveau ≈ {lam_dom:.0f} km")
-
-fig.colorbar(pc, ax=[axm, axr], label=r'co-flux variance-preserving  $\mathrm{Co}(x,\lambda)/s$',
-             pad=0.01, location='bottom')
-plt.show()
+print(f"  • axe x = position [km], graduations tous les 50 km (0 → {Lx:.0f} km)")
+print(f"  • axe λ = taille de structure [km] ; PETITES échelles en HAUT, GRANDES en BAS")
+print(f"  • variance-preserving (Co/s) : aire en log-λ ∝ flux -> gros λ non gonflés")
+print(f"  • ROUGE = flux organisé positif localisé ; BLEU = négatif ; BLANC = calme")
+print(f"  • tiret noir = échelle dominante ≈ {lam_dom:.0f} km")
