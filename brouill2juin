@@ -1,402 +1,114 @@
 # ======================================================================
-#  BLOC C — Catalogue des rouleaux sur TOUT le stationnaire
+#  ÉTAPE 1 — Co-spectre Fourier de la covariance ORGANISÉE T1 par niveau
 #  ----------------------------------------------------------------------
-#  Pour chaque pas de temps it du stationnaire :
-#    1. coupe (z,x) moyennée-y  -> U,W,UPWP  (coupe_instant)
-#    2. ψ(z,x)                  -> psi_poisson_periodic
-#    3. détection des cellules  -> detect_rolls (signe ψ + inertie)
-#    4. enrichissement de chaque rouleau avec :
-#         - λ_x, λ_z  (extension physique via la boîte englobante pondérée)
-#         - contribution T1 et T2 LOCALE (sur le support de la cellule)
-#  Sortie : `catalogue` = liste de dicts (un par rouleau, tous t confondus),
-#           + `cat_by_t` = {it: [rouleaux]} pour le tracking (bloc E).
+#  Idée : T1(z) = covariance en x des profils "par paliers" reconstruits
+#         u_org(x) = uc[cat(x)] - ubar,  w_org(x) = wc[cat(x)] - wbar
+#  où cat(x) ∈ {up,dn,env} est la catégorie de la colonne x (seuil sur w̄_y).
+#  Le co-spectre de (u_org, w_org) vérifie  Σ_λ Co1(λ) = T1(z)  (Parseval),
+#  et révèle À QUELLE ÉCHELLE horizontale vit le flux de masse organisé.
 #
-#  "Bien si possible" -> on calcule T1/T2 par rouleau, mais proprement :
-#    T1 local  = Σ_{(z,x)∈cell} ρ0(z) ū_org(z,x) w̄_org(z,x) · dV / V_tot
-#  où ū_org/w̄_org sont les champs organisés par paliers (cf BLOC A).
-#  C'est une ATTRIBUTION spatiale de T1 à chaque structure (pas une
-#  re-dérivation : la somme sur toutes les cellules + l'environnement
-#  redonne le T1 organisé total — on le vérifie).
+#  Dépend de : x, alt, iz_lst, z_D, nz_D, dim_t, dim_z, path3d,
+#              IT_DECOMP, C_DECOMP, W0_MIN  (mêmes conventions que up/dn/env).
 # ======================================================================
-IT_LIST = list(range(t_stat, n_t))          # tout le stationnaire
-print(f"[catalogue] {len(IT_LIST)} pas de temps  (it {IT_LIST[0]}..{IT_LIST[-1]})")
+CAT_LIST = ('up', 'dn', 'env')
 
-dx = float(x[1] - x[0])
-CATS = ('up', 'dn', 'env')
+nx  = x.size
+dx  = float(x[1] - x[0])
+print(f"[T1 spectre] nx={nx}  dx={dx/1000:.2f} km  domaine={nx*dx/1000:.0f} km")
 
-def organized_fields(it):
-    """Champs 2D organisés u_org(z,x), w_org(z,x) à l'instant it,
-       + profils ū(z), w̄(z) et ρ0(z). Mêmes conventions up/dn/env."""
-    z_i, rho_i, U_i, W_i, _ = coupe_instant(it)
-    nz_i, nx_i = U_i.shape
-    u_org = np.zeros((nz_i, nx_i)); w_org = np.zeros((nz_i, nx_i))
-    for j in range(nz_i):
-        uy = U_i[j]; wy = W_i[j]
-        ubar, wbar = uy.mean(), wy.mean()
-        ws = max(W0_MIN, C_DECOMP * wy.std())
-        masks = {'up': wy > ws, 'dn': wy < -ws, 'env': np.abs(wy) <= ws}
-        for k in CATS:
-            m = masks[k]
-            if m.any():
-                u_org[j, m] = uy[m].mean() - ubar
-                w_org[j, m] = wy[m].mean() - wbar
-    return z_i, rho_i, U_i, W_i, u_org, w_org
+# --- axes spectraux Fourier (rfft : fréquences positives) ---
+kx     = np.fft.rfftfreq(nx, d=dx) * 2*np.pi          # nombre d'onde [rad/m]
+lam_km = (2*np.pi / np.maximum(kx, 1e-12)) / 1000     # longueur d'onde [km]
 
-def enrich_roll(r, psi_i, u_org, w_org, rho_i, x, z_i, labels_signed):
-    """Ajoute λ_x, λ_z et contribution T1 locale à un rouleau déjà géométré."""
-    # support de la cellule = pixels du même label que le centre
-    # (on retrouve le label via la position du centre)
-    jc = int(np.argmin(np.abs(z_i/1000 - r['zc_km'])))
-    ic = int(np.argmin(np.abs(x/1000  - r['xc_km'])))
-    L  = labels_signed[jc, ic]
-    ii, jj = np.where(labels_signed == L)
-    if ii.size == 0:
-        r['lam_x_km'] = np.nan; r['lam_z_km'] = np.nan
-        r['T1_cell']  = 0.0;    r['T2_cell']  = 0.0
-        return r
-    # extension physique (boîte englobante)
-    r['lam_x_km'] = (x[jj].max()  - x[jj].min())  / 1000 + dx/1000
-    r['lam_z_km'] = (z_i[ii].max() - z_i[ii].min()) / 1000 + (z_i[1]-z_i[0])/1000
-    # T1 local attribué à la cellule (densité ρ0 ū_org w̄_org, moyenne de domaine)
-    dV = 1.0 / (psi_i.shape[0] * psi_i.shape[1])      # poids uniforme par pixel
-    contrib = rho_i[ii] * u_org[ii, jj] * w_org[ii, jj]
-    r['T1_cell'] = float(contrib.sum() * dV)
-    return r
+# --- conteneurs ---
+Co_T1     = np.zeros((nz_D, kx.size))   # co-spectre du flux organisé, par niveau
+T1_chk    = np.zeros(nz_D)              # T1 reconstruit (contrôle Parseval)
+T1_ref    = np.zeros(nz_D)              # T1 "direct" (somme des catégories) pour cohérence
+uorg_all  = np.zeros((nz_D, nx))        # u_org(x) par niveau (utile plus bas)
+worg_all  = np.zeros((nz_D, nx))
 
-catalogue = []          # tous les rouleaux, tous t
-cat_by_t  = {}          # it -> liste de rouleaux (pour tracking)
-T1org_tot = []          # contrôle : T1 organisé total par t
-T1cell_sum= []          # contrôle : somme des T1_cell par t
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for j, iz in enumerate(iz_lst):
+    u_yx = ds_u['ua'].isel({dim_t: IT_DECOMP, dim_z: iz}).values   # (ny, nx)
+    w_yx = ds_w['wa'].isel({dim_t: IT_DECOMP, dim_z: iz}).values
 
-for it in IT_LIST:
-    z_i, rho_i, U_i, W_i, u_org, w_org = organized_fields(it)
-    psi_i = psi_poisson_periodic(U_i, W_i, x, z_i, rho_i)
+    # --- moyenne sur y -> profils en x ---
+    uy = u_yx.mean(axis=0); wy = w_yx.mean(axis=0)
+    ubar, wbar = uy.mean(), wy.mean()
 
-    # détection + récupération des labels signés pour l'attribution
-    psi_amp = np.percentile(np.abs(psi_i), 99) + 1e-30
-    strong  = np.abs(psi_i) > 0.05 * psi_amp
-    labels_signed = np.zeros_like(psi_i, dtype=np.int64)
-    offset = 0
-    for sgn in (+1, -1):
-        mask = strong & (np.sign(psi_i) == sgn)
-        lab, n = label_connected(mask)
-        lab[lab > 0] += offset
-        labels_signed += lab
-        offset += n
+    # --- classification des colonnes x (même seuil que le bloc up/dn/env) ---
+    ws = max(W0_MIN, C_DECOMP * wy.std())
+    masks = {'up': wy > ws, 'dn': wy < -ws, 'env': np.abs(wy) <= ws}
 
-    rolls = detect_rolls(psi_i, x, z_i, min_area_px=12, rel_amp=0.05)
-    for r in rolls:
-        r['it'] = it
-        enrich_roll(r, psi_i, u_org, w_org, rho_i, x, z_i, labels_signed)
-    cat_by_t[it] = rolls
-    catalogue.extend(rolls)
-
-    # contrôles d'attribution
-    T1org_tot.append(float((rho_i[:,None]*u_org*w_org).mean()))
-    T1cell_sum.append(sum(r['T1_cell'] for r in rolls))
-
-print(f"[catalogue] {len(catalogue)} rouleaux extraits au total "
-      f"({len(catalogue)/len(IT_LIST):.1f} par pas de temps en moyenne)")
-
-T1org_tot = np.array(T1org_tot); T1cell_sum = np.array(T1cell_sum)
-frac = np.nanmean(T1cell_sum / (T1org_tot + 1e-30))
-print(f"[attribution] fraction de T1 organisé portée par les cellules détectées : "
-      f"{frac*100:.0f}% (le reste = environnement diffus / cellules sous le seuil)")
-
-
-
-
-
-
-
-# ======================================================================
-#  BLOC D — Distributions des descripteurs + relations d'échelle
-#  ----------------------------------------------------------------------
-#  À partir de `catalogue` (tous t), on construit les lois statistiques
-#  qui constituent la BRIQUE du modèle réduit :
-#    • distributions : AR, θ, λ_x, λ_z, intensité, z du centre
-#    • relations d'échelle (régressions) :  λ_x ~ f(z),  AR ~ f(intensité),
-#      λ_z ~ f(λ_x)  -> dit si les rouleaux sont auto-similaires
-#  Tout est pondéré par l'intensité de circulation (les gros rouleaux
-#  comptent plus dans la paramétrisation).
-# ======================================================================
-import numpy as np
-
-# --- extraction en arrays ---
-def col(key): return np.array([r.get(key, np.nan) for r in catalogue], float)
-AR   = col('AR');     ang  = col('angle');   circ = col('circ')
-lamx = col('lam_x_km'); lamz = col('lam_z_km')
-zc   = col('zc_km');  a_km = col('a_km')
-T1c  = col('T1_cell')
-sense= np.array([r['sense'] for r in catalogue])
-w    = circ / (np.nansum(circ) + 1e-30)             # poids ∝ intensité
-
-# nettoyage : on garde les rouleaux bien définis
-ok = np.isfinite(AR) & np.isfinite(lamx) & np.isfinite(lamz) & (circ > 0)
-print(f"[stats] {ok.sum()} rouleaux valides sur {len(catalogue)}")
-
-def wquantile(v, q, ww):
-    """Quantile pondéré (q dans [0,1])."""
-    m = np.isfinite(v) & np.isfinite(ww)
-    v, ww = v[m], ww[m]
-    idx = np.argsort(v); v, ww = v[idx], ww[idx]
-    cum = np.cumsum(ww) / ww.sum()
-    return np.interp(q, cum, v)
-
-print("\n=== Descripteurs (médiane pondérée [Q25–Q75]) ===")
-for name, v, unit in [('aspect ratio', AR, ''), ('orientation', ang, '°'),
-                      ('λ_x', lamx, 'km'), ('λ_z', lamz, 'km'),
-                      ('z centre', zc, 'km')]:
-    q1, q2, q3 = (wquantile(v[ok], qq, w[ok]) for qq in (.25, .5, .75))
-    print(f"  {name:12s}: {q2:6.2f} {unit:2s}  [{q1:.2f} – {q3:.2f}]")
-
-# --- relations d'échelle par régression pondérée ---
-def wpolyfit(xv, yv, ww, deg=1):
-    m = np.isfinite(xv) & np.isfinite(yv) & np.isfinite(ww)
-    return np.polyfit(xv[m], yv[m], deg, w=np.sqrt(ww[m]))
-
-p_lamx_z  = wpolyfit(zc[ok],   lamx[ok], w[ok], 1)    # λ_x = f(z)
-p_lamz_lx = wpolyfit(lamx[ok], lamz[ok], w[ok], 1)    # λ_z = f(λ_x) -> auto-similarité
-p_ar_circ = wpolyfit(np.log10(circ[ok]+1e-30), AR[ok], w[ok], 1)  # AR = f(log intensité)
-print(f"\n=== Relations d'échelle ===")
-print(f"  λ_x ≈ {p_lamx_z[0]:+.3f}·z + {p_lamx_z[1]:.2f}   [km] (pente vs altitude)")
-print(f"  λ_z ≈ {p_lamz_lx[0]:+.3f}·λ_x + {p_lamz_lx[1]:.2f} [km] "
-      f"(ratio d'aspect des structures ≈ {p_lamz_lx[0]:.2f})")
-print(f"  AR  ≈ {p_ar_circ[0]:+.2f}·log10(circ) + {p_ar_circ[1]:.2f}")
-
-# ======================================================================
-#  FIGURE D — distributions + nuages avec régressions
-# ======================================================================
-fig, ax = plt.subplots(2, 3, figsize=(16, 9))
-
-ax[0,0].hist(AR[ok],  bins=30, weights=w[ok], color='steelblue', edgecolor='k', alpha=.8)
-ax[0,0].axvline(wquantile(AR[ok], .5, w[ok]), color='r', ls='--')
-ax[0,0].set_xlabel('aspect ratio'); ax[0,0].set_title('(a) Allongement'); ax[0,0].set_ylabel('poids')
-
-ax[0,1].hist(ang[ok], bins=np.linspace(-90,90,25), weights=w[ok],
-             color='seagreen', edgecolor='k', alpha=.8)
-ax[0,1].axvline(wquantile(ang[ok], .5, w[ok]), color='r', ls='--')
-ax[0,1].set_xlabel('orientation θ [deg]'); ax[0,1].set_title('(b) Inclinaison')
-
-ax[0,2].hist(lamx[ok], bins=30, weights=w[ok], color='indianred', edgecolor='k', alpha=.8)
-ax[0,2].axvline(wquantile(lamx[ok], .5, w[ok]), color='k', ls='--')
-ax[0,2].set_xlabel(r'$\lambda_x$ [km]'); ax[0,2].set_title('(c) Largeur horizontale')
-
-# (d) λ_x vs z
-ax[1,0].scatter(lamx[ok], zc[ok], s=12, c=np.log10(circ[ok]+1e-30),
-                cmap='viridis', alpha=.5)
-zz = np.linspace(zc[ok].min(), zc[ok].max(), 50)
-ax[1,0].plot(np.polyval(p_lamx_z, zz), zz, 'r-', lw=2)
-ax[1,0].set_xlabel(r'$\lambda_x$ [km]'); ax[1,0].set_ylabel('z centre [km]')
-ax[1,0].set_title('(d) Largeur vs altitude')
-
-# (e) λ_z vs λ_x (auto-similarité)
-ax[1,1].scatter(lamx[ok], lamz[ok], s=12, c=np.log10(circ[ok]+1e-30),
-                cmap='viridis', alpha=.5)
-lxx = np.linspace(lamx[ok].min(), lamx[ok].max(), 50)
-ax[1,1].plot(lxx, np.polyval(p_lamz_lx, lxx), 'r-', lw=2)
-ax[1,1].set_xlabel(r'$\lambda_x$ [km]'); ax[1,1].set_ylabel(r'$\lambda_z$ [km]')
-ax[1,1].set_title('(e) Auto-similarité λ_z–λ_x')
-
-# (f) AR vs intensité
-ax[1,2].scatter(circ[ok], AR[ok], s=12, c=zc[ok], cmap='plasma', alpha=.5)
-ax[1,2].set_xscale('log')
-cc = np.logspace(np.log10(circ[ok].min()+1e-30), np.log10(circ[ok].max()), 50)
-ax[1,2].plot(cc, np.polyval(p_ar_circ, np.log10(cc)), 'r-', lw=2)
-ax[1,2].set_xlabel('circulation (intensité)'); ax[1,2].set_ylabel('aspect ratio')
-ax[1,2].set_title('(f) Allongement vs intensité')
-
-plt.tight_layout(); plt.show()
-
-
-
-
-
-
-
-# ======================================================================
-#  BLOC E — Suivi temporel : naissance, durée de vie, migration verticale
-#  ----------------------------------------------------------------------
-#  Association gloutonne d'un pas au suivant par proximité dans l'espace
-#  des descripteurs (centre x,z + même sens de rotation). Un rouleau est
-#  "le même" s'il reste proche (coût = distance pondérée) d'un pas à l'autre.
-#  -> tracks = liste de trajectoires ; chaque trajectoire = liste de rouleaux.
-#
-#  x est périodique : la distance en x tient compte du wrap.
-# ======================================================================
-Lx = nx * dx / 1000.0                       # largeur domaine [km]
-D_MAX = 30.0                                # coût max d'association (km équiv.)
-WZ    = 2.0                                  # poids relatif de l'écart vertical
-
-def dx_periodic(x1, x2):
-    d = abs(x1 - x2)
-    return min(d, Lx - d)
-
-def assoc_cost(r1, r2):
-    if r1['sense'] != r2['sense']:
-        return np.inf
-    dxk = dx_periodic(r1['xc_km'], r2['xc_km'])
-    dzk = abs(r1['zc_km'] - r2['zc_km'])
-    return np.hypot(dxk, WZ*dzk)
-
-# init : chaque rouleau du 1er pas démarre un track
-its = sorted(cat_by_t)
-tracks = [[r] for r in cat_by_t[its[0]]]
-active = list(range(len(tracks)))           # indices des tracks ouverts
-
-for it_prev, it_cur in zip(its[:-1], its[1:]):
-    curr = cat_by_t[it_cur]
-    used = set()
-    # tente de prolonger chaque track actif par le rouleau le plus proche
-    new_active = []
-    for ti in active:
-        last = tracks[ti][-1]
-        if last['it'] != it_prev:           # track déjà clos
+    # --- reconstruction par paliers : valeur de catégorie - moyenne globale ---
+    u_org = np.zeros(nx); w_org = np.zeros(nx)
+    t1_direct = 0.0
+    for k in CAT_LIST:
+        m = masks[k]; Nk = m.sum()
+        if Nk == 0:
             continue
-        best, bestc = -1, D_MAX
-        for ci, rc in enumerate(curr):
-            if ci in used:
-                continue
-            c = assoc_cost(last, rc)
-            if c < bestc:
-                best, bestc = ci, c
-        if best >= 0:
-            tracks[ti].append(curr[best]); used.add(best); new_active.append(ti)
-    # rouleaux non appariés -> nouveaux tracks
-    for ci, rc in enumerate(curr):
-        if ci not in used:
-            tracks.append([rc]); new_active.append(len(tracks)-1)
-    active = new_active
+        uc = uy[m].mean(); wc = wy[m].mean()
+        u_org[m] = uc - ubar
+        w_org[m] = wc - wbar
+        t1_direct += (Nk / nx) * (uc - ubar) * (wc - wbar)   # = σ_k (uc-ū)(wc-w̄)
 
-# --- statistiques de cycle de vie ---
-life = np.array([len(t) for t in tracks])           # durée en pas de temps
-dt_min = 1                                          # (adapter si dt connu)
-persist = [t for t in tracks if len(t) >= 3]        # structures persistantes
-print(f"[tracking] {len(tracks)} trajectoires, dont {len(persist)} persistantes (≥3 pas)")
-print(f"  durée de vie médiane : {np.median(life):.0f} pas  (max {life.max()})")
+    uorg_all[j] = u_org; worg_all[j] = w_org
+    T1_ref[j]   = t1_direct
+    T1_chk[j]   = (u_org * w_org).mean()        # doit égaler t1_direct (paliers constants)
 
-# migration verticale des structures persistantes
-migr = []
-for t in persist:
-    z0, z1 = t[0]['zc_km'], t[-1]['zc_km']
-    migr.append((z1 - z0) / (len(t)-1))             # km / pas
-migr = np.array(migr)
-print(f"  migration verticale médiane : {np.median(migr):+.3f} km/pas "
-      f"({'ascendante' if np.median(migr)>0 else 'descendante'})")
+    # --- co-spectre Fourier de (u_org, w_org), normalisé Parseval ---
+    Fu = np.fft.rfft(u_org); Fw = np.fft.rfft(w_org)
+    co = np.real(Fu * np.conj(Fw)) / nx**2
+    if nx % 2 == 0:
+        co[1:-1] *= 2          # repli des fréquences négatives (sauf 0 et Nyquist)
+    else:
+        co[1:]   *= 2
+    Co_T1[j] = co
 
-# ======================================================================
-#  FIGURE E — durées de vie + trajectoires z(t) des structures persistantes
-# ======================================================================
-fig, ax = plt.subplots(1, 2, figsize=(14, 5.5))
+    del u_yx, w_yx; gc.collect()
+ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
 
-ax[0].hist(life, bins=range(1, life.max()+2), color='slateblue',
-           edgecolor='k', alpha=.8)
-ax[0].set_xlabel('durée de vie [pas de temps]'); ax[0].set_ylabel('nb de rouleaux')
-ax[0].set_title('(a) Distribution des durées de vie'); ax[0].set_yscale('log')
+# ----------------------------------------------------------------------
+#  Contrôles
+# ----------------------------------------------------------------------
+err_parseval = np.abs(Co_T1.sum(axis=1) - T1_chk).max()
+err_direct   = np.abs(T1_chk - T1_ref).max()
+print(f"[Parseval]  max|Σ_λ Co1 - T1_chk|   = {err_parseval:.2e}   (≈ 1e-18)")
+print(f"[cohérence] max|T1_chk - T1_direct| = {err_direct:.2e}     (≈ 1e-18)")
 
-for t in persist[:60]:
-    tt = [r['it'] for r in t]; zz = [r['zc_km'] for r in t]
-    cc = 'crimson' if t[0]['sense']=='CCW' else 'royalblue'
-    ax[1].plot(tt, zz, '-', color=cc, lw=1, alpha=.6)
-ax[1].set_xlabel('it'); ax[1].set_ylabel('z centre [km]')
-ax[1].set_title('(b) Trajectoires verticales (rouge=CCW, bleu=CW)')
+j_max = int(np.argmax(np.abs(T1_chk)))
+print(f"niveau |T1| max : z = {z_D[j_max]/1000:.1f} km   (T1 = {T1_chk[j_max]:.2e} m²/s²)")
 
-plt.tight_layout(); plt.show()
-
-
-
-
-
-
-
-
+# --- échelle dominante par niveau (barycentre de |Co1| en log-λ) ---
+lam_dom_T1 = np.full(nz_D, np.nan)
+for j in range(nz_D):
+    wgt = np.abs(Co_T1[j, 1:])
+    if wgt.sum() > 0:
+        lam_dom_T1[j] = np.exp(np.sum(wgt * np.log(lam_km[1:])) / wgt.sum())
 
 # ======================================================================
-#  BLOC F — Modèle génératif ψ à partir des rouleaux-types + validation
-#  ----------------------------------------------------------------------
-#  Chaque rouleau réel est remplacé par un patch ψ analytique :
-#      ψ_patch(x,z) = A · sin(π ξ) · sin(π ζ) · exp(-((ξ-.5)²+(ζ-.5)²)/2σ²)
-#  où (ξ,ζ) sont les coords locales dans la boîte du rouleau (largeur λ_x,
-#  hauteur λ_z, centre (xc,zc), inclinaison θ). A = signe·intensité calibrée.
-#  On reconstruit ψ_model(z,x), on en déduit le flux de masse organisé
-#  modèle, et on compare T1_model(z) à T1_vrai(z)  -> NSE.
-#
-#  -> Valide que les descripteurs géométriques SUFFISENT à expliquer T1.
+#  FIGURE — co-spectre de T1 (area-preserving k·Co) + échelle dominante
 # ======================================================================
-IT_VAL = n_t - 1                            # instant de validation
-z_V, rho_V, U_V, W_V, u_orgV, w_orgV = organized_fields(IT_VAL)
-psi_V = psi_poisson_periodic(U_V, W_V, x, z_V, rho_V)
-rolls_V = cat_by_t[IT_VAL]
-nzV, nxV = psi_V.shape
-dzV = float(z_V[1]-z_V[0])
+A1 = kx[None, 1:] * Co_T1[:, 1:]          # k·Co : contribution par décade log
 
-def roll_patch(r, Xg, Zg):
-    """Patch ψ analytique d'un rouleau (cellule sin×sin gaussienne, inclinée)."""
-    xc = r['xc_km']*1000; zc = r['zc_km']*1000
-    lx = max(r['lam_x_km'],1e-3)*1000; lz = max(r['lam_z_km'],1e-3)*1000
-    th = np.radians(r['angle'])
-    # coords centrées + rotation -θ pour aligner sur les axes du rouleau
-    Xr =  (Xg-xc)*np.cos(th) + (Zg-zc)*np.sin(th)
-    Zr = -(Xg-xc)*np.sin(th) + (Zg-zc)*np.cos(th)
-    xi = Xr/lx + 0.5; ze = Zr/lz + 0.5
-    inside = (xi>0)&(xi<1)&(ze>0)&(ze<1)
-    patch = np.zeros_like(Xg)
-    sig = 0.30
-    patch[inside] = (np.sin(np.pi*xi[inside])*np.sin(np.pi*ze[inside])
-                     * np.exp(-(((xi[inside]-.5)**2+(ze[inside]-.5)**2)/(2*sig**2))))
-    # amplitude : signe du rouleau × intensité moyenne de ψ réel sur son support
-    patch *= r['sign'] * (r['circ'] / (patch[inside].sum()+1e-30))
-    return patch
+# borne de couleur robuste (symétrique autour de 0) ; garde-fou si A1 ≡ 0
+m1 = np.percentile(np.abs(A1), 99)
+if not np.isfinite(m1) or m1 <= 0:
+    m1 = np.nanmax(np.abs(A1))
+if not np.isfinite(m1) or m1 <= 0:
+    m1 = 1e-30
 
-# --- reconstruction ψ_model ---
-Xg, Zg = np.meshgrid(x, z_V)
-psi_model = np.zeros_like(psi_V)
-for r in rolls_V:
-    if np.isfinite(r['lam_x_km']) and np.isfinite(r['lam_z_km']):
-        psi_model += roll_patch(r, Xg, Zg)
+fig, ax = plt.subplots(figsize=(8, 6))
 
-# --- calibration globale d'amplitude (moindres carrés ψ_model ~ ψ_vrai) ---
-alpha = (np.sum(psi_model*psi_V) / (np.sum(psi_model**2)+1e-30))
-psi_model *= alpha
-print(f"[modèle ψ] calibration d'amplitude α = {alpha:.3f}")
+pc = ax.pcolormesh(lam_km[1:], z_D/1000, A1, shading='auto',
+                   norm=TwoSlopeNorm(vcenter=0, vmin=-m1, vmax=m1), cmap='RdBu_r')
+ax.plot(lam_dom_T1, z_D/1000, 'k-', lw=1.6, alpha=.7, label='échelle dominante')
+ax.set_xscale('log'); ax.invert_xaxis()
+ax.set_xlabel(r'$\lambda$ [km]'); ax.set_ylabel('z [km]')
+ax.set_title(r'Co-spectre du flux organisé $T_1$  ($k\,\mathrm{Co}$)')
+ax.legend(fontsize=9, loc='upper left')
 
-# --- flux de masse organisé du modèle : ρ0 ū = -∂ψ/∂z  -> ū_model ---
-rhoU_model = -np.gradient(psi_model, dzV, axis=0)
-u_model = rhoU_model / rho_V[:,None]
-# w organisé du modèle : ρ0 w = +∂ψ/∂x (x périodique)
-dxm = float(x[1]-x[0])
-rhoW_model = (np.roll(psi_model,-1,1)-np.roll(psi_model,1,1))/(2*dxm)
-w_model = rhoW_model / rho_V[:,None]
-
-# T1 par niveau : vrai (champs organisés) vs modèle
-T1_true_p  = (rho_V[:,None]*u_orgV*w_orgV).mean(axis=1)
-T1_model_p = (rho_V[:,None]*u_model*w_model).mean(axis=1)
-
-# NSE (Nash-Sutcliffe) du profil T1
-def nse(obs, mod):
-    return 1 - np.sum((obs-mod)**2)/(np.sum((obs-obs.mean())**2)+1e-30)
-score = nse(T1_true_p, T1_model_p)
-print(f"[validation] NSE(T1_model vs T1_vrai) = {score:.3f}")
-
-# ======================================================================
-#  FIGURE F — ψ vrai vs ψ modèle + profils T1
-# ======================================================================
-fig, ax = plt.subplots(1, 3, figsize=(16, 5.5))
-Xkm, Zkm = x/1000, z_V/1000
-pmax = np.percentile(np.abs(psi_V), 99)+1e-12
-
-ax[0].pcolormesh(Xkm, Zkm, psi_V, shading='auto',
-                 norm=TwoSlopeNorm(vcenter=0, vmin=-pmax, vmax=pmax), cmap='RdBu_r')
-ax[0].set_title('(a) ψ vrai'); ax[0].set_xlabel('x [km]'); ax[0].set_ylabel('z [km]')
-
-ax[1].pcolormesh(Xkm, Zkm, psi_model, shading='auto',
-                 norm=TwoSlopeNorm(vcenter=0, vmin=-pmax, vmax=pmax), cmap='RdBu_r')
-ax[1].set_title(f'(b) ψ modèle ({len(rolls_V)} rouleaux)'); ax[1].set_xlabel('x [km]')
-
-ax[2].plot(T1_true_p*1e3,  Zkm, 'k-',  lw=2, label='T1 vrai')
-ax[2].plot(T1_model_p*1e3, Zkm, 'r--', lw=2, label=f'T1 modèle (NSE={score:.2f})')
-ax[2].axvline(0, color='grey', alpha=.4)
-ax[2].set_xlabel(r'T1 ($\times10^{-3}$ m²/s²)'); ax[2].set_ylabel('z [km]')
-ax[2].set_title('(c) Validation T1'); ax[2].legend(fontsize=9); ax[2].grid(alpha=.3)
+# colorbar attachée explicitement au mappable et à l'axe -> s'affiche correctement
+cbar = fig.colorbar(pc, ax=ax, label=r'$k\,\mathrm{Co}_{T_1}$', pad=0.02)
 
 plt.tight_layout(); plt.show()
