@@ -1,114 +1,138 @@
 # ======================================================================
-#  ÉTAPE 1 — Co-spectre Fourier de la covariance ORGANISÉE T1 par niveau
+#  CO-SCALOGRAMME 1D-EN-X PAR NIVEAU — préserve l'info en x
 #  ----------------------------------------------------------------------
-#  Idée : T1(z) = covariance en x des profils "par paliers" reconstruits
-#         u_org(x) = uc[cat(x)] - ubar,  w_org(x) = wc[cat(x)] - wbar
-#  où cat(x) ∈ {up,dn,env} est la catégorie de la colonne x (seuil sur w̄_y).
-#  Le co-spectre de (u_org, w_org) vérifie  Σ_λ Co1(λ) = T1(z)  (Parseval),
-#  et révèle À QUELLE ÉCHELLE horizontale vit le flux de masse organisé.
+#  CWT Morlet sur x (à z fixé) de u_org et w_org :
+#      Wu(b,s) = (u_org ⋆ ψ*_{s,b}),   Ww(b,s) = (w_org ⋆ ψ*_{s,b})
+#  Co-scalogramme local :  Co(b,s) = Re[ Wu(b,s) · conj(Ww(b,s)) ]
+#  -> carte (x, λ) : OÙ en x vit le flux organisé ET à quelle échelle.
 #
-#  Dépend de : x, alt, iz_lst, z_D, nz_D, dim_t, dim_z, path3d,
-#              IT_DECOMP, C_DECOMP, W0_MIN  (mêmes conventions que up/dn/env).
+#  Reconstruction admissible (Torrence & Compo 1998) :
+#      T1(z) ≈ (δj·δt / C_δ) · Σ_s Co(b,s)/s      moyenné en b
+#  -> on vérifie que le co-scalogramme intègre bien vers T1 (à C_δ près).
+#
+#  x périodique -> CWT par FFT exacte (pas de bord en x).
+#  Réutilise : uorg_all, worg_all (de l'ÉTAPE 1), x, z_D, nz_D, nx, dx.
 # ======================================================================
-CAT_LIST = ('up', 'dn', 'env')
+W0_MORLET = 6.0                                  # ω0 (Morlet standard)
+NSCALE    = 64
 
-nx  = x.size
-dx  = float(x[1] - x[0])
-print(f"[T1 spectre] nx={nx}  dx={dx/1000:.2f} km  domaine={nx*dx/1000:.0f} km")
+dx = float(x[1] - x[0])
+# --- échelles : de ~2 dx (Nyquist) à ~domaine/2, espacées en log ---
+scales = np.geomspace(2*dx, nx*dx/2, NSCALE)     # [m]
+# facteur échelle s -> longueur d'onde de Fourier λ (Torrence & Compo)
+fourier_factor = (4*np.pi) / (W0_MORLET + np.sqrt(2 + W0_MORLET**2))
+lam_w_km = scales * fourier_factor / 1000.0      # [km], 1 par échelle
 
-# --- axes spectraux Fourier (rfft : fréquences positives) ---
-kx     = np.fft.rfftfreq(nx, d=dx) * 2*np.pi          # nombre d'onde [rad/m]
-lam_km = (2*np.pi / np.maximum(kx, 1e-12)) / 1000     # longueur d'onde [km]
+# constante d'admissibilité de la Morlet (pour la reconstruction)
+C_DELTA = 0.776                                  # valeur tabulée pour ω0=6
+dj = np.log2(scales[1]/scales[0])                # pas log2 entre échelles
 
-# --- conteneurs ---
-Co_T1     = np.zeros((nz_D, kx.size))   # co-spectre du flux organisé, par niveau
-T1_chk    = np.zeros(nz_D)              # T1 reconstruit (contrôle Parseval)
-T1_ref    = np.zeros(nz_D)              # T1 "direct" (somme des catégories) pour cohérence
-uorg_all  = np.zeros((nz_D, nx))        # u_org(x) par niveau (utile plus bas)
-worg_all  = np.zeros((nz_D, nx))
+# fréquences angulaires du domaine périodique
+k_full = np.fft.fftfreq(nx, d=dx) * 2*np.pi      # [rad/m]
 
-ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
-for j, iz in enumerate(iz_lst):
-    u_yx = ds_u['ua'].isel({dim_t: IT_DECOMP, dim_z: iz}).values   # (ny, nx)
-    w_yx = ds_w['wa'].isel({dim_t: IT_DECOMP, dim_z: iz}).values
+def cwt_morlet_x(sig):
+    """CWT Morlet de `sig` (périodique en x) via FFT. Retourne W[NSCALE, nx] complexe."""
+    Sig = np.fft.fft(sig)
+    out = np.empty((NSCALE, nx), dtype=complex)
+    for i, s in enumerate(scales):
+        sk   = s * k_full
+        # Morlet dans Fourier : normalisée énergie, partie analytique (sk>0)
+        psih = (np.pi**-0.25) * np.sqrt(2*np.pi*s/dx) * (sk > 0) * np.exp(-0.5*(sk - W0_MORLET)**2)
+        out[i] = np.fft.ifft(Sig * psih)
+    return out
 
-    # --- moyenne sur y -> profils en x ---
-    uy = u_yx.mean(axis=0); wy = w_yx.mean(axis=0)
-    ubar, wbar = uy.mean(), wy.mean()
+def coscalogram_level(j):
+    """Co-scalogramme Co(λ, x) au niveau j (indice dans la bande z_D)."""
+    Wu = cwt_morlet_x(uorg_all[j])
+    Ww = cwt_morlet_x(worg_all[j])
+    return np.real(Wu * np.conj(Ww))             # (NSCALE, nx)
 
-    # --- classification des colonnes x (même seuil que le bloc up/dn/env) ---
-    ws = max(W0_MIN, C_DECOMP * wy.std())
-    masks = {'up': wy > ws, 'dn': wy < -ws, 'env': np.abs(wy) <= ws}
+# ======================================================================
+#  (1) CARTE (x, λ) À UN NIVEAU CHOISI
+# ======================================================================
+Z_PICK_KM = 5.0                                  # altitude à examiner [km]
+j_pick = int(np.argmin(np.abs(z_D/1000 - Z_PICK_KM)))
+Co_xl  = coscalogram_level(j_pick)               # (NSCALE, nx)
 
-    # --- reconstruction par paliers : valeur de catégorie - moyenne globale ---
-    u_org = np.zeros(nx); w_org = np.zeros(nx)
-    t1_direct = 0.0
-    for k in CAT_LIST:
-        m = masks[k]; Nk = m.sum()
-        if Nk == 0:
-            continue
-        uc = uy[m].mean(); wc = wy[m].mean()
-        u_org[m] = uc - ubar
-        w_org[m] = wc - wbar
-        t1_direct += (Nk / nx) * (uc - ubar) * (wc - wbar)   # = σ_k (uc-ū)(wc-w̄)
+# contrôle de reconstruction : T1 via le co-scalogramme vs T1 direct
+T1_from_cwt = (dj * dx / C_DELTA) * np.sum(Co_xl / scales[:, None], axis=0).mean()
+T1_direct   = (uorg_all[j_pick] * worg_all[j_pick]).mean()
+print(f"[niveau z={z_D[j_pick]/1000:.1f} km]  T1 direct = {T1_direct:.3e}   "
+      f"T1 (CWT recon.) = {T1_from_cwt:.3e}   ratio = {T1_from_cwt/(T1_direct+1e-30):.2f}")
 
-    uorg_all[j] = u_org; worg_all[j] = w_org
-    T1_ref[j]   = t1_direct
-    T1_chk[j]   = (u_org * w_org).mean()        # doit égaler t1_direct (paliers constants)
+# --- figure : co-scalogramme + profils marginaux ---
+fig = plt.figure(figsize=(13, 6))
+gs  = fig.add_gridspec(2, 2, width_ratios=[4, 1], height_ratios=[1, 3],
+                       hspace=0.05, wspace=0.05)
 
-    # --- co-spectre Fourier de (u_org, w_org), normalisé Parseval ---
-    Fu = np.fft.rfft(u_org); Fw = np.fft.rfft(w_org)
-    co = np.real(Fu * np.conj(Fw)) / nx**2
-    if nx % 2 == 0:
-        co[1:-1] *= 2          # repli des fréquences négatives (sauf 0 et Nyquist)
-    else:
-        co[1:]   *= 2
-    Co_T1[j] = co
+# profil u_org(x) au-dessus
+axu = fig.add_subplot(gs[0, 0])
+axu.plot(x/1000, uorg_all[j_pick], 'k', lw=.8)
+axu.plot(x/1000, worg_all[j_pick]*np.std(uorg_all[j_pick])/(np.std(worg_all[j_pick])+1e-30),
+         'r', lw=.8, alpha=.6, label='w_org (rescalé)')
+axu.set_xticklabels([]); axu.set_ylabel('org.'); axu.legend(fontsize=7, loc='upper right')
+axu.set_title(f"Co-scalogramme Morlet en x — z = {z_D[j_pick]/1000:.1f} km")
+axu.margins(x=0)
 
-    del u_yx, w_yx; gc.collect()
-ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
+# carte (x, λ)
+axm = fig.add_subplot(gs[1, 0], sharex=axu)
+mC = np.percentile(np.abs(Co_xl), 99) + 1e-30
+pc = axm.pcolormesh(x/1000, lam_w_km, Co_xl, shading='auto',
+                    norm=TwoSlopeNorm(vcenter=0, vmin=-mC, vmax=mC), cmap='RdBu_r')
+axm.set_yscale('log'); axm.invert_yaxis()
+axm.set_xlabel('x [km]'); axm.set_ylabel(r'$\lambda$ [km]')
+axm.margins(x=0)
 
-# ----------------------------------------------------------------------
-#  Contrôles
-# ----------------------------------------------------------------------
-err_parseval = np.abs(Co_T1.sum(axis=1) - T1_chk).max()
-err_direct   = np.abs(T1_chk - T1_ref).max()
-print(f"[Parseval]  max|Σ_λ Co1 - T1_chk|   = {err_parseval:.2e}   (≈ 1e-18)")
-print(f"[cohérence] max|T1_chk - T1_direct| = {err_direct:.2e}     (≈ 1e-18)")
+# marginale en λ (= co-spectre global du niveau)
+axr = fig.add_subplot(gs[1, 1], sharey=axm)
+axr.plot(Co_xl.mean(axis=1), lam_w_km, 'k', lw=1.5)
+axr.axvline(0, color='grey', alpha=.4)
+axr.set_yscale('log'); axr.set_xlabel(r'$\langle Co\rangle_x$')
+axr.set_yticklabels([]); axr.margins(y=0)
 
-j_max = int(np.argmax(np.abs(T1_chk)))
-print(f"niveau |T1| max : z = {z_D[j_max]/1000:.1f} km   (T1 = {T1_chk[j_max]:.2e} m²/s²)")
+fig.colorbar(pc, ax=[axm, axr], label=r'$\mathrm{Co}(x,\lambda)$', pad=0.01, location='bottom')
+plt.show()
 
-# --- échelle dominante par niveau (barycentre de |Co1| en log-λ) ---
-lam_dom_T1 = np.full(nz_D, np.nan)
+# ======================================================================
+#  (2) CUBE (z, x, λ) — balayage vertical
+# ======================================================================
+cube = np.empty((nz_D, NSCALE, nx))              # (z, λ, x)
 for j in range(nz_D):
-    wgt = np.abs(Co_T1[j, 1:])
-    if wgt.sum() > 0:
-        lam_dom_T1[j] = np.exp(np.sum(wgt * np.log(lam_km[1:])) / wgt.sum())
+    cube[j] = coscalogram_level(j)
+print(f"[cube] construit : (z={nz_D}, λ={NSCALE}, x={nx})  "
+      f"≈ {cube.nbytes/1e6:.0f} Mo")
 
-# ======================================================================
-#  FIGURE — co-spectre de T1 (area-preserving k·Co) + échelle dominante
-# ======================================================================
-A1 = kx[None, 1:] * Co_T1[:, 1:]          # k·Co : contribution par décade log
+# --- vue A : coupe (z, x) à une échelle fixe -> localisation des structures ---
+LAM_PICK_KM = 40.0
+i_lam = int(np.argmin(np.abs(lam_w_km - LAM_PICK_KM)))
+slice_zx = cube[:, i_lam, :]                     # (z, x)
 
-# borne de couleur robuste (symétrique autour de 0) ; garde-fou si A1 ≡ 0
-m1 = np.percentile(np.abs(A1), 99)
-if not np.isfinite(m1) or m1 <= 0:
-    m1 = np.nanmax(np.abs(A1))
-if not np.isfinite(m1) or m1 <= 0:
-    m1 = 1e-30
+# --- vue B : carte (z, λ) moyennée en x -> comparable au Fourier ÉTAPE 1 ---
+co_zl = cube.mean(axis=2)                         # (z, λ)
+lam_dom_cwt = np.array([
+    np.exp(np.sum(np.abs(co_zl[j])*np.log(lam_w_km)) / (np.abs(co_zl[j]).sum()+1e-30))
+    for j in range(nz_D)])
 
-fig, ax = plt.subplots(figsize=(8, 6))
+fig, ax = plt.subplots(1, 2, figsize=(14, 6))
 
-pc = ax.pcolormesh(lam_km[1:], z_D/1000, A1, shading='auto',
-                   norm=TwoSlopeNorm(vcenter=0, vmin=-m1, vmax=m1), cmap='RdBu_r')
-ax.plot(lam_dom_T1, z_D/1000, 'k-', lw=1.6, alpha=.7, label='échelle dominante')
-ax.set_xscale('log'); ax.invert_xaxis()
-ax.set_xlabel(r'$\lambda$ [km]'); ax.set_ylabel('z [km]')
-ax.set_title(r'Co-spectre du flux organisé $T_1$  ($k\,\mathrm{Co}$)')
-ax.legend(fontsize=9, loc='upper left')
+# vue A
+mA = np.percentile(np.abs(slice_zx), 99) + 1e-30
+pcA = ax[0].pcolormesh(x/1000, z_D/1000, slice_zx, shading='auto',
+                       norm=TwoSlopeNorm(vcenter=0, vmin=-mA, vmax=mA), cmap='RdBu_r')
+ax[0].set_xlabel('x [km]'); ax[0].set_ylabel('z [km]')
+ax[0].set_title(fr'(A) Co-flux localisé à $\lambda\approx${lam_w_km[i_lam]:.0f} km')
+fig.colorbar(pcA, ax=ax[0], label=r'$\mathrm{Co}$', pad=0.01)
 
-# colorbar attachée explicitement au mappable et à l'axe -> s'affiche correctement
-cbar = fig.colorbar(pc, ax=ax, label=r'$k\,\mathrm{Co}_{T_1}$', pad=0.02)
+# vue B
+A = co_zl * (2*np.pi/np.sqrt(2)) / (scales[None, :])   # ~ area-preserving (×k)
+mB = np.percentile(np.abs(A), 99) + 1e-30
+pcB = ax[1].pcolormesh(lam_w_km, z_D/1000, A, shading='auto',
+                       norm=TwoSlopeNorm(vcenter=0, vmin=-mB, vmax=mB), cmap='RdBu_r')
+ax[1].plot(lam_dom_cwt, z_D/1000, 'k-', lw=1.6, alpha=.7, label='échelle dominante')
+ax[1].set_xscale('log'); ax[1].invert_xaxis()
+ax[1].set_xlabel(r'$\lambda$ [km]'); ax[1].set_ylabel('z [km]')
+ax[1].set_title(r'(B) Co-scalogramme $\langle\cdot\rangle_x$ (comparable au Fourier)')
+ax[1].legend(fontsize=9)
+fig.colorbar(pcB, ax=ax[1], label=r'co ($\times k$)', pad=0.01)
 
 plt.tight_layout(); plt.show()
