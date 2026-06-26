@@ -1,11 +1,7 @@
-import numpy as np
-print("shapes  Wmap_pk", Wmap_pk.shape, " psi2d", psi2d.shape, " zeta_reg", zeta_reg.shape)
-print("grille z : z_D[0..2]=", (z_D[:3]/1000).round(2), " z_reg[0..2]=", (z_reg[:3]/1000).round(2))
-print("z_D régulier ?", np.allclose(np.diff(z_D), np.diff(z_D)[0]))
-print("Wmap_pk : min/max/median =", f"{Wmap_pk.min():.2e}/{Wmap_pk.max():.2e}/{np.median(Wmap_pk):.2e}")
-print("seuil q0.92 =", f"{np.quantile(Wmap_pk,0.92):.2e}", " -> fraction au-dessus =",
-      f"{(Wmap_pk>=np.quantile(Wmap_pk,0.92)).mean():.1%}")
-# combien d'objets après seuil, et leur taille ?
-m = Wmap_pk >= np.quantile(Wmap_pk, 0.92)
-print("pixels retenus :", m.sum(), "/", m.size, " en", m.shape)
-print("pic échelle : lamx=", round(lamx_km[bx]), "km  lamz=", round(lamz_km[az],1), "km")
+shapes  Wmap_pk (45, 2000)  psi2d (45, 2000)  zeta_reg (45, 2000)
+grille z : z_D[0..2]= [0.   0.04 0.11]  z_reg[0..2]= [0.   0.41 0.82]
+z_D régulier ? False
+Wmap_pk : min/max/median = 7.95e-20/4.71e-03/2.31e-06
+seuil q0.92 = 6.11e-05  -> fraction au-dessus = 8.0%
+pixels retenus : 7200 / 90000  en (45, 2000)
+pic échelle : lamx= 9 km  lamz= 0.8 km
