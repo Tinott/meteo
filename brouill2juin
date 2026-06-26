@@ -1,89 +1,11 @@
-# ======================================================================
-#  DIAGNOSTIC — co-scalogramme 1D à PLUSIEURS z, ÉCHELLE DE COULEUR COMMUNE
-#  ----------------------------------------------------------------------
-#  Explique pourquoi les couleurs "changent tout" selon Z_PICK :
-#  chaque niveau était normalisé par SON propre percentile -> niveaux à T1≈0
-#  coloriaient du bruit à pleine échelle. Ici : une seule échelle pour tous.
-#  + on confronte à T1(z), std(u_org), std(w_org) -> où vit vraiment le flux.
-#  Réutilise : cwt_morlet_x, coscalogram_level, uorg_all, worg_all, x, z_D,
-#              lam_w_km, scales, nz_D.
-# ======================================================================
-import numpy as np, matplotlib.pyplot as plt
-from matplotlib.colors import TwoSlopeNorm
-
-Z_LIST_KM = [2.0, 5.0, 8.0, 12.0]                     # niveaux comparés
-j_list = [int(np.argmin(np.abs(z_D/1000 - zz))) for zz in Z_LIST_KM]
-
-# --- profils de référence (où vit le flux organisé) ---
-T1_prof = (uorg_all * worg_all).mean(axis=1)         # = T1(z) reconstruit
-su_prof = uorg_all.std(axis=1)                       # amplitude organisée de u en x
-sw_prof = worg_all.std(axis=1)                       # amplitude organisée de w en x
-
-# --- co-scalos des niveaux choisis ---
-co_maps = [coscalogram_level(j) for j in j_list]
-
-# --- ÉCHELLE DE COULEUR COMMUNE : percentile global sur tous les niveaux ---
-mC_common = np.percentile(np.abs(np.concatenate(co_maps, axis=1)), 99) + 1e-30
-print(f"échelle de couleur commune  mC = {mC_common:.2e}")
-print(f"{'z [km]':>7} | {'T1(z)':>10} | {'mC local':>10} | {'ratio vs commun':>15}")
-print('-'*52)
-for zz, j, cm in zip(Z_LIST_KM, j_list, co_maps):
-    mC_loc = np.percentile(np.abs(cm), 99) + 1e-30
-    print(f"{zz:7.1f} | {T1_prof[j]:10.2e} | {mC_loc:10.2e} | {mC_loc/mC_common:15.1e}")
-print("\n>> si 'ratio vs commun' << 1 : ce niveau coloriait surtout du bruit avant.")
-
-xkm = x/1000.0
-lam_ticks = [t for t in [2,5,10,20,50,100,200] if lam_w_km.min() <= t <= lam_w_km.max()]
-
-# ======================================================================
-#  FIGURE — (haut) profils T1, std(u_org), std(w_org)
-#           (bas)  co-scalos à échelle commune
-# ======================================================================
-fig = plt.figure(figsize=(15, 8))
-gs = fig.add_gridspec(2, len(j_list), height_ratios=[1, 2.2], hspace=0.28, wspace=0.12)
-
-# --- bandeau profils (occupant toute la largeur) ---
-axp = fig.add_subplot(gs[0, :])
-Zkm = z_D/1000
-axp.plot(T1_prof*1e3, Zkm, 'k', lw=2, label=r'$T_1(z)\ (\times10^{-3})$')
-axp.plot(su_prof,     Zkm, 'navy', lw=1.5, label=r'std$_x(u_{org})$ [m/s]')
-axp.plot(sw_prof,     Zkm, 'firebrick', lw=1.5, label=r'std$_x(w_{org})$ [m/s]')
-axp.axvline(0, color='grey', alpha=.4)
-for zz in Z_LIST_KM:
-    axp.axhline(zz, color='green', ls=':', alpha=.5)
-axp.set_ylabel('z [km]'); axp.set_xlabel('amplitude')
-axp.set_title('Où vit le flux organisé : $T_1$, std$_x(u_{org})$, std$_x(w_{org})$  '
-              '(pointillés = niveaux montrés ci-dessous)')
-axp.legend(fontsize=9, loc='upper right'); axp.grid(alpha=.3)
-
-# --- co-scalos, MÊME échelle de couleur ---
-for c, (zz, j, cm) in enumerate(zip(Z_LIST_KM, j_list, co_maps)):
-    ax = fig.add_subplot(gs[1, c])
-    pc = ax.pcolormesh(xkm, lam_w_km, cm, shading='auto',
-                       norm=TwoSlopeNorm(vcenter=0, vmin=-mC_common, vmax=mC_common),
-                       cmap='RdBu_r')
-    ax.set_yscale('log'); ax.invert_yaxis()
-    ax.set_yticks(lam_ticks)
-    ax.set_yticklabels([str(t) for t in lam_ticks] if c == 0 else [])
-    ax.set_title(f"z = {zz:.0f} km\n$T_1$ = {T1_prof[j]:.1e}", fontsize=10)
-    ax.set_xlabel('x [km]')
-    if c == 0:
-        ax.set_ylabel(r'$\lambda$ [km]')
-fig.colorbar(pc, ax=fig.axes[1:], label=r'Co$(x,\lambda)$  [m²/s²] — échelle COMMUNE',
-             pad=0.01, shrink=0.7)
-plt.show()
-
-
-
-
-
-
-
-
-
-
-
-# --- garde-fou : recalcule l'indice d'échelle dominant localement ---
-#     (bx/az sont des noms génériques, écrasés par des boucles intermédiaires)
-az_pk, bx_pk = np.unravel_index(np.argmax(E2), E2.shape)
+# --- garde-fou shapes : réaligne uorg_all/worg_all sur la bande z_D courante ---
+import numpy as np
+if uorg_all.shape[0] != z_D.size:
+    # uorg_all a été calculé sur TOUTE la colonne (alt, 74 niveaux) ;
+    # z_D est la bande tronquée (≤ Z_MAX). On restreint aux niveaux de z_D.
+    iz_band = np.array([int(np.argmin(np.abs(alt - zz))) for zz in z_D])
+    uorg_all = uorg_all[iz_band]
+    worg_all = worg_all[iz_band]
+    print(f"réalignement : uorg_all/worg_all -> {uorg_all.shape} (bande z_D, {z_D.size} niveaux)")
+assert uorg_all.shape == (z_D.size, x.size), f"shape {uorg_all.shape} != {(z_D.size, x.size)}"
 lam_x, lam_z = lamx_km[bx_pk], lamz_km[az_pk]      # <-- remplace lamx_km[bx], lamz_km[az]
