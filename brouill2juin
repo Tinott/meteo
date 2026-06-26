@@ -1,11 +1,4 @@
-# --- garde-fou shapes : réaligne uorg_all/worg_all sur la bande z_D courante ---
-import numpy as np
-if uorg_all.shape[0] != z_D.size:
-    # uorg_all a été calculé sur TOUTE la colonne (alt, 74 niveaux) ;
-    # z_D est la bande tronquée (≤ Z_MAX). On restreint aux niveaux de z_D.
-    iz_band = np.array([int(np.argmin(np.abs(alt - zz))) for zz in z_D])
-    uorg_all = uorg_all[iz_band]
-    worg_all = worg_all[iz_band]
-    print(f"réalignement : uorg_all/worg_all -> {uorg_all.shape} (bande z_D, {z_D.size} niveaux)")
-assert uorg_all.shape == (z_D.size, x.size), f"shape {uorg_all.shape} != {(z_D.size, x.size)}"
+# --- garde-fou : recalcule l'indice d'échelle dominant localement ---
+#     (bx/az sont des noms génériques, écrasés par des boucles intermédiaires)
+az_pk, bx_pk = np.unravel_index(np.argmax(E2), E2.shape)
 lam_x, lam_z = lamx_km[bx_pk], lamz_km[az_pk]      # <-- remplace lamx_km[bx], lamz_km[az]
