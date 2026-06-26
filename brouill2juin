@@ -1,134 +1,95 @@
+# --- vorticité de circulation ---
+dWdx = (np.roll(Wy2d, -1, axis=1) - np.roll(Wy2d, 1, axis=1)) / (2*dxl)
+dUdz = np.gradient(Uy2d, z_D, axis=0)
+zeta = dWdx - dUdz                       # (nz_D, n_x)  [s^-1]  -- dominé par -d_z<u>(z)
+
+# >>> retire le profil de cisaillement (ne dépend que de z) : garde la variabilité EN x <
+zeta_a = zeta - zeta.mean(axis=1, keepdims=True)    # anomalie zeta'(x,z)
+
+print(f"zeta brut   : std_x médian = {np.median(zeta.std(axis=1)):.2e} s^-1")
+print(f"zeta' (anom): std_x médian = {np.median(zeta_a.std(axis=1)):.2e} s^-1  <-- spectralisé")
+
+
+
+
+
+
+
+
+
+
+
 # ======================================================================
-#  CO-SCALOGRAMME 1D-EN-X PAR NIVEAU — variance-preserving + axes gradués
+#  4b — CWT 2D Morlet anisotrope sur zeta'(x,z) (anomalie), variance-preserving
 #  ----------------------------------------------------------------------
-#  Pondération Co/s : retire le biais d'échelle du scalogramme (les gros λ
-#  ne sont plus gonflés artificiellement ; aire en log-λ ∝ flux).
-#  x périodique -> CWT par FFT exacte. Réutilise uorg_all, worg_all, x, z_D.
+#  (1) on spectralise zeta_a = zeta - <zeta>_x  -> porte les rouleaux, pas le cisaillement
+#  (2) énergie pondérée  |W|² / (sx·sz)  -> retire le biais d'échelle (cf. Co/s du 1D)
+#      => le pic devient un VRAI maximum interne, plus collé au coin du domaine.
 # ======================================================================
+import numpy as np
+
 W0_MORLET = 6.0
-NSCALE    = 64
+NSX, NSZ  = 12, 10
 
-dx = float(x[1] - x[0]); nx = x.size
-scales = np.geomspace(2*dx, nx*dx/2, NSCALE)
+Lx_dom = n_x * dxl
+Lz_dom = (z_D[-1] - z_D[0])
+scales_x = np.geomspace(2*dxl, Lx_dom/2, NSX)
+scales_z = np.geomspace(2*dzl, Lz_dom/2, NSZ)
 fourier_factor = (4*np.pi) / (W0_MORLET + np.sqrt(2 + W0_MORLET**2))
-lam_w_km = scales * fourier_factor / 1000.0
-C_DELTA = 0.776
-dj = np.log2(scales[1]/scales[0])
-k_full = np.fft.fftfreq(nx, d=dx) * 2*np.pi
+lamx_km = scales_x * fourier_factor / 1000.0
+lamz_km = scales_z * fourier_factor / 1000.0
 
-def cwt_morlet_x(sig):
-    Sig = np.fft.fft(sig)
-    out = np.empty((NSCALE, nx), dtype=complex)
-    for i, s in enumerate(scales):
-        sk = s * k_full
-        psih = (np.pi**-0.25) * np.sqrt(2*np.pi*s/dx) * (sk > 0) * np.exp(-0.5*(sk - W0_MORLET)**2)
-        out[i] = np.fft.ifft(Sig * psih)
-    return out
+# --- grille z régularisée (FFT propre en z) ---
+z_reg = np.linspace(z_D[0], z_D[-1], nz_D)
+zeta_reg = np.empty((nz_D, n_x))
+for i in range(n_x):
+    zeta_reg[:, i] = np.interp(z_reg, z_D, zeta_a[:, i])   # <-- zeta_a (anomalie)
+dzr = float(z_reg[1] - z_reg[0])
 
-def coscalogram_level(j):
-    Wu = cwt_morlet_x(uorg_all[j])
-    Ww = cwt_morlet_x(worg_all[j])
-    return np.real(Wu * np.conj(Ww))
+kx = np.fft.fftfreq(n_x,  d=dxl) * 2*np.pi
+kz = np.fft.fftfreq(nz_D, d=dzr) * 2*np.pi
+KX, KZ = np.meshgrid(kx, kz)
+Zhat = np.fft.fft2(zeta_reg)
+k0 = W0_MORLET
 
-# ----------------------------------------------------------------------
-#  Niveau choisi
-# ----------------------------------------------------------------------
-Z_PICK_KM = 5.0
-j_pick = int(np.argmin(np.abs(z_D/1000 - Z_PICK_KM)))
-Co_xl  = coscalogram_level(j_pick)               # co-scalo BRUT
-Co_vp  = Co_xl / scales[:, None]                 # <-- variance-preserving (Co/s)
+def cwt2d_morlet(sx, sz):
+    """|W|² de la CWT 2D pour l'échelle (sx,sz)."""
+    skx = sx * KX; skz = sz * KZ
+    psih = (np.pi**-0.5) * np.sqrt(sx*sz/(dxl*dzr)) \
+           * (skx > 0) * np.exp(-0.5*((skx - k0)**2 + skz**2))
+    W = np.fft.ifft2(Zhat * psih)
+    return np.abs(W)**2
 
-xkm = x / 1000.0
-Lx  = xkm[-1] + (xkm[1] - xkm[0])
-T1_lvl = (uorg_all[j_pick] * worg_all[j_pick]).mean()
+# --- énergie 2D variance-preserving : E(λx,λz) = Σ_{x,z} |W|² / (sx·sz) ---
+E2 = np.zeros((NSZ, NSX))
+for a in range(NSZ):
+    for b in range(NSX):
+        E2[a, b] = cwt2d_morlet(scales_x[b], scales_z[a]).sum() / (scales_x[b]*scales_z[a])
 
-# échelle dominante (sur la version variance-preserving)
-marg = np.abs(Co_vp).mean(axis=1)
-lam_dom = np.exp(np.sum(marg*np.log(lam_w_km)) / (marg.sum()+1e-30))
+az, bx = np.unravel_index(np.argmax(E2), E2.shape)
+sx_pk, sz_pk = scales_x[bx], scales_z[az]
+print(f"échelle 2D dominante : λx ≈ {lamx_km[bx]:.0f} km,  λz ≈ {lamz_km[az]:.1f} km")
+if bx in (0, NSX-1) or az in (0, NSZ-1):
+    print("  ⚠️ pic sur un BORD du balayage -> élargis scales_x/scales_z ou augmente NSX/NSZ")
+
+# --- carte de présence (x,z) à l'échelle pic (brute, non divisée : c'est une carte) ---
+Wmap_pk = cwt2d_morlet(sx_pk, sz_pk)
 
 # ======================================================================
-#  FIGURE
+#  FIGURE — (a) spectre 2D variance-preserving   (b) carte (x,z) au pic
 # ======================================================================
-fig = plt.figure(figsize=(13, 7))
-gs  = fig.add_gridspec(2, 2, width_ratios=[4, 1.1], height_ratios=[1, 3],
-                       hspace=0.08, wspace=0.06)
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots(1, 2, figsize=(14, 5.2))
 
-# ----------------------------------------------------------------------
-#  (haut) profils organisés u_org et w_org, deux axes y distincts
-# ----------------------------------------------------------------------
-axu = fig.add_subplot(gs[0, 0])
-axu.plot(xkm, uorg_all[j_pick], color='navy', lw=1.0, label=r'$u_{org}(x)$')
-axu.set_ylabel(r'$u_{org}$  [m/s]', color='navy', fontsize=9)
-axu.tick_params(axis='y', labelcolor='navy', labelsize=8)
-axu.set_xticklabels([]); axu.margins(x=0)
-axu.axhline(0, color='grey', lw=.6, alpha=.5)
+pc0 = ax[0].pcolormesh(lamx_km, lamz_km, E2, shading='auto', cmap='magma')
+ax[0].set_xscale('log'); ax[0].set_yscale('log')
+ax[0].plot(lamx_km[bx], lamz_km[az], 'c*', ms=16, mec='k', label='pic')
+ax[0].set_xlabel(r'$\lambda_x$ [km]'); ax[0].set_ylabel(r'$\lambda_z$ [km]')
+ax[0].set_title(r'(a) Énergie 2D variance-preserving $E(\lambda_x,\lambda_z)/(s_x s_z)$')
+ax[0].legend(fontsize=9); fig.colorbar(pc0, ax=ax[0], label='énergie / échelle', pad=0.01)
 
-axw = axu.twinx()
-axw.plot(xkm, worg_all[j_pick], color='firebrick', lw=1.0, alpha=.8, label=r'$w_{org}(x)$')
-axw.set_ylabel(r'$w_{org}$  [m/s]', color='firebrick', fontsize=9)
-axw.tick_params(axis='y', labelcolor='firebrick', labelsize=8)
-axw.margins(x=0)
-axu.set_title(f"Co-scalogramme du flux organisé $T_1$ (variance-preserving) — "
-              f"z = {z_D[j_pick]/1000:.1f} km   ($T_1$ = {T1_lvl:.2e} m²/s²)", fontsize=11)
-
-# ----------------------------------------------------------------------
-#  (centre) carte (x, λ) variance-preserving
-# ----------------------------------------------------------------------
-axm = fig.add_subplot(gs[1, 0], sharex=axu)
-mC = np.percentile(np.abs(Co_vp), 99) + 1e-30
-pc = axm.pcolormesh(xkm, lam_w_km, Co_vp, shading='auto',
-                    norm=TwoSlopeNorm(vcenter=0, vmin=-mC, vmax=mC), cmap='RdBu_r')
-axm.set_yscale('log'); axm.invert_yaxis()        # grandes échelles en bas
-
-# --- axe Y : λ en km, graduations explicites ---
-lam_ticks = [t for t in [2, 5, 10, 20, 50, 100, 200] if lam_w_km.min() <= t <= lam_w_km.max()]
-axm.set_yticks(lam_ticks)
-axm.set_yticklabels([str(t) for t in lam_ticks])
-axm.set_ylabel(r'échelle  $\lambda$  [km]', fontsize=10)
-
-# --- axe X : position en km, graduations tous les 50 km + lignes repères ---
-xticks = np.arange(0, Lx + 1, 50)
-axm.set_xticks(xticks)
-axm.set_xticklabels([f'{int(t)}' for t in xticks])
-axm.set_xlabel('position  x  [km]', fontsize=10)
-for xr_ in xticks[1:-1]:
-    axm.axvline(xr_, color='grey', lw=0.4, ls=':', alpha=0.4)
-for lam_ref in [10, 50, 100]:
-    if lam_w_km.min() <= lam_ref <= lam_w_km.max():
-        axm.axhline(lam_ref, color='grey', lw=0.5, ls=':', alpha=0.5)
-
-# échelle dominante en évidence
-axm.axhline(lam_dom, color='k', lw=1.3, ls='--', alpha=.8)
-axm.text(xkm[2], lam_dom, f'  λ dom ≈ {lam_dom:.0f} km',
-         va='bottom', ha='left', fontsize=8, color='k',
-         bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='none', alpha=0.7))
-axm.margins(x=0)
-
-# ----------------------------------------------------------------------
-#  (droite) marginale variance-preserving : ⟨Co/s⟩_x
-# ----------------------------------------------------------------------
-axr = fig.add_subplot(gs[1, 1], sharey=axm)
-axr.plot(Co_vp.mean(axis=1), lam_w_km, 'k', lw=1.5)
-axr.axvline(0, color='grey', alpha=.5)
-axr.axhline(lam_dom, color='k', lw=1.0, ls='--', alpha=.6)
-axr.set_yscale('log'); axr.invert_yaxis()
-axr.set_yticks(lam_ticks); axr.set_yticklabels([])
-axr.set_xlabel(r'$\langle Co/s\rangle_x$', fontsize=9)
-axr.tick_params(labelsize=8)
-axr.set_title('moyenne en x', fontsize=9)
-axr.margins(y=0)
-
-cbar = fig.colorbar(pc, ax=[axm, axr],
-                    label=r'co-flux variance-preserving  $\mathrm{Co}(x,\lambda)/s$',
-                    pad=0.02, location='bottom', shrink=0.9)
-plt.show()
-
-# ----------------------------------------------------------------------
-#  aide-mémoire de lecture
-# ----------------------------------------------------------------------
-print("COMMENT LIRE :")
-print(f"  • axe x = position [km], graduations tous les 50 km (0 → {Lx:.0f} km)")
-print(f"  • axe λ = taille de structure [km] ; PETITES échelles en HAUT, GRANDES en BAS")
-print(f"  • variance-preserving (Co/s) : aire en log-λ ∝ flux -> gros λ non gonflés")
-print(f"  • ROUGE = flux organisé positif localisé ; BLEU = négatif ; BLANC = calme")
-print(f"  • tiret noir = échelle dominante ≈ {lam_dom:.0f} km")
+pc1 = ax[1].pcolormesh(x/1000, z_reg/1000, Wmap_pk, shading='auto', cmap='magma')
+ax[1].set_xlabel('x [km]'); ax[1].set_ylabel('z [km]')
+ax[1].set_title(fr'(b) Présence à $(\lambda_x,\lambda_z)\approx({lamx_km[bx]:.0f},{lamz_km[az]:.1f})$ km')
+fig.colorbar(pc1, ax=ax[1], label=r'$|W_{2D}|^2$', pad=0.01)
+plt.tight_layout(); plt.show()
