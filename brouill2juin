@@ -72,3 +72,18 @@ for c, (zz, j, cm) in enumerate(zip(Z_LIST_KM, j_list, co_maps)):
 fig.colorbar(pc, ax=fig.axes[1:], label=r'Co$(x,\lambda)$  [m²/s²] — échelle COMMUNE',
              pad=0.01, shrink=0.7)
 plt.show()
+
+
+
+
+
+
+
+
+
+
+
+# --- garde-fou : recalcule l'indice d'échelle dominant localement ---
+#     (bx/az sont des noms génériques, écrasés par des boucles intermédiaires)
+az_pk, bx_pk = np.unravel_index(np.argmax(E2), E2.shape)
+lam_x, lam_z = lamx_km[bx_pk], lamz_km[az_pk]      # <-- remplace lamx_km[bx], lamz_km[az]
