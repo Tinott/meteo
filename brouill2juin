@@ -1,37 +1,15 @@
 # ======================================================================
-#  UNE ELLIPSE PAR CELLULE — blocs ψ′ rouges vs bleus séparés
+#  CARACTÉRISATION DES ELLIPSES — mesures corrigées
 #  ----------------------------------------------------------------------
-#  Chaque grande cellule = composante connexe de ψ′ d'un même signe.
-#  ROUGE = ψ′ > 0 (max), BLEU = ψ′ < 0 (min). Pour chaque bloc on ajuste
-#  l'ELLIPSE d'inertie : centre, demi-axes (a,b) en km, inclinaison θ.
-#  Réutilise : psi_a, psi2d, x, z_reg, n_x, nz_D, dxl, dzl.
+#  Reprend la détection par blocs (inchangée) et corrige les CALCULS :
+#   • taille  : demi-axe = 2·√λ  (et NON 2·√(2λ) qui surestimait de √2≈1.41)
+#   • angle   : θ d'inertie  +  tilt convectif (régression du cœur sur z),
+#               plus fiable car non biaisé par la troncature verticale.
+#  Réutilise : psi_a, x, z_reg, n_x, nz_D, dxl, dzl  + psi_s, blocs_signe.
 # ======================================================================
 import numpy as np
-from scipy.ndimage import gaussian_filter, label
-import matplotlib.pyplot as plt
-from matplotlib.colors import TwoSlopeNorm
 
-# --- réglages ---
-SIGMA_X, SIGMA_Z = 2.0, 2.0      # lissage (points)
-SEUIL_FRAC = 0.20                # un bloc = |ψ′| ≥ frac·max  (baisse->blocs plus larges)
-N_MIN      = 50                  # taille mini d'un bloc (points) pour éviter les miettes
-
-# --- ψ′ lissé ---
-psi_s = gaussian_filter(psi_a, sigma=(SIGMA_Z, SIGMA_X), mode=('nearest', 'wrap'))
-SEUIL = SEUIL_FRAC * np.abs(psi_s).max()
-
-# --- blocs connexes d'un signe donné (couture x périodique recousue) ---
-def blocs_signe(sign):
-    mask = (sign * psi_s >= SEUIL)
-    lab, _ = label(mask)
-    for j in range(nz_D):
-        a, b = lab[j, 0], lab[j, -1]
-        if a > 0 and b > 0 and a != b:
-            lab[lab == b] = a
-    return [np.argwhere(lab == L) for L in range(1, lab.max()+1)
-            if (lab == L).sum() >= N_MIN]
-
-# --- ellipse d'inertie d'un bloc -> (xc,zc en km, a,b demi-axes km, theta deg) ---
+# --- ellipse d'inertie d'un bloc : centre, demi-axes [km], angle d'inertie ---
 def ellipse_bloc(pts):
     js, iis = pts[:, 0], pts[:, 1]
     w = np.abs(psi_s[js, iis]); w = w / (w.sum() + 1e-30)
@@ -41,40 +19,37 @@ def ellipse_bloc(pts):
     theta = np.degrees(0.5*np.arctan2(2*Ixz, Ixx - Izz))
     tr, det = Ixx + Izz, Ixx*Izz - Ixz**2
     disc = np.sqrt(max(tr*tr/4 - det, 0.0))
-    a = 2*np.sqrt(tr/2 + disc)        # demi-grand axe [m]
-    b = 2*np.sqrt(tr/2 - disc)        # demi-petit axe [m]
-    return xc/1000, zc/1000, a/1000, b/1000, theta
+    a = 2*np.sqrt(max(tr/2 + disc, 0.0)) / 1000.0     # CORRIGÉ : 2·√λ  (demi-grand axe, km)
+    b = 2*np.sqrt(max(tr/2 - disc, 0.0)) / 1000.0     # demi-petit axe, km
+    return xc/1000, zc/1000, a, b, theta
 
-def trace_ellipse(ax, xc, zc, a, b, theta_deg, color):
-    t  = np.linspace(0, 2*np.pi, 200); th = np.radians(theta_deg)
-    ex, ez = a*np.cos(t), b*np.sin(t)
-    X = xc + ex*np.cos(th) - ez*np.sin(th)
-    Z = zc + ex*np.sin(th) + ez*np.cos(th)
-    ax.plot(X, Z, color=color, lw=3)
-    ax.plot([xc-a*np.cos(th), xc+a*np.cos(th)],
-            [zc-a*np.sin(th), zc+a*np.sin(th)], color=color, lw=1.4, ls='--')
-    ax.plot(xc, zc, 'o', color=color, ms=7, mec='k', mew=1.2)
+# --- tilt convectif : décalage horizontal du cœur avec l'altitude (deg / verticale) ---
+def tilt_bloc(pts):
+    js, iis = pts[:, 0], pts[:, 1]
+    ZC, XC, WL = [], [], []
+    for j in np.unique(js):
+        ii = iis[js == j]; w = np.abs(psi_s[j, ii])
+        if w.sum() < 1e-30: continue
+        ang  = 2*np.pi*ii/n_x                          # moyenne x circulaire (périodique)
+        xbar = np.arctan2((w*np.sin(ang)).sum(), (w*np.cos(ang)).sum()) % (2*np.pi)
+        XC.append(xbar*n_x/(2*np.pi)*dxl); ZC.append(j*dzl); WL.append(w.sum())
+    ZC, XC, WL = map(np.array, (ZC, XC, WL))
+    if len(ZC) < 3: return np.nan
+    Zc = ZC - np.average(ZC, weights=WL); Xc = XC - np.average(XC, weights=WL)
+    pente = np.average(Zc*Xc, weights=WL) / np.average(Zc*Zc, weights=WL)
+    return np.degrees(np.arctan(pente))               # >0 : penche vers la droite en montant
 
-# --- ajustement + tableau ---
-fig, ax = plt.subplots(figsize=(14, 6))
-pmax = np.percentile(np.abs(psi_a), 99) + 1e-30
-pc = ax.pcolormesh(x/1000, z_reg/1000, psi_a, shading='auto',
-                   norm=TwoSlopeNorm(vcenter=0, vmin=-pmax, vmax=pmax), cmap='RdBu_r')
-ax.contour(x/1000, z_reg/1000, psi2d, levels=20, colors='k', linewidths=0.3, alpha=0.4)
-
-print(f"{'cellule':>10} | {'x_c':>5} | {'z_c':>5} | {'grand':>6} | {'petit':>6} | {'θ°':>4}")
-print('-'*52)
-for sign, nom, coul in [(+1, 'ROUGE', 'gold'), (-1, 'BLEU', 'deepskyblue')]:
-    blocs = blocs_signe(sign)
-    blocs.sort(key=lambda p: -len(p))            # plus gros bloc d'abord
+# --- mesure de toutes les cellules ---
+print(f"{'cellule':>8} | {'x_c':>5} | {'z_c':>4} | {'grand axe':>9} | {'petit axe':>9} | "
+      f"{'aspect':>6} | {'θ_inert':>7} | {'tilt':>6}")
+print('-'*72)
+cellules = []
+for sign, nom in [(+1, 'ROUGE'), (-1, 'BLEU')]:
+    blocs = blocs_signe(sign); blocs.sort(key=lambda p: -len(p))
     for k, pts in enumerate(blocs, 1):
         xc, zc, a, b, theta = ellipse_bloc(pts)
-        trace_ellipse(ax, xc, zc, a, b, theta, coul)
-        ax.text(xc, zc, f"{nom[0]}{k}", ha='center', va='center',
-                fontsize=9, fontweight='bold', color='k')
-        print(f"{nom+str(k):>10} | {xc:5.0f} | {zc:5.1f} | {2*a:5.0f}km | {2*b:5.0f}km | {theta:+4.0f}")
-
-ax.set_xlabel('x [km]'); ax.set_ylabel('z [km]')
-ax.set_title("Une ellipse par cellule ψ′  —  ROUGE = max (or), BLEU = min (cyan)")
-fig.colorbar(pc, ax=ax, label=r"$\psi'$ [kg m$^{-1}$ s$^{-1}$]", pad=0.01)
-plt.tight_layout(); plt.show()
+        tilt = tilt_bloc(pts)
+        cellules.append(dict(nom=f"{nom}{k}", sign=sign, xc=xc, zc=zc,
+                             a=a, b=b, theta=theta, tilt=tilt, N=len(pts)))
+        print(f"{nom+str(k):>8} | {xc:5.0f} | {zc:4.1f} | {2*a:7.0f}km | {2*b:7.0f}km | "
+              f"{a/b:6.1f} | {theta:+6.0f}° | {tilt:+5.1f}°")
