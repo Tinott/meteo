@@ -1,114 +1,36 @@
-# ======================================================================
-#  5-6 — TOURBILLONS = boucles fermées de lignes de courant
-#  ----------------------------------------------------------------------
-#  Fidèle à la définition : un tourbillon = extremum de ψ entouré de lignes
-#  de courant fermées. On détecte les centres (extrema nets de ψ'), puis
-#  pour chacun on isole le SUPPORT de la boucle fermée (région connexe de
-#  même signe contenant le centre) et on en mesure :
-#    • taille    : grand/petit axe via le tenseur d'inertie (en km)
-#    • inclinaison : axe principal θ (en degrés / horizontale)
-#    • sens      : signe de ζ au cœur
-#  Aucune ondelette, aucune échelle imposée : tout est mesuré sur la boucle.
-#  Réutilise : psi_a, psi2d, zeta, x, z_reg, n_x, nz_D, dxl, dzl.
-# ======================================================================
-import numpy as np
-from scipy.ndimage import gaussian_filter, label, maximum_filter, minimum_filter
-import matplotlib.pyplot as plt
-from matplotlib.colors import TwoSlopeNorm
+# ----------------------------------------------------------------------
+#  TOURBILLON TYPIQUE — synthèse statistique de la population
+#  Médianes (robustes aux valeurs extrêmes) ; angle moyenné sur le cercle.
+# ----------------------------------------------------------------------
+if len(vortices) == 0:
+    print("\nAucun tourbillon : ajuste AMP_FRAC / LOOP_FRAC.")
+else:
+    grands = np.array([v['grand'] for v in vortices])
+    petits = np.array([v['petit'] for v in vortices])
+    dxs    = np.array([v['dx']    for v in vortices])
+    dzs    = np.array([v['dz']    for v in vortices])
+    thetas = np.array([v['theta'] for v in vortices])
 
-# --- paramètres de réglage ---
-SIGMA_X, SIGMA_Z = 2.0, 2.0      # lissage (en points) pour des centres nets
-WIN_X,   WIN_Z   = 9, 9          # taille fenêtre de détection d'extremum (points)
-AMP_FRAC = 0.30                  # un centre doit valoir ≥ 30% du |ψ'| max
-LOOP_FRAC = 0.30                 # la boucle = région où sign·ψ' ≥ frac·ψ'_centre
+    # moyenne d'angle sur le cercle (axe non orienté -> période 180°, on double)
+    th_typ = 0.5 * np.degrees(np.arctan2(
+        np.mean(np.sin(np.radians(2*thetas))),
+        np.mean(np.cos(np.radians(2*thetas)))))
+    th_disp = 0.5 * np.degrees(np.std(np.radians(2*thetas)))   # dispersion angulaire
 
-# --- ψ' lissé : tue le grain, garde les cellules ---
-psi_s = gaussian_filter(psi_a, sigma=(SIGMA_Z, SIGMA_X), mode=('nearest', 'wrap'))
+    n_anti = sum(v['sign'] > 0 for v in vortices)   # max ψ'
+    n_horo = sum(v['sign'] < 0 for v in vortices)   # min ψ'
 
-# --- centres = extrema locaux nets de ψ' (max ET min) ---
-is_max = (psi_s == maximum_filter(psi_s, size=(WIN_Z, WIN_X), mode=('nearest', 'wrap')))
-is_min = (psi_s == minimum_filter(psi_s, size=(WIN_Z, WIN_X), mode=('nearest', 'wrap')))
-AMP = AMP_FRAC * np.abs(psi_s).max()
-centres = ([(j, i, +1) for j, i in np.argwhere(is_max & (psi_s >  AMP))] +
-           [(j, i, -1) for j, i in np.argwhere(is_min & (psi_s < -AMP))])
-
-# --- support de la boucle fermée autour d'un centre (connexe, x périodique) ---
-def support_boucle(jc, ic, sign):
-    seuil = LOOP_FRAC * psi_s[jc, ic]
-    mask  = (sign * psi_s >= sign * seuil)
-    lab, _ = label(mask)
-    for j in range(nz_D):                         # recoud la couture x=0 / x=nx-1
-        a, b = lab[j, 0], lab[j, -1]
-        if a > 0 and b > 0 and a != b:
-            lab[lab == b] = a
-    return lab == lab[jc, ic]
-
-# --- mesure taille + inclinaison via tenseur d'inertie de |ψ'|² sur la boucle ---
-def mesure(jc, ic, sign):
-    sup = support_boucle(jc, ic, sign)
-    pts = np.argwhere(sup); js, iis = pts[:, 0], pts[:, 1]
-    w = np.abs(psi_s[js, iis]); w = w / (w.sum() + 1e-30)
-    xcm = (w*iis*dxl).sum(); zcm = (w*js*dzl).sum()
-    xx = iis*dxl - xcm; zz = js*dzl - zcm
-    Ixx = (w*xx*xx).sum(); Izz = (w*zz*zz).sum(); Ixz = (w*xx*zz).sum()
-    theta = np.degrees(0.5*np.arctan2(2*Ixz, Ixx - Izz))   # axe principal
-    tr, det = Ixx + Izz, Ixx*Izz - Ixz**2
-    disc = np.sqrt(max(tr*tr/4 - det, 0.0))
-    l1, l2 = tr/2 + disc, tr/2 - disc                      # valeurs propres (variances)
-    grand = 2*np.sqrt(2*l1)/1000                            # grand axe [km] (~largeur)
-    petit = 2*np.sqrt(2*l2)/1000                            # petit axe [km]
-    # extension brute (bornes du support, x périodique)
-    dz = (js.max()-js.min())*dzl/1000
-    ix = np.sort(np.unique(iis)); gaps = np.diff(np.r_[ix, ix[0]+n_x])
-    dx = (n_x - gaps.max())*dxl/1000 if len(ix) > 1 else dxl/1000
-    return dict(theta=theta, grand=grand, petit=petit, dx=dx, dz=dz, N=int(sup.sum()), sup=sup)
-
-# --- caractérisation de tous les tourbillons ---
-vortices = []
-for (jc, ic, sign) in centres:
-    m = mesure(jc, ic, sign)
-    if m['N'] < 8:                                          # rejette les miettes
-        continue
-    m.update(dict(j=jc, i=ic, sign=sign,
-                  xc=x[ic]/1000, zc=z_reg[jc]/1000,
-                  psi=float(psi_s[jc, ic]),
-                  zeta_core=float(zeta[jc, ic]),
-                  sens='antihoraire (ζ>0)' if zeta[jc, ic] > 0 else 'horaire (ζ<0)'))
-    vortices.append(m)
-vortices.sort(key=lambda d: -d['N'])
-
-# --- tableau ---
-print(f"{len(vortices)} tourbillon(s) (boucles fermées de ψ′)\n")
-print(f"{'#':>2} | {'x_c':>5} | {'z_c':>5} | {'grand axe':>9} | {'petit axe':>9} | "
-      f"{'θ°':>4} | {'sens':>18}")
-print('-'*70)
-for r, v in enumerate(vortices, 1):
-    print(f"{r:>2} | {v['xc']:5.0f} | {v['zc']:5.1f} | {v['grand']:8.0f}km | "
-          f"{v['petit']:8.0f}km | {v['theta']:+4.0f} | {v['sens']:>18}")
-
-# ======================================================================
-#  FIGURE — ψ' + lignes de courant + contour des boucles + axe d'inclinaison
-# ======================================================================
-fig, ax = plt.subplots(figsize=(14, 6))
-pmax = np.percentile(np.abs(psi_a), 99) + 1e-30
-pc = ax.pcolormesh(x/1000, z_reg/1000, psi_a, shading='auto',
-                   norm=TwoSlopeNorm(vcenter=0, vmin=-pmax, vmax=pmax), cmap='RdBu_r')
-ax.contour(x/1000, z_reg/1000, psi2d, levels=24, colors='k', linewidths=0.4, alpha=0.5)
-
-for r, v in enumerate(vortices, 1):
-    # contour du support de la boucle
-    ax.contour(x/1000, z_reg/1000, v['sup'].astype(float), levels=[0.5],
-               colors='lime', linewidths=1.6)
-    # axe principal (inclinaison)
-    L = 0.45 * v['grand']                                   # demi-longueur du trait [km]
-    th = np.radians(v['theta'])
-    ax.plot([v['xc']-L*np.cos(th), v['xc']+L*np.cos(th)],
-            [v['zc']-L*np.sin(th), v['zc']+L*np.sin(th)], 'lime', lw=2.5)
-    mk = '^' if v['sign'] > 0 else 'v'
-    ax.plot(v['xc'], v['zc'], mk, ms=11, mfc='yellow', mec='k', mew=1.4)
-    ax.text(v['xc'], v['zc']+0.5, str(r), ha='center', fontsize=10, fontweight='bold')
-
-ax.set_xlabel('x [km]'); ax.set_ylabel('z [km]')
-ax.set_title("Tourbillons = boucles fermées de ψ′  —  contour vert = support, trait = inclinaison θ")
-fig.colorbar(pc, ax=ax, label=r"$\psi'$ [kg m$^{-1}$ s$^{-1}$]", pad=0.01)
-plt.tight_layout(); plt.show()
+    print("\n" + "="*50)
+    print("  TOURBILLON TYPIQUE  (médianes sur la population)")
+    print("="*50)
+    print(f"  population ........ {len(vortices)} tourbillons "
+          f"({n_anti} max ψ′ / {n_horo} min ψ′)")
+    print(f"  grand axe ......... {np.median(grands):.0f} km   "
+          f"[{grands.min():.0f}–{grands.max():.0f}]")
+    print(f"  petit axe ......... {np.median(petits):.0f} km   "
+          f"[{petits.min():.0f}–{petits.max():.0f}]")
+    print(f"  aspect grand/petit  {np.median(grands/petits):.1f}")
+    print(f"  extension Δx ...... {np.median(dxs):.0f} km")
+    print(f"  extension Δz ...... {np.median(dzs):.1f} km")
+    print(f"  inclinaison θ ..... {th_typ:+.0f}°  (± {th_disp:.0f}°)")
+    print("="*50)
