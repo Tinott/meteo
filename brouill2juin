@@ -6,3 +6,19 @@ for i in range(NSX):
     print(f"λx={lamx_km[i]:7.1f} km | {bar}")
 print(f"\nargmax -> λx = {lamx_km[np.argmax(Ex)]:.0f} km")
 print(f"y a-t-il un pic interne ? regarde si la barre culmine au milieu ou tout à droite")
+
+
+
+
+
+j5 = int(np.argmin(np.abs(z_reg/1000 - 5)))   # niveau z=5km
+sig = psi_a[j5].copy()
+
+# spectre à CE niveau seul
+W = cwt_x(sig)
+Ex_5 = W.sum(axis=1) / scales_x
+print("=== niveau z=5km seul ===")
+for i in range(NSX):
+    bar = "#" * int(50*Ex_5[i]/Ex_5.max())
+    print(f"λx={lamx_km[i]:7.1f} | {bar}")
+print(f"pic z=5km -> λx = {lamx_km[np.argmax(Ex_5)]:.0f} km")
