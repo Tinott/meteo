@@ -1,75 +1,80 @@
 # ======================================================================
-#  TOURBILLON MOYEN PAR SIGNE → modèle ellipse caractéristique
+#  UNE ELLIPSE PAR CELLULE — blocs ψ′ rouges vs bleus séparés
 #  ----------------------------------------------------------------------
-#  On sépare les boucles BLEUES (min ψ′, sign=-1) des ROUGES (max ψ′, +1).
-#  Pour chaque groupe, le tourbillon "typique" est une ELLIPSE :
-#    • centre    = (médiane xc, médiane zc)
-#    • demi-axes = médiane(grand/2), médiane(petit/2)   [km]
-#    • angle θ   = moyenne circulaire des inclinaisons (repli d'axe géré)
-#  Superposée à la carte ψ′.
+#  Chaque grande cellule = composante connexe de ψ′ d'un même signe.
+#  ROUGE = ψ′ > 0 (max), BLEU = ψ′ < 0 (min). Pour chaque bloc on ajuste
+#  l'ELLIPSE d'inertie : centre, demi-axes (a,b) en km, inclinaison θ.
+#  Réutilise : psi_a, psi2d, x, z_reg, n_x, nz_D, dxl, dzl.
 # ======================================================================
 import numpy as np
+from scipy.ndimage import gaussian_filter, label
 import matplotlib.pyplot as plt
 from matplotlib.colors import TwoSlopeNorm
 
-def ellipse_moyenne(groupe):
-    """(xc, zc, a, b, theta) médian/circulaire d'une liste de vortices."""
-    xc = np.median([v['xc'] for v in groupe])
-    zc = np.median([v['zc'] for v in groupe])
-    a  = np.median([v['grand'] for v in groupe]) / 2.0      # demi-grand axe [km]
-    b  = np.median([v['petit'] for v in groupe]) / 2.0      # demi-petit axe [km]
-    th = np.array([v['theta'] for v in groupe])
-    theta = 0.5*np.degrees(np.arctan2(np.mean(np.sin(np.radians(2*th))),
-                                      np.mean(np.cos(np.radians(2*th)))))
-    return xc, zc, a, b, theta
+# --- réglages ---
+SIGMA_X, SIGMA_Z = 2.0, 2.0      # lissage (points)
+SEUIL_FRAC = 0.20                # un bloc = |ψ′| ≥ frac·max  (baisse->blocs plus larges)
+N_MIN      = 50                  # taille mini d'un bloc (points) pour éviter les miettes
 
-def trace_ellipse(ax, xc, zc, a, b, theta_deg, color, label):
-    t  = np.linspace(0, 2*np.pi, 200)
-    th = np.radians(theta_deg)
+# --- ψ′ lissé ---
+psi_s = gaussian_filter(psi_a, sigma=(SIGMA_Z, SIGMA_X), mode=('nearest', 'wrap'))
+SEUIL = SEUIL_FRAC * np.abs(psi_s).max()
+
+# --- blocs connexes d'un signe donné (couture x périodique recousue) ---
+def blocs_signe(sign):
+    mask = (sign * psi_s >= SEUIL)
+    lab, _ = label(mask)
+    for j in range(nz_D):
+        a, b = lab[j, 0], lab[j, -1]
+        if a > 0 and b > 0 and a != b:
+            lab[lab == b] = a
+    return [np.argwhere(lab == L) for L in range(1, lab.max()+1)
+            if (lab == L).sum() >= N_MIN]
+
+# --- ellipse d'inertie d'un bloc -> (xc,zc en km, a,b demi-axes km, theta deg) ---
+def ellipse_bloc(pts):
+    js, iis = pts[:, 0], pts[:, 1]
+    w = np.abs(psi_s[js, iis]); w = w / (w.sum() + 1e-30)
+    xc = (w*iis*dxl).sum(); zc = (w*js*dzl).sum()
+    xx = iis*dxl - xc; zz = js*dzl - zc
+    Ixx = (w*xx*xx).sum(); Izz = (w*zz*zz).sum(); Ixz = (w*xx*zz).sum()
+    theta = np.degrees(0.5*np.arctan2(2*Ixz, Ixx - Izz))
+    tr, det = Ixx + Izz, Ixx*Izz - Ixz**2
+    disc = np.sqrt(max(tr*tr/4 - det, 0.0))
+    a = 2*np.sqrt(tr/2 + disc)        # demi-grand axe [m]
+    b = 2*np.sqrt(tr/2 - disc)        # demi-petit axe [m]
+    return xc/1000, zc/1000, a/1000, b/1000, theta
+
+def trace_ellipse(ax, xc, zc, a, b, theta_deg, color):
+    t  = np.linspace(0, 2*np.pi, 200); th = np.radians(theta_deg)
     ex, ez = a*np.cos(t), b*np.sin(t)
     X = xc + ex*np.cos(th) - ez*np.sin(th)
     Z = zc + ex*np.sin(th) + ez*np.cos(th)
-    ax.plot(X, Z, color=color, lw=3, label=label)
-    ax.plot([xc - a*np.cos(th), xc + a*np.cos(th)],          # grand axe
-            [zc - a*np.sin(th), zc + a*np.sin(th)], color=color, lw=1.5, ls='--')
-    ax.plot(xc, zc, 'o', color=color, ms=8, mec='k', mew=1.2)
+    ax.plot(X, Z, color=color, lw=3)
+    ax.plot([xc-a*np.cos(th), xc+a*np.cos(th)],
+            [zc-a*np.sin(th), zc+a*np.sin(th)], color=color, lw=1.4, ls='--')
+    ax.plot(xc, zc, 'o', color=color, ms=7, mec='k', mew=1.2)
 
-# --- séparation par signe ---
-bleus  = [v for v in vortices if v['sign'] < 0]    # min ψ′
-rouges = [v for v in vortices if v['sign'] > 0]    # max ψ′
-
-print("="*56)
-print("  TOURBILLON MOYEN PAR SIGNE (modèle ellipse)")
-print("="*56)
-ell = {}
-for nom, groupe, coul in [('BLEU (min ψ′)', bleus, 'deepskyblue'),
-                          ('ROUGE (max ψ′)', rouges, 'gold')]:
-    if len(groupe) == 0:
-        print(f"  {nom} : aucun"); continue
-    xc, zc, a, b, theta = ellipse_moyenne(groupe)
-    ell[nom] = (xc, zc, a, b, theta, coul)
-    print(f"  {nom}  ({len(groupe)} tourbillons)")
-    print(f"     centre ...... x={xc:.0f} km , z={zc:.1f} km")
-    print(f"     grand axe ... {2*a:.0f} km   (demi {a:.0f})")
-    print(f"     petit axe ... {2*b:.0f} km   (demi {b:.0f})")
-    print(f"     aspect ...... {a/b:.1f}")
-    print(f"     inclinaison . θ = {theta:+.0f}°")
-print("="*56)
-
-# ======================================================================
-#  FIGURE — ψ′ + ellipses moyennes superposées
-# ======================================================================
+# --- ajustement + tableau ---
 fig, ax = plt.subplots(figsize=(14, 6))
 pmax = np.percentile(np.abs(psi_a), 99) + 1e-30
 pc = ax.pcolormesh(x/1000, z_reg/1000, psi_a, shading='auto',
                    norm=TwoSlopeNorm(vcenter=0, vmin=-pmax, vmax=pmax), cmap='RdBu_r')
-ax.contour(x/1000, z_reg/1000, psi2d, levels=24, colors='k', linewidths=0.3, alpha=0.4)
+ax.contour(x/1000, z_reg/1000, psi2d, levels=20, colors='k', linewidths=0.3, alpha=0.4)
 
-for nom, (xc, zc, a, b, theta, coul) in ell.items():
-    trace_ellipse(ax, xc, zc, a, b, theta, coul, f"{nom} : {2*a:.0f}×{2*b:.0f} km, θ={theta:+.0f}°")
+print(f"{'cellule':>10} | {'x_c':>5} | {'z_c':>5} | {'grand':>6} | {'petit':>6} | {'θ°':>4}")
+print('-'*52)
+for sign, nom, coul in [(+1, 'ROUGE', 'gold'), (-1, 'BLEU', 'deepskyblue')]:
+    blocs = blocs_signe(sign)
+    blocs.sort(key=lambda p: -len(p))            # plus gros bloc d'abord
+    for k, pts in enumerate(blocs, 1):
+        xc, zc, a, b, theta = ellipse_bloc(pts)
+        trace_ellipse(ax, xc, zc, a, b, theta, coul)
+        ax.text(xc, zc, f"{nom[0]}{k}", ha='center', va='center',
+                fontsize=9, fontweight='bold', color='k')
+        print(f"{nom+str(k):>10} | {xc:5.0f} | {zc:5.1f} | {2*a:5.0f}km | {2*b:5.0f}km | {theta:+4.0f}")
 
 ax.set_xlabel('x [km]'); ax.set_ylabel('z [km]')
-ax.set_title("Tourbillon moyen par signe — ellipse caractéristique (axes, inclinaison)")
-ax.legend(fontsize=10, loc='upper right')
+ax.set_title("Une ellipse par cellule ψ′  —  ROUGE = max (or), BLEU = min (cyan)")
 fig.colorbar(pc, ax=ax, label=r"$\psi'$ [kg m$^{-1}$ s$^{-1}$]", pad=0.01)
 plt.tight_layout(); plt.show()
