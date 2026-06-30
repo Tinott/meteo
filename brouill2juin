@@ -1,1 +1,2 @@
-À l'intérieur des updrafts, la covariance résiduelle est portée par un excès d'éjections et de sweeps (Q2+Q4), avec un degré d'organisation inclinée S allant de 1,3 en moyenne troposphère à 1,65 vers 13 km — confirmant l'existence de sous-structures penchées ; mais le découplage entre le pic d'organisation (13 km) et le pic de covariance (4–6 km) montre que l'amplitude du flux est gouvernée par la variance turbulente, pas par le degré d'inclinaison.
+# remplacer le calcul de theta_uw par une version repliée dans [-90, 90]
+theta_uw[iz] = np.degrees(0.5*np.arctan2(2*M[0,1], M[0,0]-M[1,1]))
