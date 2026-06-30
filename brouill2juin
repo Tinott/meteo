@@ -1,2 +1,96 @@
-corr_abs = np.corrcoef(np.abs(sh_s), np.abs(th_s))[0,1]
-print(f'corr absolue (local, multi-instants) = {corr_abs:+.2f}')
+# ===========================================================================
+#  ②·c étendu : cisaillement LOCAL S(z,x) + MULTI-INSTANTS + valeur ABSOLUE
+#  + filtres : |θ| <= 2°  ET  |∂z u| <= 10e-3 s⁻¹
+# ===========================================================================
+from scipy.ndimage import gaussian_filter, label
+
+Z_MAX = 18000.0
+iz_lst = np.where(alt <= Z_MAX)[0]
+z_nat  = alt[iz_lst].copy(); nz_D = z_nat.size
+z_reg  = np.linspace(z_nat[0], z_nat[-1], nz_D)
+rho0_r = np.interp(z_reg, alt, rho0)
+dxl = x[1]-x[0]; dzl = z_reg[1]-z_reg[0]
+
+SIGMA_X = SIGMA_Z = 2.0
+SEUIL_FRAC = 0.20; N_MIN = 50
+
+def to_reg(F):
+    out = np.empty_like(F)
+    for i in range(n_x): out[:,i] = np.interp(z_reg, z_nat, F[:,i])
+    return out
+
+def blocs_signe(psi_s, sign, seuil):
+    lab,_ = label(sign*psi_s >= seuil)
+    for j in range(nz_D):                       # recoud x périodique
+        a,b = lab[j,0], lab[j,-1]
+        if a>0 and b>0 and a!=b: lab[lab==b]=a
+    return [np.argwhere(lab==L) for L in range(1,lab.max()+1) if (lab==L).sum()>=N_MIN]
+
+def ellipse_bloc(psi_s, pts):
+    js,iis = pts[:,0], pts[:,1]
+    w = np.abs(psi_s[js,iis]); w/= w.sum()+1e-30
+    xc=(w*iis*dxl).sum(); zc=(w*js*dzl).sum()
+    xx=iis*dxl-xc; zz=js*dzl-zc
+    Ixx=(w*xx*xx).sum(); Izz=(w*zz*zz).sum(); Ixz=(w*xx*zz).sum()
+    theta=np.degrees(0.5*np.arctan2(2*Ixz, Ixx-Izz))   # signé dans [-90,90]
+    return xc, zc, theta
+
+# --- boucle multi-instants : on accumule toutes les cellules ---
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+cells = []
+for IT in range(t_stat, n_t):
+    Uy = np.zeros((nz_D, n_x)); Wy = np.zeros((nz_D, n_x))
+    for j, iz in enumerate(iz_lst):
+        Uy[j] = ds_u['ua'].isel({dim_t:IT, dim_z:iz}).values.mean(axis=0)
+        Wy[j] = ds_w['wa'].isel({dim_t:IT, dim_z:iz}).values.mean(axis=0)
+    Uy_r, Wy_r = to_reg(Uy), to_reg(Wy)
+
+    psi2d = psi_poisson_periodic(Uy_r, Wy_r, x, z_reg, rho0_r)
+    psi_a = psi2d - psi2d.mean(axis=1, keepdims=True)
+    psi_s = gaussian_filter(psi_a, sigma=(SIGMA_Z, SIGMA_X), mode=('nearest','wrap'))
+    seuil = SEUIL_FRAC*np.abs(psi_s).max()
+
+    shear_2d = np.gradient(Uy_r, z_reg, axis=0)           # (z,x) signé [s^-1]
+
+    for sign in (+1,-1):
+        for pts in blocs_signe(psi_s, sign, seuil):
+            xc, zc, th = ellipse_bloc(psi_s, pts)
+            iz_c = int(np.clip(round(zc/dzl), 0, nz_D-1))
+            ix_c = int(np.clip(round(xc/dxl), 0, n_x-1))
+            cells.append(dict(xc=xc/1000, zc=zc/1000, theta=th, sign=sign,
+                              shear=shear_2d[iz_c, ix_c], it=IT))
+ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
+
+print(f'{len(cells)} cellules détectées sur {n_t-t_stat} instants')
+
+# --- valeur absolue + filtres |θ|<=2° et |∂z u|<=10e-3 s⁻¹ ---
+th_abs = np.array([abs(c['theta']) for c in cells])
+sh_abs = np.array([abs(c['shear']) for c in cells])*1e3     # 10^-3 s^-1
+
+mask = (th_abs <= 2.0) & (sh_abs <= 10.0)
+th_f = th_abs[mask]; sh_f = sh_abs[mask]
+n_gardees = mask.sum(); n_retirees = (~mask).sum()
+print(f'{n_gardees} cellules gardées | {n_retirees} retirées '
+      f'(|θ|>2° ou |∂z u|>10e-3)')
+
+corr = np.corrcoef(sh_f, th_f)[0,1] if n_gardees >= 3 else np.nan
+
+fig, ax = plt.subplots(1, 2, figsize=(13, 6))
+ax[0].scatter(sh_f, th_f, c='purple', s=18, alpha=.45)
+if n_gardees >= 3:
+    p = np.polyfit(sh_f, th_f, 1); xs = np.linspace(sh_f.min(), sh_f.max(), 30)
+    ax[0].plot(xs, np.polyval(p, xs), 'k--', lw=1.8)
+ax[0].set_xlabel(r'$|\partial_z u|$ local (10⁻³ s⁻¹)')
+ax[0].set_ylabel(r'$|\theta|$ (deg)')
+ax[0].set_title(f'tilt vs cisaillement local (valeur absolue)\n'
+                f'corr = {corr:+.2f}  ({n_gardees} cellules, filtrées)', fontweight='bold')
+ax[0].grid(alpha=.3)
+
+ax[1].hist(th_f, bins=30, color='slateblue', edgecolor='white')
+ax[1].axvline(np.median(th_f), color='crimson', lw=2, label=f'médiane {np.median(th_f):.2f}°')
+ax[1].set_xlabel(r'$|\theta|$ (deg)'); ax[1].set_ylabel('nombre de cellules')
+ax[1].set_title('Distribution des inclinaisons (filtrées)', fontweight='bold')
+ax[1].legend(fontsize=9); ax[1].grid(alpha=.3)
+plt.suptitle('②·c — multi-instants, cisaillement local, |θ|≤2° et |∂z u|≤10e-3',
+             fontsize=13, fontweight='bold')
+plt.tight_layout(); plt.show()
