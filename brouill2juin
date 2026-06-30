@@ -1,55 +1,98 @@
-# ======================================================================
-#  CARACTÉRISATION DES ELLIPSES — mesures corrigées
-#  ----------------------------------------------------------------------
-#  Reprend la détection par blocs (inchangée) et corrige les CALCULS :
-#   • taille  : demi-axe = 2·√λ  (et NON 2·√(2λ) qui surestimait de √2≈1.41)
-#   • angle   : θ d'inertie  +  tilt convectif (régression du cœur sur z),
-#               plus fiable car non biaisé par la troncature verticale.
-#  Réutilise : psi_a, x, z_reg, n_x, nz_D, dxl, dzl  + psi_s, blocs_signe.
-# ======================================================================
-import numpy as np
+# ---------------------------------------------------------------------------
+# alpha(z,t), beta(z,t) PAR INSTANT et PAR ZONE  —  système 2x2 exact (u et v)
+#   À chaque (zone, t, z) on résout :
+#       y_u = alpha * x1u + beta * x2u
+#       y_v = alpha * x1v + beta * x2v
+#   avec  x1phi = rho0 * <phi>_zone ,  x2phi = d_z(rho0 <phi>_zone)
+#         yphi  = -1/rho0 * d_z(rho0 <phi' w'>_zone)
+#   -> determinant det = x1u*x2v - x1v*x2u ; Cramer.
+#   Sortie : A_zt[zone], B_zt[zone] de forme (nz_fit, n_stat).
+# ---------------------------------------------------------------------------
+iz_lo_glob = np.searchsorted(alt, 2000)
+iz_hi_glob = np.searchsorted(alt, 18000)
+izs_fit = np.arange(iz_lo_glob, iz_hi_glob)
+z_fit   = alt[izs_fit]
+nz_fit  = izs_fit.size
 
-# --- ellipse d'inertie d'un bloc : centre, demi-axes [km], angle d'inertie ---
-def ellipse_bloc(pts):
-    js, iis = pts[:, 0], pts[:, 1]
-    w = np.abs(psi_s[js, iis]); w = w / (w.sum() + 1e-30)
-    xc = (w*iis*dxl).sum(); zc = (w*js*dzl).sum()
-    xx = iis*dxl - xc; zz = js*dzl - zc
-    Ixx = (w*xx*xx).sum(); Izz = (w*zz*zz).sum(); Ixz = (w*xx*zz).sum()
-    theta = np.degrees(0.5*np.arctan2(2*Ixz, Ixx - Izz))
-    tr, det = Ixx + Izz, Ixx*Izz - Ixz**2
-    disc = np.sqrt(max(tr*tr/4 - det, 0.0))
-    a = 2*np.sqrt(max(tr/2 + disc, 0.0)) / 1000.0     # CORRIGÉ : 2·√λ  (demi-grand axe, km)
-    b = 2*np.sqrt(max(tr/2 - disc, 0.0)) / 1000.0     # demi-petit axe, km
-    return xc/1000, zc/1000, a, b, theta
+def alpha_beta_zt(reg2d):
+    """alpha,beta (z,t) par le systeme 2x2 (u,v) dans la zone reg2d."""
+    A_zt = np.full((nz_fit, n_stat), np.nan)
+    B_zt = np.full((nz_fit, n_stat), np.nan)
 
-# --- tilt convectif : décalage horizontal du cœur avec l'altitude (deg / verticale) ---
-def tilt_bloc(pts):
-    js, iis = pts[:, 0], pts[:, 1]
-    ZC, XC, WL = [], [], []
-    for j in np.unique(js):
-        ii = iis[js == j]; w = np.abs(psi_s[j, ii])
-        if w.sum() < 1e-30: continue
-        ang  = 2*np.pi*ii/n_x                          # moyenne x circulaire (périodique)
-        xbar = np.arctan2((w*np.sin(ang)).sum(), (w*np.cos(ang)).sum()) % (2*np.pi)
-        XC.append(xbar*n_x/(2*np.pi)*dxl); ZC.append(j*dzl); WL.append(w.sum())
-    ZC, XC, WL = map(np.array, (ZC, XC, WL))
-    if len(ZC) < 3: return np.nan
-    Zc = ZC - np.average(ZC, weights=WL); Xc = XC - np.average(XC, weights=WL)
-    pente = np.average(Zc*Xc, weights=WL) / np.average(Zc*Zc, weights=WL)
-    return np.degrees(np.arctan(pente))               # >0 : penche vers la droite en montant
+    ds_u = xr.open_dataset(path3d('ua'))
+    ds_v = xr.open_dataset(path3d('va'))
+    ds_w = xr.open_dataset(path3d('wa'))
 
-# --- mesure de toutes les cellules ---
-print(f"{'cellule':>8} | {'x_c':>5} | {'z_c':>4} | {'grand axe':>9} | {'petit axe':>9} | "
-      f"{'aspect':>6} | {'θ_inert':>7} | {'tilt':>6}")
-print('-'*72)
-cellules = []
-for sign, nom in [(+1, 'ROUGE'), (-1, 'BLEU')]:
-    blocs = blocs_signe(sign); blocs.sort(key=lambda p: -len(p))
-    for k, pts in enumerate(blocs, 1):
-        xc, zc, a, b, theta = ellipse_bloc(pts)
-        tilt = tilt_bloc(pts)
-        cellules.append(dict(nom=f"{nom}{k}", sign=sign, xc=xc, zc=zc,
-                             a=a, b=b, theta=theta, tilt=tilt, N=len(pts)))
-        print(f"{nom+str(k):>8} | {xc:5.0f} | {zc:4.1f} | {2*a:7.0f}km | {2*b:7.0f}km | "
-              f"{a/b:6.1f} | {theta:+6.0f}° | {tilt:+5.1f}°")
+    def fluxlev(ds, var, it, izz):
+        # rho0 * <phi' w'>_zone au niveau izz (anomalie intra-zone)
+        ph = ds[var].isel({dim_t: it, dim_z: izz}).values[reg2d]
+        ww = ds_w['wa'].isel({dim_t: it, dim_z: izz}).values[reg2d]
+        php = ph - ph.mean(); wwp = ww - ww.mean()
+        return rho0[izz] * (php * wwp).mean()
+
+    for ti, it in enumerate(range(t_stat, n_t)):
+        for j, iz in enumerate(izs_fit):
+            dz = alt[iz+1] - alt[iz-1]
+            # vents moyens de zone aux 3 niveaux
+            u0  = ds_u['ua'].isel({dim_t:it, dim_z:iz  }).values[reg2d].mean()
+            ulo = ds_u['ua'].isel({dim_t:it, dim_z:iz-1}).values[reg2d].mean()
+            uhi = ds_u['ua'].isel({dim_t:it, dim_z:iz+1}).values[reg2d].mean()
+            v0  = ds_v['va'].isel({dim_t:it, dim_z:iz  }).values[reg2d].mean()
+            vlo = ds_v['va'].isel({dim_t:it, dim_z:iz-1}).values[reg2d].mean()
+            vhi = ds_v['va'].isel({dim_t:it, dim_z:iz+1}).values[reg2d].mean()
+
+            x1u = rho0[iz]*u0
+            x2u = (rho0[iz+1]*uhi - rho0[iz-1]*ulo)/dz
+            x1v = rho0[iz]*v0
+            x2v = (rho0[iz+1]*vhi - rho0[iz-1]*vlo)/dz
+
+            yu = -(fluxlev(ds_u,'ua',it,iz+1) - fluxlev(ds_u,'ua',it,iz-1))/dz/rho0[iz]
+            yv = -(fluxlev(ds_v,'va',it,iz+1) - fluxlev(ds_v,'va',it,iz-1))/dz/rho0[iz]
+
+            det = x1u*x2v - x1v*x2u
+            if abs(det) > 1e-20:
+                A_zt[j, ti] = (yu*x2v - yv*x2u)/det     # alpha
+                B_zt[j, ti] = (x1u*yv - x1v*yu)/det     # beta
+        gc.collect()
+
+    ds_u.close(); ds_v.close(); ds_w.close()
+    del ds_u, ds_v, ds_w; gc.collect()
+    return A_zt, B_zt
+
+# --- calcul pour chaque zone du decoupage D2 ---
+AB = {}
+for zn, reg2d in zone.items():
+    A_zt, B_zt = alpha_beta_zt(reg2d)
+    AB[zn] = dict(A=A_zt, B=B_zt)
+    print(f'{zn:9s} : alpha med {np.nanmedian(A_zt):+.2e}  beta med {np.nanmedian(B_zt):+.2e}  '
+          f'| NaN {100*np.isnan(A_zt).mean():.0f}%')
+
+
+
+
+
+
+# --- profils alpha(z) et beta(z) : un trait par instant + médiane temporelle ---
+fig, axes = plt.subplots(2, 4, figsize=(19, 11), sharey=True)
+for col, (zn, R) in enumerate(AB.items()):
+    A, B = R['A'], R['B']
+    # tous les instants en gris fin
+    for ti in range(A.shape[1]):
+        axes[0,col].plot(A[:,ti], z_fit, color='grey', alpha=.25, lw=.8)
+        axes[1,col].plot(B[:,ti], z_fit, color='grey', alpha=.25, lw=.8)
+    # mediane temporelle en gras + bande inter-quartile
+    Amed = np.nanmedian(A,axis=1); Bmed = np.nanmedian(B,axis=1)
+    Aq1,Aq3 = np.nanpercentile(A,[25,75],axis=1); Bq1,Bq3 = np.nanpercentile(B,[25,75],axis=1)
+    axes[0,col].plot(Amed, z_fit, 'crimson', lw=2.5, label='médiane t')
+    axes[0,col].fill_betweenx(z_fit, Aq1, Aq3, color='crimson', alpha=.2)
+    axes[1,col].plot(Bmed, z_fit, 'navy', lw=2.5, label='médiane t')
+    axes[1,col].fill_betweenx(z_fit, Bq1, Bq3, color='navy', alpha=.2)
+    axes[0,col].set_title(zn, fontweight='bold')
+    for ax in (axes[0,col], axes[1,col]):
+        ax.axvline(0, color='k', alpha=.4); ax.grid(alpha=.3)
+axes[0,0].set_ylabel(r'$\alpha(z,t)$   —   Altitude (m)')
+axes[1,0].set_ylabel(r'$\beta(z,t)$   —   Altitude (m)')
+axes[0,0].legend(fontsize=8); axes[1,0].legend(fontsize=8)
+plt.suptitle('α(z,t) et β(z,t) par zone — un trait gris par instant, médiane en couleur',
+             fontsize=13, fontweight='bold')
+plt.tight_layout(); plt.show()
