@@ -1,23 +1,25 @@
 # ===========================================================================
 # alpha(z,t), beta(z,t) dans une BOÎTE spatiale (x,z) — système 2x2 (u,v)
-#   Fenêtre 1 : 700 < x < 750 km , 2 < z < 15 km
-#   La "zone" = colonnes x de la fenêtre. Moyenne de zone = <.>_{y, x∈fenêtre}.
+#   Zone choisie : structure convective penchée la plus nette du champ
+#       1250 < x < 1400 km , 4 < z < 12 km
+#   (lignes de courant resserrées + <u'w'>_y de signe cohérent sur la colonne)
+#   La "zone" = colonnes x de la fenêtre. Moyenne = <.>_{y, x∈fenêtre}.
 #   À chaque (t, z) on résout :
 #       y_u = alpha*x1u + beta*x2u ;  y_v = alpha*x1v + beta*x2v   (Cramer)
 # ===========================================================================
-X_LO, X_HI = 700.0, 750.0     # km
-Z_LO, Z_HI = 2000.0, 15000.0  # m
+X_LO, X_HI = 1250.0, 1400.0   # km
+Z_LO, Z_HI = 4000.0, 12000.0  # m
 
 # --- indices x de la fenêtre (borné au domaine) ---
 ix_box = np.where((x/1000 >= X_LO) & (x/1000 <= X_HI))[0]
 if ix_box.size == 0:
     raise ValueError(f"Fenêtre x={X_LO}-{X_HI} km hors domaine (0-{n_x*dx/1000:.0f} km). "
                      f"Vérifie dx={dx:.0f} m / la résolution.")
-# --- indices z de la fenêtre (besoin de iz-1, iz+1 pour d/dz -> on garde l'intérieur) ---
+# --- indices z (besoin de iz-1, iz+1 pour d/dz -> on garde l'intérieur) ---
 izs_box = np.where((alt >= Z_LO) & (alt <= Z_HI))[0]
 izs_box = izs_box[(izs_box > 0) & (izs_box < n_z-1)]
 z_box   = alt[izs_box]; nz_box = izs_box.size
-print(f'Fenêtre 1 : x={X_LO}-{X_HI} km ({ix_box.size} colonnes)  '
+print(f'Zone choisie : x={X_LO}-{X_HI} km ({ix_box.size} colonnes)  '
       f'z={Z_LO:.0f}-{Z_HI:.0f} m ({nz_box} niveaux)')
 
 def alpha_beta_box(ix_box, izs_box):
@@ -80,45 +82,6 @@ ax[1].plot(Bmed, z_box, 'navy',    lw=2.5, label='médiane t'); ax[1].fill_betwe
 ax[0].set_title(r'$\alpha(z,t)$', fontweight='bold'); ax[1].set_title(r'$\beta(z,t)$', fontweight='bold')
 ax[0].set_ylabel('Altitude (m)')
 for a in ax: a.axvline(0, color='k', alpha=.4); a.grid(alpha=.3); a.legend(fontsize=8)
-plt.suptitle(f'Fenêtre 1 : x={X_LO:.0f}-{X_HI:.0f} km, z={Z_LO:.0f}-{Z_HI:.0f} m',
-             fontsize=13, fontweight='bold')
-plt.tight_layout(); plt.show()
-
-
-
-
-
-
-# ===========================================================================
-# Fenêtre 2 : 200 < x < 250 km , 2 < z < 15 km  (réutilise alpha_beta_box)
-# ===========================================================================
-X_LO2, X_HI2 = 200.0, 250.0     # km
-Z_LO2, Z_HI2 = 2000.0, 15000.0  # m
-
-ix_box2 = np.where((x/1000 >= X_LO2) & (x/1000 <= X_HI2))[0]
-if ix_box2.size == 0:
-    raise ValueError(f"Fenêtre x={X_LO2}-{X_HI2} km hors domaine (0-{n_x*dx/1000:.0f} km).")
-izs_box2 = np.where((alt >= Z_LO2) & (alt <= Z_HI2))[0]
-izs_box2 = izs_box2[(izs_box2 > 0) & (izs_box2 < n_z-1)]
-z_box2   = alt[izs_box2]
-print(f'Fenêtre 2 : x={X_LO2}-{X_HI2} km ({ix_box2.size} colonnes)  '
-      f'z={Z_LO2:.0f}-{Z_HI2:.0f} m ({z_box2.size} niveaux)')
-
-A2, B2 = alpha_beta_box(ix_box2, izs_box2)
-print(f'  alpha méd {np.nanmedian(A2):+.2e}  beta méd {np.nanmedian(B2):+.2e}  '
-      f'| NaN {100*np.isnan(A2).mean():.0f}%')
-
-fig, ax = plt.subplots(1, 2, figsize=(11, 8), sharey=True)
-for ti in range(A2.shape[1]):
-    ax[0].plot(A2[:,ti], z_box2, color='grey', alpha=.25, lw=.8)
-    ax[1].plot(B2[:,ti], z_box2, color='grey', alpha=.25, lw=.8)
-Amed = np.nanmedian(A2,axis=1); Bmed = np.nanmedian(B2,axis=1)
-Aq1,Aq3 = np.nanpercentile(A2,[25,75],axis=1); Bq1,Bq3 = np.nanpercentile(B2,[25,75],axis=1)
-ax[0].plot(Amed, z_box2, 'crimson', lw=2.5, label='médiane t'); ax[0].fill_betweenx(z_box2, Aq1, Aq3, color='crimson', alpha=.2)
-ax[1].plot(Bmed, z_box2, 'navy',    lw=2.5, label='médiane t'); ax[1].fill_betweenx(z_box2, Bq1, Bq3, color='navy', alpha=.2)
-ax[0].set_title(r'$\alpha(z,t)$', fontweight='bold'); ax[1].set_title(r'$\beta(z,t)$', fontweight='bold')
-ax[0].set_ylabel('Altitude (m)')
-for a in ax: a.axvline(0, color='k', alpha=.4); a.grid(alpha=.3); a.legend(fontsize=8)
-plt.suptitle(f'Fenêtre 2 : x={X_LO2:.0f}-{X_HI2:.0f} km, z={Z_LO2:.0f}-{Z_HI2:.0f} m',
+plt.suptitle(f'Structure penchée : x={X_LO:.0f}-{X_HI:.0f} km, z={Z_LO:.0f}-{Z_HI:.0f} m',
              fontsize=13, fontweight='bold')
 plt.tight_layout(); plt.show()
