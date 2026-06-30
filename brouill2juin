@@ -1,5 +1,5 @@
 # ===========================================================================
-#  ②·c étendu : cisaillement LOCAL S(z,x) + MULTI-INSTANTS + valeur ABSOLUE
+#  ②·c étendu : cisaillement GLOBAL S(z) (moyenné-x) + MULTI-INSTANTS + |valeur|
 #  + filtres : |θ| <= 2°  ET  |∂z u| <= 10e-3 s⁻¹
 # ===========================================================================
 from scipy.ndimage import gaussian_filter, label
@@ -50,15 +50,15 @@ for IT in range(t_stat, n_t):
     psi_s = gaussian_filter(psi_a, sigma=(SIGMA_Z, SIGMA_X), mode=('nearest','wrap'))
     seuil = SEUIL_FRAC*np.abs(psi_s).max()
 
-    shear_2d = np.gradient(Uy_r, z_reg, axis=0)           # (z,x) signé [s^-1]
+    # cisaillement GLOBAL : moyenne x AVANT dérivée -> profil S(z), signé
+    shear_prof = np.gradient(Uy_r.mean(axis=1), z_reg)    # (z,) signé [s^-1]
 
     for sign in (+1,-1):
         for pts in blocs_signe(psi_s, sign, seuil):
             xc, zc, th = ellipse_bloc(psi_s, pts)
             iz_c = int(np.clip(round(zc/dzl), 0, nz_D-1))
-            ix_c = int(np.clip(round(xc/dxl), 0, n_x-1))
             cells.append(dict(xc=xc/1000, zc=zc/1000, theta=th, sign=sign,
-                              shear=shear_2d[iz_c, ix_c], it=IT))
+                              shear=shear_prof[iz_c], it=IT))   # cisaillement à l'altitude
 ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
 
 print(f'{len(cells)} cellules détectées sur {n_t-t_stat} instants')
@@ -70,8 +70,7 @@ sh_abs = np.array([abs(c['shear']) for c in cells])*1e3     # 10^-3 s^-1
 mask = (th_abs <= 2.0) & (sh_abs <= 10.0)
 th_f = th_abs[mask]; sh_f = sh_abs[mask]
 n_gardees = mask.sum(); n_retirees = (~mask).sum()
-print(f'{n_gardees} cellules gardées | {n_retirees} retirées '
-      f'(|θ|>2° ou |∂z u|>10e-3)')
+print(f'{n_gardees} cellules gardées | {n_retirees} retirées (|θ|>2° ou |∂z u|>10e-3)')
 
 corr = np.corrcoef(sh_f, th_f)[0,1] if n_gardees >= 3 else np.nan
 
@@ -80,9 +79,9 @@ ax[0].scatter(sh_f, th_f, c='purple', s=18, alpha=.45)
 if n_gardees >= 3:
     p = np.polyfit(sh_f, th_f, 1); xs = np.linspace(sh_f.min(), sh_f.max(), 30)
     ax[0].plot(xs, np.polyval(p, xs), 'k--', lw=1.8)
-ax[0].set_xlabel(r'$|\partial_z u|$ local (10⁻³ s⁻¹)')
+ax[0].set_xlabel(r'$|\partial_z \bar U|$ global (10⁻³ s⁻¹)')
 ax[0].set_ylabel(r'$|\theta|$ (deg)')
-ax[0].set_title(f'tilt vs cisaillement local (valeur absolue)\n'
+ax[0].set_title(f'tilt vs cisaillement global S(z) (valeur absolue)\n'
                 f'corr = {corr:+.2f}  ({n_gardees} cellules, filtrées)', fontweight='bold')
 ax[0].grid(alpha=.3)
 
@@ -91,6 +90,6 @@ ax[1].axvline(np.median(th_f), color='crimson', lw=2, label=f'médiane {np.media
 ax[1].set_xlabel(r'$|\theta|$ (deg)'); ax[1].set_ylabel('nombre de cellules')
 ax[1].set_title('Distribution des inclinaisons (filtrées)', fontweight='bold')
 ax[1].legend(fontsize=9); ax[1].grid(alpha=.3)
-plt.suptitle('②·c — multi-instants, cisaillement local, |θ|≤2° et |∂z u|≤10e-3',
+plt.suptitle('②·c — multi-instants, cisaillement GLOBAL S(z), |θ|≤2° et |∂z u|≤10e-3',
              fontsize=13, fontweight='bold')
 plt.tight_layout(); plt.show()
