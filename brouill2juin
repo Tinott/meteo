@@ -1,104 +1,46 @@
 # ===========================================================================
-#  LA décomposition : flux de Reynolds = partie en QUADRATURE de zeta=u'+i w'
+#  Partie ② — Vorticité dans le plan vertical : omega_y = d_x w - d_z u
 #  ---------------------------------------------------------------------------
-#  Ondelette de Morlet complexe : W = |W| e^{i phi}.  Le flux s'écrit
-#        u'w'  =  somme_{b,s}  |W|^2 sin(2 phi)   (partie en quadrature)
-#  -> |W|^2 = amplitude (= sigma_u sigma_w local) ; sin(2 phi) = tilt -> correlation
-#  Quatre étages : (1) zeta moyenné-y ; (2) CWT + reconstruction (Parseval) ;
-#  (3) figure maîtresse (carte / spectre d'échelle / phase par niveau) ;
-#  (4) fermeture compacte à DEUX nombres : amplitude(z) x sin2phi(z).
-#  Réutilise : path3d, dim_t, dim_z, n_t, n_x, x, alt, rho0, t_stat.
+#  Sur la coupe (x,z) moyennée sur y ET sur le temps stationnaire.
+#  omega_y > 0 : rotation anti-horaire dans le plan (x,z) ; < 0 : horaire.
+#  C'est la vorticité qui matérialise les (sous-)tourbillons de la partie 2,
+#  cohérente avec psi (omega = -nabla^2 psi / rho0 en incompressible).
+#  Réutilise : path3d, dim_t, dim_z, n_t, n_x, x, alt, t_stat.
 # ===========================================================================
+Z_MAX_W = 18000.0
+iz_w = np.where(alt <= Z_MAX_W)[0]
+zW = alt[iz_w].copy(); nzW = zW.size
 
-# ---- (1) champ complexe zeta moyenné-y sur l'état stationnaire ----
-Z_MAX_Q = 18000.0
-iz_q = np.where(alt <= Z_MAX_Q)[0]
-zQ = alt[iz_q].copy(); nzQ = zQ.size
-Uq = np.zeros((nzQ, n_x)); Wq = np.zeros((nzQ, n_x))
+# --- coupe (z,x) moyennée sur y et sur le temps stationnaire ---
+Uy = np.zeros((nzW, n_x)); Wy = np.zeros((nzW, n_x))
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
-for j, iz in enumerate(iz_q):
+for j, iz in enumerate(iz_w):
     u_acc = np.zeros(n_x); w_acc = np.zeros(n_x); nt = 0
     for it in range(t_stat, n_t):
-        u_yx = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values
-        w_yx = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values
-        u_p = u_yx - u_yx.mean(axis=(0,1), keepdims=True)
-        w_p = w_yx - w_yx.mean(axis=(0,1), keepdims=True)
-        u_acc += u_p.mean(axis=0); w_acc += w_p.mean(axis=0); nt += 1
-    Uq[j] = u_acc/nt; Wq[j] = w_acc/nt
+        u_acc += ds_u['ua'].isel({dim_t:it, dim_z:iz}).values.mean(axis=0)  # moyenne y
+        w_acc += ds_w['wa'].isel({dim_t:it, dim_z:iz}).values.mean(axis=0)
+        nt += 1
+    Uy[j] = u_acc/nt; Wy[j] = w_acc/nt
 ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
+
+# --- vorticité omega_y = d_x w - d_z u ---
 dxl = float(x[1]-x[0])
-flux_ref = rho0[iz_q] * (Uq*Wq).mean(axis=1)
-sb = (zQ>=2000)&(zQ<=15000)
-print(f'(1) zeta ({nzQ},{n_x}) dx={dxl:.0f} m | flux réf médian (bande) '
-      f'{np.nanmedian(flux_ref[sb]):+.2e}')
+# d_x w : périodique en x -> différence centrée avec roll
+dxw = (np.roll(Wy, -1, axis=1) - np.roll(Wy, 1, axis=1)) / (2*dxl)
+# d_z u : gradient vertical (alt non uniforme géré par np.gradient)
+dzu = np.gradient(Uy, zW, axis=0)
+omega = dxw - dzu                                  # (nzW, n_x)  [s^-1]
 
-# ---- (2) CWT Morlet complexe en x, par niveau, + reconstruction (Parseval) ----
-W0 = 6.0; NSC = 80
-scales = np.geomspace(2*dxl, n_x*dxl/2, NSC)
-fourier_factor = (4*np.pi)/(W0 + np.sqrt(2+W0**2))
-lam_km = scales*fourier_factor/1000.0
-kx = np.fft.fftfreq(n_x, d=dxl)*2*np.pi
-def cwt_morlet(sig):
-    S = np.fft.fft(sig); out = np.empty((NSC, n_x), complex)
-    for i, s in enumerate(scales):
-        sk = s*kx
-        psih = (np.pi**-0.25)*np.sqrt(2*np.pi*s/dxl)*(sk>0)*np.exp(-0.5*(sk-W0)**2)
-        out[i] = np.fft.ifft(S*psih)
-    return out
-Co   = np.zeros((nzQ, NSC, n_x))     # Re[Wu conj(Ww)] = densité de flux (quadrature)
-amp2 = np.zeros((nzQ, NSC, n_x))     # |Wu||Ww| amplitude
-phase= np.zeros((nzQ, NSC, n_x))     # phase relative u'/w' (le tilt)
-for j in range(nzQ):
-    Wu = cwt_morlet(Uq[j]); Ww = cwt_morlet(Wq[j]); cross = Wu*np.conj(Ww)
-    Co[j] = np.real(cross); amp2[j] = np.abs(Wu)*np.abs(Ww); phase[j] = np.angle(cross)
-C_DELTA = 0.776; dj = np.log2(scales[1]/scales[0])
-recon = (dj*dxl/C_DELTA)*np.sum(Co/scales[None,:,None], axis=1).mean(axis=1)
-flux_recon = rho0[iz_q]*recon
-corr_rec = np.corrcoef(flux_ref[sb], flux_recon[sb])[0,1]
-print(f'(2) reconstruction Morlet vs flux vrai : corr profil = {corr_rec:+.3f}  (Parseval -> doit être élevé)')
+print(f'vorticité calculée : ({nzW},{n_x})  '
+      f'plage {omega.min():.2e} … {omega.max():.2e} s⁻¹')
 
-# ---- (3) figure maîtresse ----
-flux_per_scale = np.sum(np.abs(Co)/scales[None,:,None], axis=(0,2))
-s_dom = int(np.argmax(flux_per_scale))
-print(f'(3) échelle dominante du flux : λ ≈ {lam_km[s_dom]:.0f} km')
-fig = plt.figure(figsize=(17, 6))
-gs = fig.add_gridspec(1, 3, width_ratios=[2, 1, 1.1])
-axa = fig.add_subplot(gs[0,0])
-field = Co[:, s_dom, :]; pm = np.percentile(np.abs(field), 99)+1e-30
-im = axa.pcolormesh(x/1000, zQ/1000, field, cmap='RdBu_r',
-                    norm=TwoSlopeNorm(0, -pm, pm), shading='auto')
-axa.set_xlabel('x [km]'); axa.set_ylabel('z [km]')
-axa.set_title(f'(a) densité de flux $|W|^2\\sin 2\\varphi$  (λ≈{lam_km[s_dom]:.0f} km)', fontweight='bold')
-fig.colorbar(im, ax=axa, pad=.01)
-axb = fig.add_subplot(gs[0,1])
-axb.plot(flux_per_scale, lam_km, 'purple', lw=2); axb.axhline(lam_km[s_dom], color='grey', ls='--')
-axb.set_xlabel('flux par échelle'); axb.set_ylabel('λ [km]'); axb.set_yscale('log')
-axb.set_title('(b) à quelle échelle\nvit le flux', fontweight='bold'); axb.grid(alpha=.3)
-axc = fig.add_subplot(gs[0,2])
-w_phase = amp2[:, s_dom, :]; ph = phase[:, s_dom, :]
-phi_bar = np.arctan2(np.sum(w_phase*np.sin(ph),axis=1), np.sum(w_phase*np.cos(ph),axis=1))
-axc.plot(np.degrees(phi_bar), zQ/1000, 'darkgreen', lw=2)
-axc.axvline(0, color='grey', ls='--', label='symétrique (φ=0)')
-axc.axvline(-90, color='red', ls=':', alpha=.6, label='flux max (φ=−90°)')
-axc.set_xlabel('phase relative u′/w′  φ (deg)'); axc.set_ylabel('z [km]')
-axc.set_title('(c) tilt systématique\npar niveau', fontweight='bold'); axc.legend(fontsize=8); axc.grid(alpha=.3)
+# --- figure : carte de vorticité ---
+fig, ax = plt.subplots(figsize=(13, 5))
+pm = np.percentile(np.abs(omega), 99) + 1e-30
+im = ax.pcolormesh(x/1000, zW/1000, omega, cmap='RdBu_r',
+                   norm=TwoSlopeNorm(0, -pm, pm), shading='auto')
+ax.set_xlabel('x [km]'); ax.set_ylabel('z [km]')
+ax.set_title(r'② Vorticité dans le plan vertical  $\omega_y = \partial_x w - \partial_z u$  '
+             r'(moyenne $y$, temps)', fontweight='bold')
+fig.colorbar(im, ax=ax, label=r'$\omega_y$ [s$^{-1}$]', pad=.01)
 plt.tight_layout(); plt.show()
-
-# ---- (4) fermeture compacte : flux ≈ amplitude(z) x sin(2 phi)(z) ----
-A_dom   = np.sum(amp2[:, s_dom, :], axis=1)
-sin2phi = np.sum(amp2[:, s_dom, :]*np.sin(2*phase[:, s_dom, :]), axis=1) / (A_dom+1e-30)
-flux_2nombres = rho0[iz_q] * A_dom * sin2phi / n_x
-k = np.nansum(flux_ref[sb]*flux_2nombres[sb])/np.nansum(flux_2nombres[sb]**2+1e-30)
-corr2 = np.corrcoef(flux_ref[sb], flux_2nombres[sb])[0,1]
-fig, ax = plt.subplots(1, 3, figsize=(16, 6), sharey=True)
-ax[0].plot(A_dom, zQ/1000, 'crimson', lw=2); ax[0].set_xlabel('amplitude $|W|^2$'); ax[0].set_ylabel('z [km]')
-ax[0].set_title('Amplitude (∝ σ$_u$σ$_w$)', fontweight='bold'); ax[0].grid(alpha=.3)
-ax[1].plot(sin2phi, zQ/1000, 'darkgreen', lw=2); ax[1].axvline(0, color='grey', alpha=.4)
-ax[1].set_xlabel('sin(2φ)  (tilt / corrélation)'); ax[1].set_title('Phase (∝ tilt → cisaillement)', fontweight='bold'); ax[1].grid(alpha=.3)
-ax[2].plot(flux_ref[sb]*1e3, zQ[sb]/1000, 'k', lw=2.5, label='flux vrai')
-ax[2].plot(k*flux_2nombres[sb]*1e3, zQ[sb]/1000, 'r--', lw=2, label=f'amplitude×sin2φ (corr={corr2:+.2f})')
-ax[2].axvline(0, color='grey', alpha=.4); ax[2].set_xlabel('flux (×10⁻³)')
-ax[2].set_title('Reconstruction à 2 nombres', fontweight='bold'); ax[2].legend(fontsize=9); ax[2].grid(alpha=.3)
-plt.suptitle('Décomposition amplitude × phase : le flux de Reynolds en deux profils', fontsize=13, fontweight='bold')
-plt.tight_layout(); plt.show()
-print(f'(4) reconstruction à 2 nombres : corr profil = {corr2:+.3f}')
