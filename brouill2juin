@@ -1,153 +1,39 @@
 # ===========================================================================
-# POD de Lumley sur le CHAMP DE VITESSE (u', w'), pas sur le produit u'w'.
-#   État vectoriel par snapshot : q = [u'(x,z) ; w'(x,z)] empilé.
-#   La matrice de corrélation pondère u et w à parts égales (énergie cinétique).
-#   Le flux se reconstruit ensuite via les corrélations croisées des coefs.
-#   -> spectre POD mathématiquement fondé (optimal en énergie cinétique).
+#  LA décomposition : champ complexe  zeta(x,z) = u'(x,z) + i w'(x,z)
+#  ---------------------------------------------------------------------------
+#  Idée maîtresse : le flux de Reynolds est la PARTIE EN QUADRATURE de zeta.
+#  Pour une ondelette de Morlet complexe W = |W| e^{i phi} :
+#        u'w'  =  somme_{b,s}  |W(b,s)|^2 * sin(2 phi(b,s)) / Norm
+#  -> |W|^2  = amplitude (= sigma_u sigma_w local)
+#  -> sin(2 phi) = corrélation portée par le TILT des sous-tourbillons
+#  On construit ici zeta moyenné-y sur l'état stationnaire (coupe x,z).
 # ===========================================================================
-Z_MAX_POD = 18000.0
-iz_pod = np.where(alt <= Z_MAX_POD)[0]
-zP = alt[iz_pod].copy(); nzP = zP.size
+Z_MAX_Q = 18000.0
+iz_q = np.where(alt <= Z_MAX_Q)[0]
+zQ = alt[iz_q].copy(); nzQ = zQ.size
 
-# snapshots des DEUX composantes, moyennées-y, sur l'état stationnaire
-snaps_u = []; snaps_w = []
+# zeta moyenné sur y et sur le temps stationnaire (anomalie spatiale (y,x))
+Uq = np.zeros((nzQ, n_x)); Wq = np.zeros((nzQ, n_x))
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
-for it in range(t_stat, n_t):
-    Fu = np.zeros((nzP, n_x)); Fw = np.zeros((nzP, n_x))
-    for j, iz in enumerate(iz_pod):
+for j, iz in enumerate(iz_q):
+    u_acc = np.zeros(n_x); w_acc = np.zeros(n_x); nt = 0
+    for it in range(t_stat, n_t):
         u_yx = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values
         w_yx = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values
         u_p = u_yx - u_yx.mean(axis=(0,1), keepdims=True)
         w_p = w_yx - w_yx.mean(axis=(0,1), keepdims=True)
-        Fu[j] = u_p.mean(axis=0)        # <u'>_y (x)  (composante en x du mode)
-        Fw[j] = w_p.mean(axis=0)        # <w'>_y (x)
-    snaps_u.append(Fu); snaps_w.append(Fw)
-ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
-snaps_u = np.array(snaps_u); snaps_w = np.array(snaps_w)   # (N, nzP, nx)
-N = snaps_u.shape[0]
-
-# état vectoriel empilé q_i = [u'_i ; w'_i]  -> POD par méthode des snapshots
-Qu = snaps_u.reshape(N, -1); Qw = snaps_w.reshape(N, -1)
-Q  = np.concatenate([Qu, Qw], axis=1)                      # (N, 2*nzP*nx)
-Cmat = Q @ Q.T / N                                         # (N,N) corrélation d'énergie cinétique
-evals, evecs = np.linalg.eigh(Cmat)
-order = evals.argsort()[::-1]; evals = np.clip(evals[order], 0, None); evecs = evecs[:, order]
-
-# modes spatiaux (séparés en composantes u et w) + coefficients temporels a_k(t)
-modes = (evecs.T @ Q)                                      # (N, 2*nzP*nx)
-norms = np.linalg.norm(modes, axis=1) + 1e-30
-modes = modes / norms[:,None]
-Ddim = nzP*n_x
-phi_u = modes[:, :Ddim].reshape(N, nzP, n_x)               # composante u' de chaque mode
-phi_w = modes[:, Ddim:].reshape(N, nzP, n_x)               # composante w' de chaque mode
-acoef = Q @ modes.T                                        # (N, N) coefficients a_k(t)
-
-energy = evals / evals.sum(); cum = np.cumsum(energy)
-print('énergie cinétique des 6 premiers modes :', np.round(energy[:6]*100, 1), '%')
-print(f'modes pour 90% de l’énergie : {np.searchsorted(cum, 0.90)+1}')
-
-
-
-
-
-
-# ===========================================================================
-# Le flux <u'w'>(z) reconstruit par les K premiers modes POD de vitesse :
-#   <u'w'>_K(z,x) = sum_{k<K} sum_{l<K} <a_k a_l>_t * phi_u^k(z,x) * phi_w^l(z,x)
-#   profil = moyenne en x, * rho0.  -> combien de modes pour retrouver le flux ?
-# ===========================================================================
-def flux_profile_from_modes(K):
-    G = (acoef[:, :K].T @ acoef[:, :K]) / N           # <a_k a_l>_t  (K,K)
-    fxz = np.zeros((nzP, n_x))
-    for k in range(K):
-        for l in range(K):
-            fxz += G[k, l] * phi_u[k] * phi_w[l]
-    return rho0[iz_pod] * fxz.mean(axis=1)
-
-# flux "vrai" (tous les modes) pour référence
-flux_full = flux_profile_from_modes(N)
-
-fig, ax = plt.subplots(1, 3, figsize=(16, 6))
-Kshow = int(min(15, energy.size)); kb = np.arange(1, Kshow+1)
-ax[0].bar(kb, energy[:Kshow]*100, color='teal')
-ax[0].plot(kb, cum[:Kshow]*100, 'r-o', ms=4)
-ax[0].set_xlabel('mode POD'); ax[0].set_ylabel('énergie cinétique (%)')
-ax[0].set_title('Spectre POD du champ de vitesse', fontweight='bold'); ax[0].grid(alpha=.3)
-
-for K in [k for k in [1, 3, 5, 10, 20] if k <= N]:
-    ax[1].plot(flux_profile_from_modes(K)*1e3, zP, lw=2, label=f'{K} modes')
-ax[1].plot(flux_full*1e3, zP, 'k--', lw=2.5, label='tous')
-ax[1].axvline(0, color='grey', alpha=.4)
-ax[1].set_xlabel('flux (×10⁻³)'); ax[1].set_ylabel('z (m)')
-ax[1].set_title('Flux reconstruit par K modes', fontweight='bold'); ax[1].legend(fontsize=8); ax[1].grid(alpha=.3)
-
-# erreur de reconstruction du PROFIL de flux vs K
-s = band()
-errK = []
-Ks = np.arange(1, min(N, 30)+1)
-denom = np.sqrt(np.nansum((flux_full[iz_pod][:,None].squeeze()*0 + flux_full)[ :]**2))
-for K in Ks:
-    fK = flux_profile_from_modes(K)
-    errK.append(np.sqrt(np.nansum((fK-flux_full)**2)/np.nansum(flux_full**2)))
-ax[2].plot(Ks, errK, 'purple', lw=2, marker='o', ms=3)
-ax[2].axhline(0.1, color='grey', ls='--', label='10% erreur')
-ax[2].set_xlabel('nombre de modes K'); ax[2].set_ylabel('erreur relative du profil de flux')
-ax[2].set_title('Convergence de la reconstruction', fontweight='bold'); ax[2].legend(fontsize=8); ax[2].grid(alpha=.3)
-plt.tight_layout(); plt.show()
-
-nK10 = int(Ks[np.argmax(np.array(errK) < 0.1)]) if np.any(np.array(errK)<0.1) else N
-print(f'modes pour reconstruire le profil de flux à 10% près : {nK10}')
-
-
-
-
-
-
-# ===========================================================================
-# Profils moyens (région humide, état stationnaire) : T1, T2, et candidats Theta.
-#   T1 = mass-flux organisé ; T2 = covariance interne sous-maille.
-#   On régressera T1 et T2 SÉPARÉMENT (objectif : montrer ce que chacun "veut").
-# ===========================================================================
-reg = mh; C = 0.5
-ubar = np.zeros(n_z); sig_w = np.zeros(n_z); sig_u = np.zeros(n_z); Mc = np.zeros(n_z)
-T1p = np.zeros(n_z); T2p = np.zeros(n_z)
-
-ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
-for iz in range(n_z):
-    au=asw=asu=amc=a1=a2=0.0; n=0
-    for it in range(t_stat, n_t):
-        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
-        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
-        ub, wb, Ntot = u.mean(), w.mean(), u.size
-        au += ub; asw += w.std(); asu += u.std()
-        ws, up, dn, env = classify(w, C)
-        amc += (w*up).mean()
-        # T1/T2 par catégorie (identité exacte du notebook précédent)
-        for msk in (up, dn, env):
-            if msk.sum() < 1: continue
-            sig = msk.sum()/Ntot
-            uu, ww = u[msk], w[msk]; uc, wc = uu.mean(), ww.mean()
-            a1 += sig*(uc-ub)*(wc-wb)                 # T1
-            a2 += sig*((uu-uc)*(ww-wc)).mean()        # T2
-        n += 1; del u, w
-    ubar[iz]=au/n; sig_w[iz]=asw/n; sig_u[iz]=asu/n
-    Mc[iz]=rho0[iz]*amc/n
-    T1p[iz]=rho0[iz]*a1/n; T2p[iz]=rho0[iz]*a2/n
-    gc.collect()
+        u_acc += u_p.mean(axis=0); w_acc += w_p.mean(axis=0); nt += 1
+    Uq[j] = u_acc/nt; Wq[j] = w_acc/nt
 ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
 
-rb = rho0*ubar
-Theta = {
-    'rho0*ubar'        : rb,
-    'd_z(rho0*ubar)'   : np.gradient(rb, alt),
-    'rho0*d2_z ubar'   : rho0*np.gradient(np.gradient(ubar, alt), alt),
-    'Mc'               : Mc,
-    'Mc*d_z ubar'      : Mc*np.gradient(ubar, alt),
-    'rho0*sig_w^2'     : rho0*sig_w**2,
-    'rho0*sig_u*sig_w' : rho0*sig_u*sig_w,
-}
-print('candidats Θ :', list(Theta.keys()))
-print(f'T1 médian {np.nanmedian(T1p[band()]):+.2e}   T2 médian {np.nanmedian(T2p[band()]):+.2e}')
+dxl = float(x[1]-x[0])
+# flux "vrai" de référence (profil) sur cette coupe : rho0 <u' w'>_x
+flux_ref = rho0[iz_q] * (Uq*Wq).mean(axis=1)
+print(f'zeta construit : ({nzQ},{n_x})   dx={dxl:.0f} m')
+print(f'flux de référence (médian, bande) = {np.nanmedian((flux_ref)[ (zQ>=2000)&(zQ<=15000) ]):+.2e}')
+
+
+
 
 
 
@@ -157,55 +43,137 @@ print(f'T1 médian {np.nanmedian(T1p[band()]):+.2e}   T2 médian {np.nanmedian(T
 
 
 # ===========================================================================
-# STLSQ (SINDy maison) sur T1 et T2 séparément, AVEC validation train/test.
-#   Train = niveaux pairs, Test = niveaux impairs (split spatial robuste).
-#   On compare R²_train et R²_test : si test s'effondre -> sur-ajustement.
+#  CWT Morlet complexe en x (périodique -> FFT exacte), par niveau.
+#  On décompose SÉPARÉMENT u'(x) et w'(x) : Wu, Ww complexes.
+#  Le co-spectre en quadrature qui donne le flux est  Re[ Wu * conj(Ww) ].
+#  Vérif clé : somme sur les échelles  ==  <u'w'>_x  (Parseval) -> flux_ref.
 # ===========================================================================
-def stlsq(Phi, y, thresh=0.1, iters=10):
-    xi = np.linalg.lstsq(Phi, y, rcond=None)[0]
-    for _ in range(iters):
-        small = np.abs(xi) < thresh*np.max(np.abs(xi)+1e-30)
-        xi[small] = 0.0
-        if (~small).sum()==0: break
-        xi[~small] = np.linalg.lstsq(Phi[:, ~small], y, rcond=None)[0]
-    return xi
+W0 = 6.0                                   # omega0 Morlet
+NSC = 80
+scales = np.geomspace(2*dxl, n_x*dxl/2, NSC)          # m
+fourier_factor = (4*np.pi)/(W0 + np.sqrt(2+W0**2))
+lam_km = scales*fourier_factor/1000.0                 # longueur d'onde [km]
+kx = np.fft.fftfreq(n_x, d=dxl)*2*np.pi
 
-def r2(y, yh):
-    return 1 - np.sum((y-yh)**2)/np.sum((y-np.mean(y))**2)
+def cwt_morlet(sig):
+    """CWT Morlet complexe d'un profil périodique -> (NSC, n_x) complexe."""
+    S = np.fft.fft(sig)
+    out = np.empty((NSC, n_x), complex)
+    for i, s in enumerate(scales):
+        sk = s*kx
+        psih = (np.pi**-0.25)*np.sqrt(2*np.pi*s/dxl)*(sk>0)*np.exp(-0.5*(sk-W0)**2)
+        out[i] = np.fft.ifft(S*psih)
+    return out
 
-def discover(target, name):
-    s = band(); names = list(Theta.keys())
-    Phi = np.column_stack([Theta[k][s] for k in names])
-    yv  = target[s]
-    mu, sd = Phi.mean(0), Phi.std(0)+1e-30
-    Phi_s = (Phi-mu)/sd
-    idx = np.arange(len(yv))
-    tr, te = idx[idx%2==0], idx[idx%2==1]            # split pair/impair
-    # centrage sur le train uniquement
-    ym = yv[tr].mean()
-    xi = stlsq(Phi_s[tr], yv[tr]-ym, thresh=0.15)
-    yh_tr = Phi_s[tr]@xi + ym; yh_te = Phi_s[te]@xi + ym
-    R2tr, R2te = r2(yv[tr], yh_tr), r2(yv[te], yh_te)
-    print(f'\n=== {name} ===')
-    print(f'  R² train {R2tr:+.3f}   R² TEST {R2te:+.3f}   '
-          f'({"OK" if R2te>0.3 else "sur-ajustement / non fermable"})')
-    print('  termes retenus :')
-    for k,c in sorted(zip(names,xi), key=lambda t:-abs(t[1])):
-        if abs(c)>1e-9: print(f'    {k:18s} {c:+.3f}')
-    yhat_full = Phi_s@xi + ym
-    return yv, yhat_full, s, R2tr, R2te
+# co-scalogramme de quadrature par niveau : Co(b,s,z) = Re[Wu conj(Ww)]
+Co = np.zeros((nzQ, NSC, n_x))
+amp2 = np.zeros((nzQ, NSC, n_x))         # |Wu||Ww| (amplitude, pour la phase)
+phase = np.zeros((nzQ, NSC, n_x))        # phase relative entre u' et w'
+for j in range(nzQ):
+    Wu = cwt_morlet(Uq[j]); Ww = cwt_morlet(Wq[j])
+    cross = Wu*np.conj(Ww)               # produit croisé complexe
+    Co[j]   = np.real(cross)            # PARTIE EN QUADRATURE = densité de flux
+    amp2[j] = np.abs(Wu)*np.abs(Ww)
+    phase[j]= np.angle(cross)           # phase relative u'/w' (le "tilt")
 
-yT1, hT1, s, r1tr, r1te = discover(T1p, 'T1 (organisé / mass-flux)')
-yT2, hT2, s, r2tr, r2te = discover(T2p, 'T2 (résidu sous-maille)')
+# reconstruction du flux par sommation sur les échelles (Torrence & Compo)
+C_DELTA = 0.776; dj = np.log2(scales[1]/scales[0])
+recon = (dj*dxl/C_DELTA) * np.sum(Co/scales[None,:,None], axis=1).mean(axis=1)
+flux_recon = rho0[iz_q]*recon
 
-# --- figure comparative ---
-fig, ax = plt.subplots(1, 2, figsize=(12, 7), sharey=True)
-ax[0].plot(yT1*1e3, alt[s], 'k', lw=2.5, label='T1 vrai')
-ax[0].plot(hT1*1e3, alt[s], 'r--', lw=2, label=f'fermeture (test R²={r1te:+.2f})')
-ax[0].set_title('T1 organisé', fontweight='bold'); ax[0].set_xlabel('flux (×10⁻³)'); ax[0].set_ylabel('z (m)')
-ax[1].plot(yT2*1e3, alt[s], 'k', lw=2.5, label='T2 vrai')
-ax[1].plot(hT2*1e3, alt[s], 'b--', lw=2, label=f'fermeture (test R²={r2te:+.2f})')
-ax[1].set_title('T2 sous-maille', fontweight='bold'); ax[1].set_xlabel('flux (×10⁻³)')
-for a in ax: a.axvline(0, color='grey', alpha=.4); a.legend(fontsize=9); a.grid(alpha=.3)
-plt.suptitle('Equation discovery séparée, validée en test (niveaux impairs)', fontsize=13, fontweight='bold')
+# contrôle : recon doit suivre flux_ref (à la constante d'admissibilité près)
+sb = (zQ>=2000)&(zQ<=15000)
+scale_fit = np.nansum(flux_ref[sb]*flux_recon[sb])/np.nansum(flux_recon[sb]**2+1e-30)
+print(f'reconstruction Morlet vs flux vrai : facteur d’échelle {scale_fit:.2f} '
+      f'(idéal ~1), corr profil = {np.corrcoef(flux_ref[sb], flux_recon[sb])[0,1]:+.3f}')
+
+
+
+
+
+
+
+
+
+# ===========================================================================
+#  FIGURE MAÎTRESSE
+#  (a) carte densité de flux Co(x,z) à l'échelle dominante : OÙ vit le transport
+#  (b) spectre de flux par échelle : le flux est-il porté par UNE bande ?
+#  (c) distribution de la phase relative u'/w' pondérée par |W|² par niveau :
+#      pic à phi != 0  =  tilt systématique  =  cœur de l'idée
+# ===========================================================================
+# échelle dominante du flux (somme |Co| sur x et z, variance-preserving)
+flux_per_scale = np.sum(np.abs(Co)/scales[None,:,None], axis=(0,2))
+s_dom = int(np.argmax(flux_per_scale))
+print(f'échelle dominante du flux : λ ≈ {lam_km[s_dom]:.0f} km')
+
+fig = plt.figure(figsize=(17, 6))
+gs = fig.add_gridspec(1, 3, width_ratios=[2, 1, 1.1])
+
+# (a) carte de densité de flux à l'échelle dominante
+axa = fig.add_subplot(gs[0,0])
+field = Co[:, s_dom, :]
+pm = np.percentile(np.abs(field), 99)+1e-30
+im = axa.pcolormesh(x/1000, zQ/1000, field, cmap='RdBu_r',
+                    norm=TwoSlopeNorm(0, -pm, pm), shading='auto')
+axa.set_xlabel('x [km]'); axa.set_ylabel('z [km]')
+axa.set_title(f'(a) densité de flux $|W|^2\\sin 2\\varphi$  (λ≈{lam_km[s_dom]:.0f} km)', fontweight='bold')
+fig.colorbar(im, ax=axa, pad=.01)
+
+# (b) spectre de flux par échelle
+axb = fig.add_subplot(gs[0,1])
+axb.plot(flux_per_scale, lam_km, 'purple', lw=2)
+axb.axhline(lam_km[s_dom], color='grey', ls='--')
+axb.set_xlabel('flux par échelle'); axb.set_ylabel('λ [km]')
+axb.set_yscale('log'); axb.set_title('(b) à quelle échelle\nvit le flux', fontweight='bold'); axb.grid(alpha=.3)
+
+# (c) phase dominante par niveau (moyenne circulaire pondérée par |W|^2 a l'échelle dom)
+axc = fig.add_subplot(gs[0,2])
+w_phase = amp2[:, s_dom, :]
+ph = phase[:, s_dom, :]
+phi_bar = np.arctan2(np.sum(w_phase*np.sin(ph),axis=1),
+                     np.sum(w_phase*np.cos(ph),axis=1))   # moyenne circulaire par z
+axc.plot(np.degrees(phi_bar), zQ/1000, 'darkgreen', lw=2)
+axc.axvline(0, color='grey', ls='--', label='symétrique (φ=0)')
+axc.axvline(-90, color='red', ls=':', alpha=.6, label='flux max (φ=−90°)')
+axc.set_xlabel('phase relative u′/w′  φ (deg)'); axc.set_ylabel('z [km]')
+axc.set_title('(c) tilt systématique\npar niveau', fontweight='bold'); axc.legend(fontsize=8); axc.grid(alpha=.3)
 plt.tight_layout(); plt.show()
+
+
+
+
+
+
+# ===========================================================================
+#  LA décomposition compacte : flux(z) ≈ Amplitude(z) * sin(2 phi(z))
+#  à l'échelle dominante. DEUX nombres par niveau au lieu de tout le champ.
+#  On teste si ce produit minimal reconstruit le profil de flux.
+# ===========================================================================
+# amplitude dominante par niveau (somme de |W|^2 sur x, échelle dom)
+A_dom   = np.sum(amp2[:, s_dom, :], axis=1)
+# corrélation effective = <sin(2 phi)> pondérée par amplitude
+sin2phi = np.sum(amp2[:, s_dom, :]*np.sin(2*phase[:, s_dom, :]), axis=1) / (A_dom+1e-30)
+flux_2nombres = rho0[iz_q] * A_dom * sin2phi / n_x       # normalisation grossière
+
+sb = (zQ>=2000)&(zQ<=15000)
+k = np.nansum(flux_ref[sb]*flux_2nombres[sb])/np.nansum(flux_2nombres[sb]**2+1e-30)
+corr2 = np.corrcoef(flux_ref[sb], flux_2nombres[sb])[0,1]
+
+fig, ax = plt.subplots(1, 3, figsize=(16, 6), sharey=True)
+ax[0].plot(A_dom, zQ/1000, 'crimson', lw=2)
+ax[0].set_xlabel('amplitude $|W|^2$'); ax[0].set_ylabel('z [km]')
+ax[0].set_title('Amplitude (∝ σ$_u$σ$_w$)', fontweight='bold'); ax[0].grid(alpha=.3)
+
+ax[1].plot(sin2phi, zQ/1000, 'darkgreen', lw=2); ax[1].axvline(0, color='grey', alpha=.4)
+ax[1].set_xlabel('sin(2φ)  (tilt / corrélation)')
+ax[1].set_title('Phase (∝ tilt, donc cisaillement)', fontweight='bold'); ax[1].grid(alpha=.3)
+
+ax[2].plot(flux_ref[sb]*1e3, zQ[sb]/1000, 'k', lw=2.5, label='flux vrai')
+ax[2].plot(k*flux_2nombres[sb]*1e3, zQ[sb]/1000, 'r--', lw=2, label=f'amplitude×sin2φ (corr={corr2:+.2f})')
+ax[2].axvline(0, color='grey', alpha=.4)
+ax[2].set_xlabel('flux (×10⁻³)'); ax[2].set_title('Reconstruction à 2 nombres', fontweight='bold')
+ax[2].legend(fontsize=9); ax[2].grid(alpha=.3)
+plt.suptitle('Décomposition amplitude × phase : le flux en deux profils', fontsize=13, fontweight='bold')
+plt.tight_layout(); plt.show()
+print(f'corrélation profil (2 nombres vs vrai) = {corr2:+.3f}')
