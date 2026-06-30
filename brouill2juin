@@ -1,45 +1,50 @@
-# ---------------------------------------------------------------------------
-# alpha(z,t), beta(z,t) PAR INSTANT et PAR ZONE  —  système 2x2 exact (u et v)
-#   À chaque (zone, t, z) on résout :
-#       y_u = alpha * x1u + beta * x2u
-#       y_v = alpha * x1v + beta * x2v
-#   avec  x1phi = rho0 * <phi>_zone ,  x2phi = d_z(rho0 <phi>_zone)
-#         yphi  = -1/rho0 * d_z(rho0 <phi' w'>_zone)
-#   -> determinant det = x1u*x2v - x1v*x2u ; Cramer.
-#   Sortie : A_zt[zone], B_zt[zone] de forme (nz_fit, n_stat).
-# ---------------------------------------------------------------------------
-iz_lo_glob = np.searchsorted(alt, 2000)
-iz_hi_glob = np.searchsorted(alt, 18000)
-izs_fit = np.arange(iz_lo_glob, iz_hi_glob)
-z_fit   = alt[izs_fit]
-nz_fit  = izs_fit.size
+# ===========================================================================
+# alpha(z,t), beta(z,t) dans une BOÎTE spatiale (x,z) — système 2x2 (u,v)
+#   Fenêtre 1 : 700 < x < 750 km , 2 < z < 15 km
+#   La "zone" = colonnes x de la fenêtre. Moyenne de zone = <.>_{y, x∈fenêtre}.
+#   À chaque (t, z) on résout :
+#       y_u = alpha*x1u + beta*x2u ;  y_v = alpha*x1v + beta*x2v   (Cramer)
+# ===========================================================================
+X_LO, X_HI = 700.0, 750.0     # km
+Z_LO, Z_HI = 2000.0, 15000.0  # m
 
-def alpha_beta_zt(reg2d):
-    """alpha,beta (z,t) par le systeme 2x2 (u,v) dans la zone reg2d."""
-    A_zt = np.full((nz_fit, n_stat), np.nan)
-    B_zt = np.full((nz_fit, n_stat), np.nan)
+# --- indices x de la fenêtre (borné au domaine) ---
+ix_box = np.where((x/1000 >= X_LO) & (x/1000 <= X_HI))[0]
+if ix_box.size == 0:
+    raise ValueError(f"Fenêtre x={X_LO}-{X_HI} km hors domaine (0-{n_x*dx/1000:.0f} km). "
+                     f"Vérifie dx={dx:.0f} m / la résolution.")
+# --- indices z de la fenêtre (besoin de iz-1, iz+1 pour d/dz -> on garde l'intérieur) ---
+izs_box = np.where((alt >= Z_LO) & (alt <= Z_HI))[0]
+izs_box = izs_box[(izs_box > 0) & (izs_box < n_z-1)]
+z_box   = alt[izs_box]; nz_box = izs_box.size
+print(f'Fenêtre 1 : x={X_LO}-{X_HI} km ({ix_box.size} colonnes)  '
+      f'z={Z_LO:.0f}-{Z_HI:.0f} m ({nz_box} niveaux)')
+
+def alpha_beta_box(ix_box, izs_box):
+    """alpha,beta (z,t) via le système 2x2 (u,v), moyennes sur y et x∈fenêtre."""
+    A_zt = np.full((izs_box.size, n_stat), np.nan)
+    B_zt = np.full((izs_box.size, n_stat), np.nan)
 
     ds_u = xr.open_dataset(path3d('ua'))
     ds_v = xr.open_dataset(path3d('va'))
     ds_w = xr.open_dataset(path3d('wa'))
 
+    def meanphi(ds, var, it, izz):
+        # <phi>_{y, x∈fenêtre} au niveau izz
+        return ds[var].isel({dim_t: it, dim_z: izz}).values[:, ix_box].mean()
+
     def fluxlev(ds, var, it, izz):
-        # rho0 * <phi' w'>_zone au niveau izz (anomalie intra-zone)
-        ph = ds[var].isel({dim_t: it, dim_z: izz}).values[reg2d]
-        ww = ds_w['wa'].isel({dim_t: it, dim_z: izz}).values[reg2d]
+        # rho0 * <phi' w'>_fenêtre  (anomalie sur les colonnes de la fenêtre)
+        ph = ds[var].isel({dim_t: it, dim_z: izz}).values[:, ix_box]
+        ww = ds_w['wa'].isel({dim_t: it, dim_z: izz}).values[:, ix_box]
         php = ph - ph.mean(); wwp = ww - ww.mean()
         return rho0[izz] * (php * wwp).mean()
 
     for ti, it in enumerate(range(t_stat, n_t)):
-        for j, iz in enumerate(izs_fit):
+        for j, iz in enumerate(izs_box):
             dz = alt[iz+1] - alt[iz-1]
-            # vents moyens de zone aux 3 niveaux
-            u0  = ds_u['ua'].isel({dim_t:it, dim_z:iz  }).values[reg2d].mean()
-            ulo = ds_u['ua'].isel({dim_t:it, dim_z:iz-1}).values[reg2d].mean()
-            uhi = ds_u['ua'].isel({dim_t:it, dim_z:iz+1}).values[reg2d].mean()
-            v0  = ds_v['va'].isel({dim_t:it, dim_z:iz  }).values[reg2d].mean()
-            vlo = ds_v['va'].isel({dim_t:it, dim_z:iz-1}).values[reg2d].mean()
-            vhi = ds_v['va'].isel({dim_t:it, dim_z:iz+1}).values[reg2d].mean()
+            u0  = meanphi(ds_u,'ua',it,iz  ); ulo = meanphi(ds_u,'ua',it,iz-1); uhi = meanphi(ds_u,'ua',it,iz+1)
+            v0  = meanphi(ds_v,'va',it,iz  ); vlo = meanphi(ds_v,'va',it,iz-1); vhi = meanphi(ds_v,'va',it,iz+1)
 
             x1u = rho0[iz]*u0
             x2u = (rho0[iz+1]*uhi - rho0[iz-1]*ulo)/dz
@@ -59,40 +64,22 @@ def alpha_beta_zt(reg2d):
     del ds_u, ds_v, ds_w; gc.collect()
     return A_zt, B_zt
 
-# --- calcul pour chaque zone du decoupage D2 ---
-AB = {}
-for zn, reg2d in zone.items():
-    A_zt, B_zt = alpha_beta_zt(reg2d)
-    AB[zn] = dict(A=A_zt, B=B_zt)
-    print(f'{zn:9s} : alpha med {np.nanmedian(A_zt):+.2e}  beta med {np.nanmedian(B_zt):+.2e}  '
-          f'| NaN {100*np.isnan(A_zt).mean():.0f}%')
+A1, B1 = alpha_beta_box(ix_box, izs_box)
+print(f'  alpha méd {np.nanmedian(A1):+.2e}  beta méd {np.nanmedian(B1):+.2e}  '
+      f'| NaN {100*np.isnan(A1).mean():.0f}%')
 
-
-
-
-
-
-# --- profils alpha(z) et beta(z) : un trait par instant + médiane temporelle ---
-fig, axes = plt.subplots(2, 4, figsize=(19, 11), sharey=True)
-for col, (zn, R) in enumerate(AB.items()):
-    A, B = R['A'], R['B']
-    # tous les instants en gris fin
-    for ti in range(A.shape[1]):
-        axes[0,col].plot(A[:,ti], z_fit, color='grey', alpha=.25, lw=.8)
-        axes[1,col].plot(B[:,ti], z_fit, color='grey', alpha=.25, lw=.8)
-    # mediane temporelle en gras + bande inter-quartile
-    Amed = np.nanmedian(A,axis=1); Bmed = np.nanmedian(B,axis=1)
-    Aq1,Aq3 = np.nanpercentile(A,[25,75],axis=1); Bq1,Bq3 = np.nanpercentile(B,[25,75],axis=1)
-    axes[0,col].plot(Amed, z_fit, 'crimson', lw=2.5, label='médiane t')
-    axes[0,col].fill_betweenx(z_fit, Aq1, Aq3, color='crimson', alpha=.2)
-    axes[1,col].plot(Bmed, z_fit, 'navy', lw=2.5, label='médiane t')
-    axes[1,col].fill_betweenx(z_fit, Bq1, Bq3, color='navy', alpha=.2)
-    axes[0,col].set_title(zn, fontweight='bold')
-    for ax in (axes[0,col], axes[1,col]):
-        ax.axvline(0, color='k', alpha=.4); ax.grid(alpha=.3)
-axes[0,0].set_ylabel(r'$\alpha(z,t)$   —   Altitude (m)')
-axes[1,0].set_ylabel(r'$\beta(z,t)$   —   Altitude (m)')
-axes[0,0].legend(fontsize=8); axes[1,0].legend(fontsize=8)
-plt.suptitle('α(z,t) et β(z,t) par zone — un trait gris par instant, médiane en couleur',
+# --- figure : un trait gris par instant + médiane temporelle + bande IQR ---
+fig, ax = plt.subplots(1, 2, figsize=(11, 8), sharey=True)
+for ti in range(A1.shape[1]):
+    ax[0].plot(A1[:,ti], z_box, color='grey', alpha=.25, lw=.8)
+    ax[1].plot(B1[:,ti], z_box, color='grey', alpha=.25, lw=.8)
+Amed = np.nanmedian(A1,axis=1); Bmed = np.nanmedian(B1,axis=1)
+Aq1,Aq3 = np.nanpercentile(A1,[25,75],axis=1); Bq1,Bq3 = np.nanpercentile(B1,[25,75],axis=1)
+ax[0].plot(Amed, z_box, 'crimson', lw=2.5, label='médiane t'); ax[0].fill_betweenx(z_box, Aq1, Aq3, color='crimson', alpha=.2)
+ax[1].plot(Bmed, z_box, 'navy',    lw=2.5, label='médiane t'); ax[1].fill_betweenx(z_box, Bq1, Bq3, color='navy', alpha=.2)
+ax[0].set_title(r'$\alpha(z,t)$', fontweight='bold'); ax[1].set_title(r'$\beta(z,t)$', fontweight='bold')
+ax[0].set_ylabel('Altitude (m)')
+for a in ax: a.axvline(0, color='k', alpha=.4); a.grid(alpha=.3); a.legend(fontsize=8)
+plt.suptitle(f'Fenêtre 1 : x={X_LO:.0f}-{X_HI:.0f} km, z={Z_LO:.0f}-{Z_HI:.0f} m',
              fontsize=13, fontweight='bold')
 plt.tight_layout(); plt.show()
