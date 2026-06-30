@@ -1,6 +1,7 @@
 # ===========================================================================
-#  ②·c étendu : cisaillement GLOBAL S(z) (moyenné-x) + MULTI-INSTANTS + |valeur|
-#  + filtres : |θ| <= 2°  ET  |∂z u| <= 10e-3 s⁻¹
+#  ②·c : inclinaison de l'ellipse vs CISAILLEMENT MOYEN DANS l'ellipse
+#  multi-instants, valeur absolue
+#  -> pour chaque cellule : <|∂z u|> moyenné sur TOUS ses pixels
 # ===========================================================================
 from scipy.ndimage import gaussian_filter, label
 
@@ -26,16 +27,21 @@ def blocs_signe(psi_s, sign, seuil):
         if a>0 and b>0 and a!=b: lab[lab==b]=a
     return [np.argwhere(lab==L) for L in range(1,lab.max()+1) if (lab==L).sum()>=N_MIN]
 
-def ellipse_bloc(psi_s, pts):
+def caracterise_bloc(psi_s, pts, shear_2d):
+    """Renvoie centre, tilt, et cisaillement MOYEN sur tous les pixels du bloc."""
     js,iis = pts[:,0], pts[:,1]
     w = np.abs(psi_s[js,iis]); w/= w.sum()+1e-30
     xc=(w*iis*dxl).sum(); zc=(w*js*dzl).sum()
     xx=iis*dxl-xc; zz=js*dzl-zc
     Ixx=(w*xx*xx).sum(); Izz=(w*zz*zz).sum(); Ixz=(w*xx*zz).sum()
-    theta=np.degrees(0.5*np.arctan2(2*Ixz, Ixx-Izz))   # signé dans [-90,90]
-    return xc, zc, theta
+    theta=np.degrees(0.5*np.arctan2(2*Ixz, Ixx-Izz))    # signé dans [-90,90]
+    # cisaillement moyen DANS l'ellipse : moyenne de |∂z u| sur les pixels du bloc
+    shear_in = np.abs(shear_2d[js, iis]).mean()
+    # variante pondérée par |psi'| (le cœur compte plus) — décommenter si voulu :
+    # shear_in = (w*np.abs(shear_2d[js, iis])).sum()
+    return xc, zc, theta, shear_in
 
-# --- boucle multi-instants : on accumule toutes les cellules ---
+# --- boucle multi-instants ---
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
 cells = []
 for IT in range(t_stat, n_t):
@@ -50,46 +56,48 @@ for IT in range(t_stat, n_t):
     psi_s = gaussian_filter(psi_a, sigma=(SIGMA_Z, SIGMA_X), mode=('nearest','wrap'))
     seuil = SEUIL_FRAC*np.abs(psi_s).max()
 
-    # cisaillement GLOBAL : moyenne x AVANT dérivée -> profil S(z), signé
-    shear_prof = np.gradient(Uy_r.mean(axis=1), z_reg)    # (z,) signé [s^-1]
+    # champ de cisaillement local (z,x), signé -> on prendra |.| dans le bloc
+    shear_2d = np.gradient(Uy_r, z_reg, axis=0)           # (z,x) [s^-1]
 
     for sign in (+1,-1):
         for pts in blocs_signe(psi_s, sign, seuil):
-            xc, zc, th = ellipse_bloc(psi_s, pts)
-            iz_c = int(np.clip(round(zc/dzl), 0, nz_D-1))
-            cells.append(dict(xc=xc/1000, zc=zc/1000, theta=th, sign=sign,
-                              shear=shear_prof[iz_c], it=IT))   # cisaillement à l'altitude
+            xc, zc, th, sh_in = caracterise_bloc(psi_s, pts, shear_2d)
+            cells.append(dict(xc=xc/1000, zc=zc/1000, theta=th,
+                              sign=sign, shear_in=sh_in, it=IT))
 ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
 
 print(f'{len(cells)} cellules détectées sur {n_t-t_stat} instants')
 
-# --- valeur absolue + filtres |θ|<=2° et |∂z u|<=10e-3 s⁻¹ ---
+# --- corrélation : |θ| vs cisaillement moyen dans l'ellipse ---
 th_abs = np.array([abs(c['theta']) for c in cells])
-sh_abs = np.array([abs(c['shear']) for c in cells])*1e3     # 10^-3 s^-1
+sh_in  = np.array([c['shear_in'] for c in cells])*1e3      # 10^-3 s^-1
 
-mask = (th_abs <= 2.0) & (sh_abs <= 10.0)
-th_f = th_abs[mask]; sh_f = sh_abs[mask]
-n_gardees = mask.sum(); n_retirees = (~mask).sum()
-print(f'{n_gardees} cellules gardées | {n_retirees} retirées (|θ|>2° ou |∂z u|>10e-3)')
+# filtres optionnels (mets None pour désactiver)
+TH_MAX, SH_MAX = 2.0, 10.0
+mask = np.ones(len(cells), bool)
+if TH_MAX is not None: mask &= (th_abs <= TH_MAX)
+if SH_MAX is not None: mask &= (sh_in  <= SH_MAX)
+th_f, sh_f = th_abs[mask], sh_in[mask]
+print(f'{mask.sum()} cellules gardées | {(~mask).sum()} retirées')
 
-corr = np.corrcoef(sh_f, th_f)[0,1] if n_gardees >= 3 else np.nan
+corr = np.corrcoef(sh_f, th_f)[0,1] if mask.sum() >= 3 else np.nan
 
 fig, ax = plt.subplots(1, 2, figsize=(13, 6))
-ax[0].scatter(sh_f, th_f, c='purple', s=18, alpha=.45)
-if n_gardees >= 3:
+ax[0].scatter(sh_f, th_f, c='teal', s=18, alpha=.45)
+if mask.sum() >= 3:
     p = np.polyfit(sh_f, th_f, 1); xs = np.linspace(sh_f.min(), sh_f.max(), 30)
     ax[0].plot(xs, np.polyval(p, xs), 'k--', lw=1.8)
-ax[0].set_xlabel(r'$|\partial_z \bar U|$ global (10⁻³ s⁻¹)')
-ax[0].set_ylabel(r'$|\theta|$ (deg)')
-ax[0].set_title(f'tilt vs cisaillement global S(z) (valeur absolue)\n'
-                f'corr = {corr:+.2f}  ({n_gardees} cellules, filtrées)', fontweight='bold')
+ax[0].set_xlabel(r'$\langle|\partial_z u|\rangle$ moyen DANS l’ellipse (10⁻³ s⁻¹)')
+ax[0].set_ylabel(r'$|\theta|$ inclinaison (deg)')
+ax[0].set_title(f'inclinaison vs cisaillement interne à l’ellipse\n'
+                f'corr = {corr:+.2f}  ({mask.sum()} cellules)', fontweight='bold')
 ax[0].grid(alpha=.3)
 
 ax[1].hist(th_f, bins=30, color='slateblue', edgecolor='white')
 ax[1].axvline(np.median(th_f), color='crimson', lw=2, label=f'médiane {np.median(th_f):.2f}°')
 ax[1].set_xlabel(r'$|\theta|$ (deg)'); ax[1].set_ylabel('nombre de cellules')
-ax[1].set_title('Distribution des inclinaisons (filtrées)', fontweight='bold')
+ax[1].set_title('Distribution des inclinaisons', fontweight='bold')
 ax[1].legend(fontsize=9); ax[1].grid(alpha=.3)
-plt.suptitle('②·c — multi-instants, cisaillement GLOBAL S(z), |θ|≤2° et |∂z u|≤10e-3',
+plt.suptitle('②·c — inclinaison vs cisaillement moyen interne aux ellipses (multi-instants)',
              fontsize=13, fontweight='bold')
 plt.tight_layout(); plt.show()
