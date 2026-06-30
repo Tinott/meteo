@@ -1,86 +1,211 @@
 # ===========================================================================
-# alpha(z,t), beta(z,t) dans une BOÎTE spatiale (x,z) — système 2x2 (u,v)
-#   Zone : 500 < x < 520 km , 2 < z < 10 km
-#   (lignes de courant très resserrées -> forte circulation / cisaillement)
-#   La "zone" = colonnes x de la fenêtre. Moyenne = <.>_{y, x∈fenêtre}.
-#   À chaque (t, z) on résout :
-#       y_u = alpha*x1u + beta*x2u ;  y_v = alpha*x1v + beta*x2v   (Cramer)
+# POD de Lumley sur le CHAMP DE VITESSE (u', w'), pas sur le produit u'w'.
+#   État vectoriel par snapshot : q = [u'(x,z) ; w'(x,z)] empilé.
+#   La matrice de corrélation pondère u et w à parts égales (énergie cinétique).
+#   Le flux se reconstruit ensuite via les corrélations croisées des coefs.
+#   -> spectre POD mathématiquement fondé (optimal en énergie cinétique).
 # ===========================================================================
-X_LO, X_HI = 500.0, 520.0    # km
-Z_LO, Z_HI = 2000.0, 10000.0 # m
+Z_MAX_POD = 18000.0
+iz_pod = np.where(alt <= Z_MAX_POD)[0]
+zP = alt[iz_pod].copy(); nzP = zP.size
 
-# --- indices x de la fenêtre (borné au domaine) ---
-ix_box = np.where((x/1000 >= X_LO) & (x/1000 <= X_HI))[0]
-if ix_box.size == 0:
-    raise ValueError(f"Fenêtre x={X_LO}-{X_HI} km hors domaine (0-{n_x*dx/1000:.0f} km). "
-                     f"Vérifie dx={dx:.0f} m / la résolution.")
-# --- indices z (besoin de iz-1, iz+1 pour d/dz -> on garde l'intérieur) ---
-izs_box = np.where((alt >= Z_LO) & (alt <= Z_HI))[0]
-izs_box = izs_box[(izs_box > 0) & (izs_box < n_z-1)]
-z_box   = alt[izs_box]; nz_box = izs_box.size
-print(f'Zone : x={X_LO}-{X_HI} km ({ix_box.size} colonnes)  '
-      f'z={Z_LO:.0f}-{Z_HI:.0f} m ({nz_box} niveaux)')
+# snapshots des DEUX composantes, moyennées-y, sur l'état stationnaire
+snaps_u = []; snaps_w = []
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for it in range(t_stat, n_t):
+    Fu = np.zeros((nzP, n_x)); Fw = np.zeros((nzP, n_x))
+    for j, iz in enumerate(iz_pod):
+        u_yx = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values
+        w_yx = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values
+        u_p = u_yx - u_yx.mean(axis=(0,1), keepdims=True)
+        w_p = w_yx - w_yx.mean(axis=(0,1), keepdims=True)
+        Fu[j] = u_p.mean(axis=0)        # <u'>_y (x)  (composante en x du mode)
+        Fw[j] = w_p.mean(axis=0)        # <w'>_y (x)
+    snaps_u.append(Fu); snaps_w.append(Fw)
+ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
+snaps_u = np.array(snaps_u); snaps_w = np.array(snaps_w)   # (N, nzP, nx)
+N = snaps_u.shape[0]
 
-def alpha_beta_box(ix_box, izs_box):
-    """alpha,beta (z,t) via le système 2x2 (u,v), moyennes sur y et x∈fenêtre."""
-    A_zt = np.full((izs_box.size, n_stat), np.nan)
-    B_zt = np.full((izs_box.size, n_stat), np.nan)
+# état vectoriel empilé q_i = [u'_i ; w'_i]  -> POD par méthode des snapshots
+Qu = snaps_u.reshape(N, -1); Qw = snaps_w.reshape(N, -1)
+Q  = np.concatenate([Qu, Qw], axis=1)                      # (N, 2*nzP*nx)
+Cmat = Q @ Q.T / N                                         # (N,N) corrélation d'énergie cinétique
+evals, evecs = np.linalg.eigh(Cmat)
+order = evals.argsort()[::-1]; evals = np.clip(evals[order], 0, None); evecs = evecs[:, order]
 
-    ds_u = xr.open_dataset(path3d('ua'))
-    ds_v = xr.open_dataset(path3d('va'))
-    ds_w = xr.open_dataset(path3d('wa'))
+# modes spatiaux (séparés en composantes u et w) + coefficients temporels a_k(t)
+modes = (evecs.T @ Q)                                      # (N, 2*nzP*nx)
+norms = np.linalg.norm(modes, axis=1) + 1e-30
+modes = modes / norms[:,None]
+Ddim = nzP*n_x
+phi_u = modes[:, :Ddim].reshape(N, nzP, n_x)               # composante u' de chaque mode
+phi_w = modes[:, Ddim:].reshape(N, nzP, n_x)               # composante w' de chaque mode
+acoef = Q @ modes.T                                        # (N, N) coefficients a_k(t)
 
-    def meanphi(ds, var, it, izz):
-        # <phi>_{y, x∈fenêtre} au niveau izz
-        return ds[var].isel({dim_t: it, dim_z: izz}).values[:, ix_box].mean()
+energy = evals / evals.sum(); cum = np.cumsum(energy)
+print('énergie cinétique des 6 premiers modes :', np.round(energy[:6]*100, 1), '%')
+print(f'modes pour 90% de l’énergie : {np.searchsorted(cum, 0.90)+1}')
 
-    def fluxlev(ds, var, it, izz):
-        # rho0 * <phi' w'>_fenêtre  (anomalie sur les colonnes de la fenêtre)
-        ph = ds[var].isel({dim_t: it, dim_z: izz}).values[:, ix_box]
-        ww = ds_w['wa'].isel({dim_t: it, dim_z: izz}).values[:, ix_box]
-        php = ph - ph.mean(); wwp = ww - ww.mean()
-        return rho0[izz] * (php * wwp).mean()
 
-    for ti, it in enumerate(range(t_stat, n_t)):
-        for j, iz in enumerate(izs_box):
-            dz = alt[iz+1] - alt[iz-1]
-            u0  = meanphi(ds_u,'ua',it,iz  ); ulo = meanphi(ds_u,'ua',it,iz-1); uhi = meanphi(ds_u,'ua',it,iz+1)
-            v0  = meanphi(ds_v,'va',it,iz  ); vlo = meanphi(ds_v,'va',it,iz-1); vhi = meanphi(ds_v,'va',it,iz+1)
 
-            x1u = rho0[iz]*u0
-            x2u = (rho0[iz+1]*uhi - rho0[iz-1]*ulo)/dz
-            x1v = rho0[iz]*v0
-            x2v = (rho0[iz+1]*vhi - rho0[iz-1]*vlo)/dz
 
-            yu = -(fluxlev(ds_u,'ua',it,iz+1) - fluxlev(ds_u,'ua',it,iz-1))/dz/rho0[iz]
-            yv = -(fluxlev(ds_v,'va',it,iz+1) - fluxlev(ds_v,'va',it,iz-1))/dz/rho0[iz]
 
-            det = x1u*x2v - x1v*x2u
-            if abs(det) > 1e-20:
-                A_zt[j, ti] = (yu*x2v - yv*x2u)/det     # alpha
-                B_zt[j, ti] = (x1u*yv - x1v*yu)/det     # beta
-        gc.collect()
 
-    ds_u.close(); ds_v.close(); ds_w.close()
-    del ds_u, ds_v, ds_w; gc.collect()
-    return A_zt, B_zt
+# ===========================================================================
+# Le flux <u'w'>(z) reconstruit par les K premiers modes POD de vitesse :
+#   <u'w'>_K(z,x) = sum_{k<K} sum_{l<K} <a_k a_l>_t * phi_u^k(z,x) * phi_w^l(z,x)
+#   profil = moyenne en x, * rho0.  -> combien de modes pour retrouver le flux ?
+# ===========================================================================
+def flux_profile_from_modes(K):
+    G = (acoef[:, :K].T @ acoef[:, :K]) / N           # <a_k a_l>_t  (K,K)
+    fxz = np.zeros((nzP, n_x))
+    for k in range(K):
+        for l in range(K):
+            fxz += G[k, l] * phi_u[k] * phi_w[l]
+    return rho0[iz_pod] * fxz.mean(axis=1)
 
-A1, B1 = alpha_beta_box(ix_box, izs_box)
-print(f'  alpha méd {np.nanmedian(A1):+.2e}  beta méd {np.nanmedian(B1):+.2e}  '
-      f'| NaN {100*np.isnan(A1).mean():.0f}%')
+# flux "vrai" (tous les modes) pour référence
+flux_full = flux_profile_from_modes(N)
 
-# --- figure : un trait gris par instant + médiane temporelle + bande IQR ---
-fig, ax = plt.subplots(1, 2, figsize=(11, 8), sharey=True)
-for ti in range(A1.shape[1]):
-    ax[0].plot(A1[:,ti], z_box, color='grey', alpha=.25, lw=.8)
-    ax[1].plot(B1[:,ti], z_box, color='grey', alpha=.25, lw=.8)
-Amed = np.nanmedian(A1,axis=1); Bmed = np.nanmedian(B1,axis=1)
-Aq1,Aq3 = np.nanpercentile(A1,[25,75],axis=1); Bq1,Bq3 = np.nanpercentile(B1,[25,75],axis=1)
-ax[0].plot(Amed, z_box, 'crimson', lw=2.5, label='médiane t'); ax[0].fill_betweenx(z_box, Aq1, Aq3, color='crimson', alpha=.2)
-ax[1].plot(Bmed, z_box, 'navy',    lw=2.5, label='médiane t'); ax[1].fill_betweenx(z_box, Bq1, Bq3, color='navy', alpha=.2)
-ax[0].set_title(r'$\alpha(z,t)$', fontweight='bold'); ax[1].set_title(r'$\beta(z,t)$', fontweight='bold')
-ax[0].set_ylabel('Altitude (m)')
-for a in ax: a.axvline(0, color='k', alpha=.4); a.grid(alpha=.3); a.legend(fontsize=8)
-plt.suptitle(f'Zone resserrée : x={X_LO:.0f}-{X_HI:.0f} km, z={Z_LO:.0f}-{Z_HI:.0f} m',
-             fontsize=13, fontweight='bold')
+fig, ax = plt.subplots(1, 3, figsize=(16, 6))
+Kshow = int(min(15, energy.size)); kb = np.arange(1, Kshow+1)
+ax[0].bar(kb, energy[:Kshow]*100, color='teal')
+ax[0].plot(kb, cum[:Kshow]*100, 'r-o', ms=4)
+ax[0].set_xlabel('mode POD'); ax[0].set_ylabel('énergie cinétique (%)')
+ax[0].set_title('Spectre POD du champ de vitesse', fontweight='bold'); ax[0].grid(alpha=.3)
+
+for K in [k for k in [1, 3, 5, 10, 20] if k <= N]:
+    ax[1].plot(flux_profile_from_modes(K)*1e3, zP, lw=2, label=f'{K} modes')
+ax[1].plot(flux_full*1e3, zP, 'k--', lw=2.5, label='tous')
+ax[1].axvline(0, color='grey', alpha=.4)
+ax[1].set_xlabel('flux (×10⁻³)'); ax[1].set_ylabel('z (m)')
+ax[1].set_title('Flux reconstruit par K modes', fontweight='bold'); ax[1].legend(fontsize=8); ax[1].grid(alpha=.3)
+
+# erreur de reconstruction du PROFIL de flux vs K
+s = band()
+errK = []
+Ks = np.arange(1, min(N, 30)+1)
+denom = np.sqrt(np.nansum((flux_full[iz_pod][:,None].squeeze()*0 + flux_full)[ :]**2))
+for K in Ks:
+    fK = flux_profile_from_modes(K)
+    errK.append(np.sqrt(np.nansum((fK-flux_full)**2)/np.nansum(flux_full**2)))
+ax[2].plot(Ks, errK, 'purple', lw=2, marker='o', ms=3)
+ax[2].axhline(0.1, color='grey', ls='--', label='10% erreur')
+ax[2].set_xlabel('nombre de modes K'); ax[2].set_ylabel('erreur relative du profil de flux')
+ax[2].set_title('Convergence de la reconstruction', fontweight='bold'); ax[2].legend(fontsize=8); ax[2].grid(alpha=.3)
+plt.tight_layout(); plt.show()
+
+nK10 = int(Ks[np.argmax(np.array(errK) < 0.1)]) if np.any(np.array(errK)<0.1) else N
+print(f'modes pour reconstruire le profil de flux à 10% près : {nK10}')
+
+
+
+
+
+
+# ===========================================================================
+# Profils moyens (région humide, état stationnaire) : T1, T2, et candidats Theta.
+#   T1 = mass-flux organisé ; T2 = covariance interne sous-maille.
+#   On régressera T1 et T2 SÉPARÉMENT (objectif : montrer ce que chacun "veut").
+# ===========================================================================
+reg = mh; C = 0.5
+ubar = np.zeros(n_z); sig_w = np.zeros(n_z); sig_u = np.zeros(n_z); Mc = np.zeros(n_z)
+T1p = np.zeros(n_z); T2p = np.zeros(n_z)
+
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    au=asw=asu=amc=a1=a2=0.0; n=0
+    for it in range(t_stat, n_t):
+        u = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values[reg]
+        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
+        ub, wb, Ntot = u.mean(), w.mean(), u.size
+        au += ub; asw += w.std(); asu += u.std()
+        ws, up, dn, env = classify(w, C)
+        amc += (w*up).mean()
+        # T1/T2 par catégorie (identité exacte du notebook précédent)
+        for msk in (up, dn, env):
+            if msk.sum() < 1: continue
+            sig = msk.sum()/Ntot
+            uu, ww = u[msk], w[msk]; uc, wc = uu.mean(), ww.mean()
+            a1 += sig*(uc-ub)*(wc-wb)                 # T1
+            a2 += sig*((uu-uc)*(ww-wc)).mean()        # T2
+        n += 1; del u, w
+    ubar[iz]=au/n; sig_w[iz]=asw/n; sig_u[iz]=asu/n
+    Mc[iz]=rho0[iz]*amc/n
+    T1p[iz]=rho0[iz]*a1/n; T2p[iz]=rho0[iz]*a2/n
+    gc.collect()
+ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
+
+rb = rho0*ubar
+Theta = {
+    'rho0*ubar'        : rb,
+    'd_z(rho0*ubar)'   : np.gradient(rb, alt),
+    'rho0*d2_z ubar'   : rho0*np.gradient(np.gradient(ubar, alt), alt),
+    'Mc'               : Mc,
+    'Mc*d_z ubar'      : Mc*np.gradient(ubar, alt),
+    'rho0*sig_w^2'     : rho0*sig_w**2,
+    'rho0*sig_u*sig_w' : rho0*sig_u*sig_w,
+}
+print('candidats Θ :', list(Theta.keys()))
+print(f'T1 médian {np.nanmedian(T1p[band()]):+.2e}   T2 médian {np.nanmedian(T2p[band()]):+.2e}')
+
+
+
+
+
+
+
+
+# ===========================================================================
+# STLSQ (SINDy maison) sur T1 et T2 séparément, AVEC validation train/test.
+#   Train = niveaux pairs, Test = niveaux impairs (split spatial robuste).
+#   On compare R²_train et R²_test : si test s'effondre -> sur-ajustement.
+# ===========================================================================
+def stlsq(Phi, y, thresh=0.1, iters=10):
+    xi = np.linalg.lstsq(Phi, y, rcond=None)[0]
+    for _ in range(iters):
+        small = np.abs(xi) < thresh*np.max(np.abs(xi)+1e-30)
+        xi[small] = 0.0
+        if (~small).sum()==0: break
+        xi[~small] = np.linalg.lstsq(Phi[:, ~small], y, rcond=None)[0]
+    return xi
+
+def r2(y, yh):
+    return 1 - np.sum((y-yh)**2)/np.sum((y-np.mean(y))**2)
+
+def discover(target, name):
+    s = band(); names = list(Theta.keys())
+    Phi = np.column_stack([Theta[k][s] for k in names])
+    yv  = target[s]
+    mu, sd = Phi.mean(0), Phi.std(0)+1e-30
+    Phi_s = (Phi-mu)/sd
+    idx = np.arange(len(yv))
+    tr, te = idx[idx%2==0], idx[idx%2==1]            # split pair/impair
+    # centrage sur le train uniquement
+    ym = yv[tr].mean()
+    xi = stlsq(Phi_s[tr], yv[tr]-ym, thresh=0.15)
+    yh_tr = Phi_s[tr]@xi + ym; yh_te = Phi_s[te]@xi + ym
+    R2tr, R2te = r2(yv[tr], yh_tr), r2(yv[te], yh_te)
+    print(f'\n=== {name} ===')
+    print(f'  R² train {R2tr:+.3f}   R² TEST {R2te:+.3f}   '
+          f'({"OK" if R2te>0.3 else "sur-ajustement / non fermable"})')
+    print('  termes retenus :')
+    for k,c in sorted(zip(names,xi), key=lambda t:-abs(t[1])):
+        if abs(c)>1e-9: print(f'    {k:18s} {c:+.3f}')
+    yhat_full = Phi_s@xi + ym
+    return yv, yhat_full, s, R2tr, R2te
+
+yT1, hT1, s, r1tr, r1te = discover(T1p, 'T1 (organisé / mass-flux)')
+yT2, hT2, s, r2tr, r2te = discover(T2p, 'T2 (résidu sous-maille)')
+
+# --- figure comparative ---
+fig, ax = plt.subplots(1, 2, figsize=(12, 7), sharey=True)
+ax[0].plot(yT1*1e3, alt[s], 'k', lw=2.5, label='T1 vrai')
+ax[0].plot(hT1*1e3, alt[s], 'r--', lw=2, label=f'fermeture (test R²={r1te:+.2f})')
+ax[0].set_title('T1 organisé', fontweight='bold'); ax[0].set_xlabel('flux (×10⁻³)'); ax[0].set_ylabel('z (m)')
+ax[1].plot(yT2*1e3, alt[s], 'k', lw=2.5, label='T2 vrai')
+ax[1].plot(hT2*1e3, alt[s], 'b--', lw=2, label=f'fermeture (test R²={r2te:+.2f})')
+ax[1].set_title('T2 sous-maille', fontweight='bold'); ax[1].set_xlabel('flux (×10⁻³)')
+for a in ax: a.axvline(0, color='grey', alpha=.4); a.legend(fontsize=9); a.grid(alpha=.3)
+plt.suptitle('Equation discovery séparée, validée en test (niveaux impairs)', fontsize=13, fontweight='bold')
 plt.tight_layout(); plt.show()
