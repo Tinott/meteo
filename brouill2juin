@@ -1,13 +1,93 @@
+# ===========================================================================
+# NOUVELLE BASE PHYSIQUE : Φ_rey ≈ a·ρ0σw² (énergie cinétique) + c·ρ0·B (flottabilité)
+#   B = flux de flottabilité <w'θv'> * g/θ0 — la CAUSE thermodynamique de la
+#   turbulence, plutôt que sig_u*sig_w qui n'en est qu'une conséquence statistique.
+# ===========================================================================
+reg = mh; C = 0.5
+g = 9.81; theta0 = 300.0   # à ajuster si vous avez la vraie theta0 de référence
+
+# --- 1. Calcul du flux de flottabilité B(z) = <w'θv'>, niveau par niveau ---
 B = np.zeros(n_z)
-ds_w = xr.open_dataset(path3d('wa')); ds_th = xr.open_dataset(path3d('ta'))  # ou theta_v si dispo
+ds_w = xr.open_dataset(path3d('wa'))
+try:
+    ds_th = xr.open_dataset(path3d('theta_v'))   # si vous avez theta_v directement
+    var_th = 'theta_v'
+    print('Utilisation de theta_v directement.')
+except FileNotFoundError:
+    ds_th = xr.open_dataset(path3d('ta'))          # sinon fallback sur la température
+    var_th = 'ta'
+    print('theta_v non trouvé -> fallback sur ta (approximation, pas la vraie theta_v).')
+
 for iz in range(n_z):
     ab = 0.0; n = 0
     for it in range(t_stat, n_t):
-        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
-        th = ds_th['ta'].isel({dim_t:it, dim_z:iz}).values[reg]  # remplacer par theta_v si vous l'avez
-        ab += ((w-w.mean())*(th-th.mean())).mean()
+        w  = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
+        th = ds_th[var_th].isel({dim_t:it, dim_z:iz}).values[reg]
+        ab += ((w - w.mean())*(th - th.mean())).mean()
         n += 1
     B[iz] = ab/n
-ds_w.close(); ds_th.close()
-g = 9.81; theta0 = 300.0  # à ajuster
-B_flux = g/theta0 * B
+    gc.collect()
+ds_w.close(); ds_th.close(); del ds_w, ds_th; gc.collect()
+
+B_flux = g/theta0 * B          # flux de flottabilité, unités m/s³ (production de TKE)
+print(f'B_flux calculé : plage {np.nanmin(B_flux):.2e} … {np.nanmax(B_flux):.2e} m/s³')
+
+# --- 2. Nouvelle base à 2 termes ---
+s = band(); zf = alt[s]
+Base2 = {
+    'rho0*sig_w^2' : rho0*sig_w**2,        # énergie cinétique verticale (T1)
+    'rho0*B_flux'  : rho0*B_flux,          # flux de flottabilité (cause de T2)
+}
+names_2 = list(Base2.keys())
+Phi_2 = np.column_stack([Base2[k][s] for k in names_2])
+yv_2  = yflux[s]
+ok = np.isfinite(yv_2) & np.all(np.isfinite(Phi_2), axis=1)
+Phi_2, yv_2c, zf_ok = Phi_2[ok], yv_2[ok], zf[ok]
+
+# --- 3. Fit + validation train/test (pair/impair) ---
+idx = np.arange(len(yv_2c))
+tr, te = idx[idx % 2 == 0], idx[idx % 2 == 1]
+
+coefs2 = np.linalg.lstsq(Phi_2[tr], yv_2c[tr], rcond=None)[0]
+yhat_tr = Phi_2[tr] @ coefs2
+yhat_te = Phi_2[te] @ coefs2
+R2tr2, R2te2 = r2(yv_2c[tr], yhat_tr), r2(yv_2c[te], yhat_te)
+
+print('\n=== Base physique : a·ρ0σw² (énergie) + c·ρ0·B (flottabilité) ===')
+print(f'  R² train {R2tr2:+.3f}   R² TEST {R2te2:+.3f}')
+print('  coefficients :')
+for k, c in zip(names_2, coefs2):
+    print(f'    {k:20s}  {c:+.4e}')
+
+yhat_full2 = Phi_2 @ coefs2
+
+# --- 4. Décomposition terme par terme ---
+contrib_a2 = coefs2[0]*Base2['rho0*sig_w^2'][s][ok]
+contrib_c2 = coefs2[1]*Base2['rho0*B_flux'][s][ok]
+
+# --- 5. Figure : reconstruction + décomposition ---
+fig, ax = plt.subplots(1, 2, figsize=(13, 7), sharey=True)
+
+ax[0].plot(yv_2c*1e3, zf_ok, 'k', lw=2.5, label='flux vrai')
+ax[0].plot(yhat_full2*1e3, zf_ok, 'r--', lw=2, label=f'base physique (test R²={R2te2:+.2f})')
+ax[0].axvline(0, color='grey', alpha=.4)
+ax[0].set_xlabel('flux (×10⁻³)'); ax[0].set_ylabel('z (m)')
+ax[0].set_title('Reconstruction : énergie + flottabilité', fontweight='bold')
+ax[0].legend(fontsize=9); ax[0].grid(alpha=.3)
+
+ax[1].plot(contrib_a2*1e3, zf_ok, lw=2, label=r'$a\cdot\rho_0\sigma_w^2$ (énergie)')
+ax[1].plot(contrib_c2*1e3, zf_ok, lw=2, label=r'$c\cdot\rho_0 B$ (flottabilité)')
+ax[1].plot(yv_2c*1e3, zf_ok, 'k--', lw=1.5, alpha=.6, label='flux vrai')
+ax[1].axvline(0, color='grey', alpha=.4)
+ax[1].set_xlabel('contribution (×10⁻³)')
+ax[1].set_title('Décomposition par mécanisme', fontweight='bold')
+ax[1].legend(fontsize=9); ax[1].grid(alpha=.3)
+
+plt.suptitle('Base physique causale : énergie cinétique + flottabilité (au lieu de σu·σw)',
+             fontsize=13, fontweight='bold')
+plt.tight_layout(); plt.show()
+
+# --- 6. Comparaison directe avec l'ancienne base (sig_u*sig_w) ---
+print(f"\nComparaison :")
+print(f"  R² test ANCIENNE base (σw² + σu·σw) : à reprendre de votre run précédent")
+print(f"  R² test NOUVELLE base (σw² + B_flux) : {R2te2:+.3f}")
