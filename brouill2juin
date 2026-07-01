@@ -1,115 +1,64 @@
 # ===========================================================================
-# Terme de pression (Dixit et al. 2021 / Romps F/M) + fermeture de sin(2phi)
-#   Hypothèse : le transport contre-gradient est piloté par le gradient
-#   horizontal de perturbation de pression corrélé aux ascendances.
-#   ATTENTION : proxy simplifié — à ajuster si dim_y/structure de `reg` diffère.
+# BASE DE DÉCOMPOSITION SIMPLE : Φ_rey ≈ a·ρ0σw² + b·Mc + c·ρ0σuσw
+#   3 termes seulement, tous physiquement interprétables, dérivés de vos
+#   résultats STLSQ précédents (dominants de T1 et T2).
 # ===========================================================================
 
-# --- 1. Extraction du gradient de pression corrélé aux ascendances ---
-reg = mh; C = 0.5
-dxl = float(x[1]-x[0])
-pgrad_up = np.zeros(n_z)     # <dp'/dx>_up  (proxy de la force de pression sur les ascendances)
-
-ds_p = xr.open_dataset(path3d('pa')); ds_w = xr.open_dataset(path3d('wa'))
-for iz in range(n_z):
-    ap = 0.0; n = 0
-    for it in range(t_stat, n_t):
-        p_yx = ds_p['pa'].isel({dim_t:it, dim_z:iz}).values          # (y,x)
-        w_yx = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values          # (y,x)
-        p_p  = p_yx - p_yx.mean()                                    # anomalie de pression
-        dpdx = (np.roll(p_p, -1, axis=1) - np.roll(p_p, 1, axis=1)) / (2*dxl)  # périodique en x
-        dpdx_reg = dpdx[reg]; w_reg = w_yx[reg]
-        ws, up, dn, env = classify(w_reg, C)
-        if up.sum() >= 1:
-            ap += dpdx_reg[up].mean()
-        n += 1
-    pgrad_up[iz] = ap/n
-    gc.collect()
-ds_p.close(); ds_w.close(); del ds_p, ds_w; gc.collect()
-
-print(f'gradient de pression (ascendances) calculé : plage {np.nanmin(pgrad_up):.2e} … {np.nanmax(pgrad_up):.2e} Pa/m')
-
-# --- 2. Terme F/M à la Romps : force de pression normalisée par le flux de masse ---
-F_over_M = -pgrad_up / (Mc/rho0 + 1e-9)     # signe: force = -1/rho0 dp'/dx, normalisée par <w>_up
-
 s = band(); zf = alt[s]
-fig, ax = plt.subplots(1, 4, figsize=(20, 6), sharey=True)
-ax[0].plot(pgrad_up[s], zf, 'saddlebrown', lw=2); ax[0].axvline(0, color='grey', alpha=.4)
-ax[0].set_xlabel(r"$\langle \partial_x p'\rangle_{up}$"); ax[0].set_ylabel('z (m)')
-ax[0].set_title('Gradient de pression\n(ascendances)', fontweight='bold'); ax[0].grid(alpha=.3)
 
-ax[1].plot(F_over_M[s], zf, 'darkorange', lw=2); ax[1].axvline(0, color='grey', alpha=.4)
-ax[1].set_xlabel('F/M (proxy Romps)'); ax[1].set_title('Terme de pression\nnormalisé', fontweight='bold')
-ax[1].grid(alpha=.3)
-
-# --- 3. Dictionnaire Theta_r enrichi (cinématique + pression) ---
-sin2phi_z = np.interp(alt, zQ, sin2phi)          # depuis cell 53, déjà en mémoire
-shear = np.gradient(ubar, alt)
-Theta_r = {
-    'shear/sig_w'        : shear / (sig_w + 1e-9),
-    'Mc/(rho0*sig_w)'    : Mc / (rho0*sig_w + 1e-9),
-    'sig_u/sig_w'        : sig_u / (sig_w + 1e-9),
-    'theta_uw'            : np.radians(theta_uw),      # cell 29
-    'F_over_M'            : F_over_M,                   # NOUVEAU : terme de pression Dixit/Romps
+# --- 1. Construction de la base (3 fonctions seulement) ---
+Base = {
+    'rho0*sig_w^2'     : rho0*sig_w**2,
+    'Mc'               : Mc,
+    'rho0*sig_u*sig_w' : rho0*sig_u*sig_w,
 }
-names_r = list(Theta_r.keys())
-print('dictionnaire Θ_r enrichi :', names_r)
+names_b = list(Base.keys())
+Phi_b = np.column_stack([Base[k][s] for k in names_b])
+yv_b  = yflux[s]
 
-# --- 4. STLSQ avec validation train/test (pair/impair), gestion des NaN ---
-Phi_r = np.column_stack([Theta_r[k][s] for k in names_r])
-yv_r  = sin2phi_z[s]
-ok = np.isfinite(yv_r) & np.all(np.isfinite(Phi_r), axis=1)
-Phi_r, yv_r_c, zf_ok = Phi_r[ok], yv_r[ok], zf[ok]
-
-mu_r, sd_r = Phi_r.mean(0), Phi_r.std(0) + 1e-30
-Phi_rs = (Phi_r - mu_r) / sd_r
-
-idx = np.arange(len(yv_r_c))
+# --- 2. Fit par moindres carrés SANS seuillage (3 termes = déjà minimal) ---
+#     Validation train/test pair/impair, comme le reste du pipeline
+idx = np.arange(len(yv_b))
 tr, te = idx[idx % 2 == 0], idx[idx % 2 == 1]
 
-ym_r = yv_r_c[tr].mean()
-xi_r = stlsq(Phi_rs[tr], yv_r_c[tr] - ym_r, thresh=0.15)
-yh_tr = Phi_rs[tr] @ xi_r + ym_r
-yh_te = Phi_rs[te] @ xi_r + ym_r
-R2tr_r, R2te_r = r2(yv_r_c[tr], yh_tr), r2(yv_r_c[te], yh_te)
+coefs = np.linalg.lstsq(Phi_b[tr], yv_b[tr], rcond=None)[0]
+yhat_tr = Phi_b[tr] @ coefs
+yhat_te = Phi_b[te] @ coefs
+R2tr = r2(yv_b[tr], yhat_tr)
+R2te = r2(yv_b[te], yhat_te)
 
-print('\n=== sin(2phi) [tilt Morlet] avec terme de pression ===')
-print(f'  R² train {R2tr_r:+.3f}   R² TEST {R2te_r:+.3f}   '
-      f'({"OK" if R2te_r>0.3 else "sur-ajustement / non fermable"})')
-print('  termes retenus :')
-for k, c in sorted(zip(names_r, xi_r), key=lambda t: -abs(t[1])):
-    if abs(c) > 1e-9:
-        print(f'    {k:18s} {c:+.3f}')
+print('=== Base simple à 3 termes : a·ρ0σw² + b·Mc + c·ρ0σuσw ===')
+print(f'  R² train {R2tr:+.3f}   R² TEST {R2te:+.3f}')
+print('  coefficients (unités physiques directes) :')
+for k, c in zip(names_b, coefs):
+    print(f'    {k:20s}  {c:+.4e}')
 
-sin2phi_hat = Phi_rs @ xi_r + ym_r
+yhat_full = Phi_b @ coefs
 
-ax[2].plot(yv_r_c, zf_ok, 'k', lw=2.5, label='sin(2φ) vrai')
-ax[2].plot(sin2phi_hat, zf_ok, 'g--', lw=2, label=f'fermeture (test R²={R2te_r:+.2f})')
-ax[2].axvline(0, color='grey', alpha=.4)
-ax[2].set_xlabel(r'$\sin(2\varphi)$'); ax[2].set_title('Fermeture du tilt\n(avec pression)', fontweight='bold')
-ax[2].legend(fontsize=9); ax[2].grid(alpha=.3)
+# --- 3. Décomposition terme par terme (contribution de chaque brique) ---
+contrib_A = coefs[0]*Base['rho0*sig_w^2'][s]
+contrib_B = coefs[1]*Base['Mc'][s]
+contrib_C = coefs[2]*Base['rho0*sig_u*sig_w'][s]
 
-# --- 5. Reconstruction finale du flux : amplitude (mesurée) x tilt (fermé avec F/M) ---
-A_dom_z = np.interp(alt, zQ, A_dom)
-flux_recon_full = rho0[s][ok] * A_dom_z[s][ok] * sin2phi_hat / n_x
-flux_ref_interp = np.interp(zf_ok, zQ, flux_ref)
-R2_flux_final = r2(flux_ref_interp, flux_recon_full)
+# --- 4. Figure : flux vrai vs reconstruit, + décomposition des 3 contributions ---
+fig, ax = plt.subplots(1, 2, figsize=(13, 7), sharey=True)
 
-ax[3].plot(flux_ref_interp*1e3, zf_ok, 'k', lw=2.5, label='flux vrai')
-ax[3].plot(flux_recon_full*1e3, zf_ok, 'm--', lw=2,
-           label=f'amplitude×tilt(F/M) (R²={R2_flux_final:+.2f})')
-ax[3].axvline(0, color='grey', alpha=.4)
-ax[3].set_xlabel('flux (×10⁻³)')
-ax[3].set_title('Flux reconstruit\n(avec terme de pression)', fontweight='bold')
-ax[3].legend(fontsize=9); ax[3].grid(alpha=.3)
+ax[0].plot(yv_b*1e3, zf, 'k', lw=2.5, label='flux vrai')
+ax[0].plot(yhat_full*1e3, zf, 'r--', lw=2, label=f'base 3 termes (test R²={R2te:+.2f})')
+ax[0].axvline(0, color='grey', alpha=.4)
+ax[0].set_xlabel('flux (×10⁻³)'); ax[0].set_ylabel('z (m)')
+ax[0].set_title('Reconstruction totale', fontweight='bold')
+ax[0].legend(fontsize=9); ax[0].grid(alpha=.3)
 
-plt.suptitle("Fermeture géométrique enrichie : cinématique + réponse en pression (Dixit et al. 2021)",
+ax[1].plot(contrib_A*1e3, zf, lw=2, label=r'$a\cdot\rho_0\sigma_w^2$')
+ax[1].plot(contrib_B*1e3, zf, lw=2, label=r'$b\cdot M_c$')
+ax[1].plot(contrib_C*1e3, zf, lw=2, label=r'$c\cdot\rho_0\sigma_u\sigma_w$')
+ax[1].plot(yv_b*1e3, zf, 'k--', lw=1.5, alpha=.6, label='flux vrai')
+ax[1].axvline(0, color='grey', alpha=.4)
+ax[1].set_xlabel('contribution (×10⁻³)')
+ax[1].set_title('Décomposition par terme', fontweight='bold')
+ax[1].legend(fontsize=9); ax[1].grid(alpha=.3)
+
+plt.suptitle('Base de décomposition simple du flux de Reynolds (3 termes)',
              fontsize=13, fontweight='bold')
 plt.tight_layout(); plt.show()
-
-# --- 6. Comparaison explicite : est-ce que F/M améliore le fit par rapport à sans pression ? ---
-print(f"\nAmélioration apportée par F_over_M :")
-print(f"  R² test SANS pression (résultat précédent, à comparer manuellement)")
-print(f"  R² test AVEC pression = {R2te_r:+.3f}")
-print(f"  -> si F_over_M apparaît dans les termes retenus ET améliore le R² test,")
-print(f"     ça confirme Dixit et al. : le tilt n'est pas purement cinématique.")
