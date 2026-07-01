@@ -1,107 +1,90 @@
-# ===========================================================================
-#  ②·c REFONTE : tilt = pente de la PHASE de Morlet vs cisaillement
-#  ---------------------------------------------------------------------------
-#   (2) tilt mesuré par le déphasage vertical de la structure (pas d'ellipse)
-#       -> angle en unités physiques propres, plus de bug d'aspect ratio
-#   (3) corrélation DÉCALÉE en temps : theta(t) vs cisaillement(t - lag)
-#   (4) contrôle d'altitude : corrélation PARTIELLE (retire la dépendance en z)
-#   (5) sélection par qualité : on ne garde que les (z,t) à amplitude significative
-#  Réutilise : path3d, dim_t, dim_z, n_t, n_x, x, alt, rho0, t_stat.
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# Snapshots f_i(x,y,z) = u'(x,y,z) w'(x,y,z), SANS moyenne en y
+# bande z <= Z_MAX_POD, sur les instants stationnaires
+# ---------------------------------------------------------------------------
+Z_MAX_POD = 18000.0
+iz_pod = np.where(alt <= Z_MAX_POD)[0]
+zP = alt[iz_pod].copy(); nzP = zP.size
 
-Z_MAX_T = 16000.0
-iz_t = np.where((alt >= 2000) & (alt <= Z_MAX_T))[0]
-zT = alt[iz_t].copy(); nzT = zT.size
-dxl = float(x[1]-x[0])
+ds_u = xr.open_dataset(path3d('ua'))
+n_y = ds_u.sizes[dim_y]
+ds_u.close()
 
-W0 = 6.0; NSC = 60
-scales = np.geomspace(4*dxl, n_x*dxl/3, NSC)
-fourier_factor = (4*np.pi)/(W0 + np.sqrt(2+W0**2))
-lam_km = scales*fourier_factor/1000.0
-kx = np.fft.fftfreq(n_x, d=dxl)*2*np.pi
-def cwt_morlet(sig):
-    S = np.fft.fft(sig); out = np.empty((NSC, n_x), complex)
-    for i, s in enumerate(scales):
-        sk = s*kx
-        psih = (np.pi**-0.25)*np.sqrt(2*np.pi*s/dxl)*(sk>0)*np.exp(-0.5*(sk-W0)**2)
-        out[i] = np.fft.ifft(S*psih)
-    return out
+N = n_t - t_stat
+mem_gb = nzP * n_y * n_x * N * 4 / 1e9  # float32
+print(f'Taille attendue : nzP={nzP}, n_y={n_y}, n_x={n_x}, N={N}')
+print(f'Mémoire estimée snaps : {mem_gb:.1f} Go (float32)')
 
-def unwrap_phase_col(phase_zx, weight_zx):
-    s = np.sum(weight_zx*np.sin(phase_zx), axis=1)
-    c = np.sum(weight_zx*np.cos(phase_zx), axis=1)
-    return np.unwrap(np.arctan2(s, c))
+snaps = np.zeros((N, nzP, n_y, n_x), dtype=np.float32)  # préallocation
 
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
-TILT = []; SHEAR = []; AMP = []
-for IT in range(t_stat, n_t):
-    U = np.zeros((nzT, n_x)); Wv = np.zeros((nzT, n_x))
-    for j, iz in enumerate(iz_t):
-        U[j]  = ds_u['ua'].isel({dim_t:IT, dim_z:iz}).values.mean(axis=0)
-        Wv[j] = ds_w['wa'].isel({dim_t:IT, dim_z:iz}).values.mean(axis=0)
-    Up = U - U.mean(axis=1, keepdims=True)
-    Wp = Wv - Wv.mean(axis=1, keepdims=True)
-
-    phase_dom = np.zeros((nzT, n_x)); amp_dom = np.zeros((nzT, n_x))
-    cofs = np.zeros(NSC); Wz = []
-    for j in range(nzT):
-        Wu = cwt_morlet(Up[j]); Ww = cwt_morlet(Wp[j])
-        cross = Wu*np.conj(Ww); Wz.append(cross)
-        cofs += np.abs(cross).sum(axis=1)
-    s_dom = int(np.argmax(cofs))
-    for j in range(nzT):
-        phase_dom[j] = np.angle(Wz[j][s_dom]); amp_dom[j] = np.abs(Wz[j][s_dom])
-
-    phi_z = unwrap_phase_col(phase_dom, amp_dom)
-    tilt_z = np.gradient(phi_z, zT)                       # rad/m
-    shear_z = np.abs(np.gradient(U.mean(axis=1), zT))    # |d<u>/dz|(z)
-    TILT.append(tilt_z); SHEAR.append(shear_z); AMP.append(amp_dom.mean(axis=1))
+for idx, it in enumerate(range(t_stat, n_t)):
+    for j, iz in enumerate(iz_pod):
+        u_yx = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values
+        w_yx = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values
+        u_p = u_yx - u_yx.mean(axis=(0,1), keepdims=True)
+        w_p = w_yx - w_yx.mean(axis=(0,1), keepdims=True)
+        snaps[idx, j] = (u_p * w_p).astype(np.float32)   # (y,x) gardé tel quel
 ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
 
-TILT = np.array(TILT); SHEAR = np.array(SHEAR); AMP = np.array(AMP)
-n_it = TILT.shape[0]
-print(f'{n_it} instants x {nzT} niveaux = {TILT.size} echantillons (z,t)')
+fmean = snaps.mean(axis=0)             # champ moyen (z,y,x)
+A = snaps - fmean                      # fluctuations
+print(f'{N} snapshots de taille ({nzP},{n_y},{n_x})')
 
-# (5) selection par qualite
-qmask = AMP > np.nanmedian(AMP)
-print(f'echantillons retenus (amplitude > mediane) : {qmask.sum()}')
+# ---------------------------------------------------------------------------
+# POD méthode des snapshots (sur A centré, cf. discussion précédente)
+# ---------------------------------------------------------------------------
+Amat = A.reshape(N, -1)                # (N, nzP*n_y*n_x) — centré cette fois
+Cs = Amat @ Amat.T / N
+evals, evecs = np.linalg.eigh(Cs)
+order = evals.argsort()[::-1]; evals = evals[order]; evecs = evecs[:, order]
+evals = np.clip(evals, 0, None)
 
-# (4) controle d'altitude : anomalie par niveau
-def dez(arr): return arr - np.nanmean(arr, axis=0, keepdims=True)
-tilt_a = dez(np.abs(TILT)); shear_a = dez(SHEAR)
+modes = (evecs.T @ Amat)
+norms = np.linalg.norm(modes, axis=1) + 1e-30
+modes = (modes / norms[:,None]).reshape(N, nzP, n_y, n_x)
+coefs = Amat @ modes.reshape(N, -1).T
 
-# (3) correlation decalee en temps
-lags = np.arange(-min(5, n_it-1), min(5, n_it-1)+1)
-corr_lag = []
-for L in lags:
-    if L >= 0:
-        a = np.abs(TILT)[L:n_it]; b = SHEAR[0:n_it-L]; q = qmask[L:n_it]
-    else:
-        a = np.abs(TILT)[0:n_it+L]; b = SHEAR[-L:n_it]; q = qmask[0:n_it+L]
-    aa = a[q].ravel(); bb = b[q].ravel()
-    corr_lag.append(np.corrcoef(aa, bb)[0,1] if aa.size > 3 else np.nan)
-corr_lag = np.array(corr_lag)
-best = int(np.nanargmax(np.abs(corr_lag))) if np.any(np.isfinite(corr_lag)) else 0
-print(f'correlation decalee : max |r|={corr_lag[best]:+.2f} au lag {lags[best]}')
+energy = evals / evals.sum()
+cum = np.cumsum(energy)
+print('énergie des 6 premiers modes :', np.round(energy[:6]*100, 1), '%')
+print(f"modes pour 90% de l'énergie : {np.searchsorted(cum, 0.90)+1}")
 
-m = qmask
-r_brut    = np.corrcoef(np.abs(TILT)[m], SHEAR[m])[0,1]
-r_partiel = np.corrcoef(tilt_a[m], shear_a[m])[0,1]
-print(f'r brut (|tilt| vs shear)     = {r_brut:+.2f}')
-print(f'r partiel (a altitude fixee) = {r_partiel:+.2f}')
+# ---------------------------------------------------------------------------
+# Spectre + reconstruction du profil de flux + mode dominant (coupe y moyenne)
+# ---------------------------------------------------------------------------
+def flux_profile_3d(field3d):
+    # profil rho0<u'w'>(z) à partir d'un champ (z,y,x) -> moyenne en (y,x)
+    return rho0[iz_pod]*field3d.mean(axis=(1,2))
 
-fig, ax = plt.subplots(1, 3, figsize=(17, 5))
-ax[0].scatter(SHEAR[m]*1e3, np.abs(TILT)[m]*1e3, s=8, alpha=.3, c='teal')
-ax[0].set_xlabel(r'$|\partial_z\bar u|$ (10⁻³ s⁻¹)'); ax[0].set_ylabel(r'|tilt|=|d$\varphi$/dz| (10⁻³ rad/m)')
-ax[0].set_title(f'brut : r={r_brut:+.2f}', fontweight='bold'); ax[0].grid(alpha=.3)
-ax[1].scatter(shear_a[m]*1e3, tilt_a[m]*1e3, s=8, alpha=.3, c='purple')
-ax[1].set_xlabel("anomalie cisaillement"); ax[1].set_ylabel("anomalie |tilt|")
-ax[1].set_title(f'controle altitude : r={r_partiel:+.2f}', fontweight='bold'); ax[1].grid(alpha=.3)
-ax[2].axhline(0, color='grey', lw=.8); ax[2].axvline(0, color='grey', lw=.8)
-ax[2].plot(lags, corr_lag, 'o-', color='crimson')
-ax[2].plot(lags[best], corr_lag[best], 'o', ms=12, mfc='none', mec='k')
-ax[2].set_xlabel('lag (instants) : tilt(t) vs shear(t−lag)'); ax[2].set_ylabel('corrélation')
-ax[2].set_title('corrélation décalée en temps', fontweight='bold'); ax[2].grid(alpha=.3)
-plt.suptitle('②·c refonte — tilt par phase de Morlet, contrôle altitude, lag temporel',
-             fontsize=13, fontweight='bold')
+flux_full = flux_profile_3d(fmean)  # profil moyen de référence (= snaps.mean(axis=0))
+
+fig, ax = plt.subplots(1, 3, figsize=(16, 6))
+Kshow = int(min(12, energy.size))
+kx_bar = np.arange(1, Kshow+1)
+ax[0].bar(kx_bar, energy[:Kshow]*100, color='steelblue')
+ax[0].plot(kx_bar, cum[:Kshow]*100, 'r-o', ms=4)
+ax[0].set_xlabel('mode POD'); ax[0].set_ylabel('énergie (%)')
+ax[0].set_title('Spectre POD 3D, champ centré', fontweight='bold'); ax[0].grid(alpha=.3)
+
+Kmax = int(coefs.shape[1])
+modes_flat = modes.reshape(Kmax, -1)
+for K in [k for k in [1, 2, 4, 8] if k <= Kmax]:
+    recon_A = (coefs[:, :K] @ modes_flat[:K]).reshape(N, nzP, n_y, n_x)  # (N,z,y,x)
+    recon_snaps = recon_A + fmean[None]     # on rajoute la moyenne retirée
+    flux_recon = flux_profile_3d(recon_snaps.mean(axis=0))
+    ax[1].plot(flux_recon*1e3, zP, lw=2, label=f'{K} mode(s)')
+ax[1].plot(flux_full*1e3, zP, 'k--', lw=2, label='complet')
+ax[1].axvline(0, color='grey', alpha=.4)
+ax[1].set_xlabel('flux (×10⁻³)'); ax[1].set_ylabel('z (m)')
+ax[1].set_title('Reconstruction du profil de flux', fontweight='bold'); ax[1].legend(fontsize=8); ax[1].grid(alpha=.3)
+
+# mode 1 : coupe (z,x) moyennée en y, pour visualisation
+mode1_zx = modes[0].mean(axis=1)   # (nzP, n_x)
+pm = np.percentile(np.abs(mode1_zx), 99)
+im = ax[2].pcolormesh(x/1000, zP/1000, mode1_zx, cmap='RdBu_r',
+                      norm=TwoSlopeNorm(0, -pm, pm), shading='auto')
+ax[2].set_xlabel('x [km]'); ax[2].set_ylabel('z [km]')
+ax[2].set_title('Mode POD #1 (moyenné en y)', fontweight='bold')
+fig.colorbar(im, ax=ax[2])
 plt.tight_layout(); plt.show()
