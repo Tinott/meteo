@@ -1,4 +1,13 @@
-contrib_a = a * rho0[s]*sig_w[s]**2
-contrib_c = c * rho0[s]*sig_u[s]*sig_w[s]
-print('contribution médiane terme a:', np.nanmedian(np.abs(contrib_a)))
-print('contribution médiane terme c:', np.nanmedian(np.abs(contrib_c)))
+B = np.zeros(n_z)
+ds_w = xr.open_dataset(path3d('wa')); ds_th = xr.open_dataset(path3d('ta'))  # ou theta_v si dispo
+for iz in range(n_z):
+    ab = 0.0; n = 0
+    for it in range(t_stat, n_t):
+        w = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values[reg]
+        th = ds_th['ta'].isel({dim_t:it, dim_z:iz}).values[reg]  # remplacer par theta_v si vous l'avez
+        ab += ((w-w.mean())*(th-th.mean())).mean()
+        n += 1
+    B[iz] = ab/n
+ds_w.close(); ds_th.close()
+g = 9.81; theta0 = 300.0  # à ajuster
+B_flux = g/theta0 * B
