@@ -1,50 +1,36 @@
 # ===========================================================================
-# NOUVELLE DÉCOMPOSITION : rho0<u'w'> = rho0*sig_u*sig_w * r_uw(z)
-#   r_uw = coefficient de corrélation turbulente u'-w' (efficacité de transport)
-#   Hypothèse physique : r_uw lié à l'inclinaison des structures cohérentes
-#   (théorie eddy-tilt : r_uw ~ sin(2*theta), theta = angle vs verticale)
+# NOUVELLE DÉCOMPOSITION : fermeture STLSQ de sin(2*phi) — le tilt de la CWT Morlet
+#   Réutilise A_dom, sin2phi, zQ, flux_ref (cell 53), rho0, alt, ubar, sig_w, Mc, band
+#   Hypothèse : sin(2phi) porte l'info géométrique (cisaillement -> tilt -> corrélation)
 # ===========================================================================
 
-# --- 1. Calcul de r_uw(z) à partir des quantités déjà calculées ---
-r_uw = yflux / (rho0 * sig_u * sig_w + 1e-30)          # coefficient de corrélation, borné [-1,1] en théorie
-r_uw = np.clip(r_uw, -1, 1)                             # sécurité numérique
+# --- 1. Interpolation sur la grille alt (band() travaille sur alt, pas zQ) ---
+sin2phi_z = np.interp(alt, zQ, sin2phi)
+A_dom_z   = np.interp(alt, zQ, A_dom)
 
-fig, ax = plt.subplots(1, 3, figsize=(16, 6))
-ax[0].plot(r_uw, alt, 'k', lw=2)
-ax[0].axvline(0, color='grey', alpha=.4)
-ax[0].set_xlabel(r"$r_{uw} = \langle u'w' \rangle / (\sigma_u \sigma_w)$")
-ax[0].set_ylabel('z (m)'); ax[0].set_title("Efficacité de corrélation turbulente", fontweight='bold')
-ax[0].grid(alpha=.3)
+s = band()
+zf = alt[s]
 
-# --- 2. Comparaison avec le tilt CWT si disponible ---
-have_tilt = 'theta_z' in dir()  # remplacez 'theta_z' par le nom exact de votre profil de tilt
-if have_tilt:
-    pred_sin2theta = np.sin(2*theta_z)
-    ax[1].plot(r_uw, alt, 'k', lw=2, label=r'$r_{uw}$ mesuré')
-    ax[1].plot(pred_sin2theta, alt, 'r--', lw=2, label=r'$\sin(2\theta)$ (tilt CWT)')
-    ax[1].axvline(0, color='grey', alpha=.4)
-    ax[1].set_xlabel('valeur'); ax[1].set_title('r_uw vs prédiction géométrique', fontweight='bold')
-    ax[1].legend(); ax[1].grid(alpha=.3)
-else:
-    ax[1].text(0.5, 0.5, "theta_z non trouvé\n(pipeline Morlet)", ha='center', va='center')
-    ax[1].set_title('tilt CWT indisponible', fontweight='bold')
+fig, ax = plt.subplots(1, 3, figsize=(16, 6), sharey=True)
+ax[0].plot(sin2phi_z[s], zf, 'darkgreen', lw=2); ax[0].axvline(0, color='grey', alpha=.4)
+ax[0].set_xlabel(r'$\sin(2\varphi)$'); ax[0].set_ylabel('z (m)')
+ax[0].set_title('Tilt Morlet (à fermer)', fontweight='bold'); ax[0].grid(alpha=.3)
 
-# --- 3. Dictionnaire de candidats pour expliquer r_uw(z) ---
+# --- 2. Dictionnaire de candidats pour expliquer sin(2phi)(z) ---
 shear = np.gradient(ubar, alt)
 Theta_r = {
-    'shear/sig_w'        : shear / (sig_w + 1e-9),          # nombre de cisaillement local (adimensionné)
+    'shear/sig_w'        : shear / (sig_w + 1e-9),          # nombre de cisaillement local
     'Mc/(rho0*sig_w)'    : Mc / (rho0*sig_w + 1e-9),         # fraction convective normalisée
-    'sig_u/sig_w'        : sig_u / (sig_w + 1e-9),           # anisotropie de la turbulence
+    'sig_u/sig_w'        : sig_u / (sig_w + 1e-9),           # anisotropie turbulente
+    'theta_uw'            : np.radians(theta_uw),             # angle interne (cell 29), déjà en mémoire
 }
-if have_tilt:
-    Theta_r['sin2theta'] = np.sin(2*theta_z)
-    Theta_r['theta']     = theta_z
-
-# --- 4. STLSQ avec validation train/test (pair/impair), sur la bande utile ---
-s = band()
 names_r = list(Theta_r.keys())
+
+# --- 3. STLSQ avec validation train/test (pair/impair) ---
 Phi_r = np.column_stack([Theta_r[k][s] for k in names_r])
-yv_r  = r_uw[s]
+yv_r  = sin2phi_z[s]
+ok = np.isfinite(yv_r) & np.all(np.isfinite(Phi_r), axis=1)   # sécurité NaN
+Phi_r, yv_r = Phi_r[ok], yv_r[ok]
 
 mu_r, sd_r = Phi_r.mean(0), Phi_r.std(0) + 1e-30
 Phi_rs = (Phi_r - mu_r) / sd_r
@@ -58,7 +44,7 @@ yh_tr = Phi_rs[tr] @ xi_r + ym_r
 yh_te = Phi_rs[te] @ xi_r + ym_r
 R2tr_r, R2te_r = r2(yv_r[tr], yh_tr), r2(yv_r[te], yh_te)
 
-print('=== r_uw = <u\'w\'>/(sig_u*sig_w) : fermeture géométrique ===')
+print('=== sin(2phi) [tilt Morlet] : fermeture géométrique ===')
 print(f'  R² train {R2tr_r:+.3f}   R² TEST {R2te_r:+.3f}   '
       f'({"OK" if R2te_r>0.3 else "sur-ajustement / non fermable"})')
 print('  termes retenus :')
@@ -66,29 +52,28 @@ for k, c in sorted(zip(names_r, xi_r), key=lambda t: -abs(t[1])):
     if abs(c) > 1e-9:
         print(f'    {k:18s} {c:+.3f}')
 
-r_uw_hat = Phi_rs @ xi_r + ym_r
+sin2phi_hat = Phi_rs @ xi_r + ym_r
+zf_ok = zf[ok]
 
-ax[2].plot(yv_r*1, alt[s], 'k', lw=2.5, label='r_uw vrai')
-ax[2].plot(r_uw_hat*1, alt[s], 'g--', lw=2, label=f'fermeture (test R²={R2te_r:+.2f})')
+ax[1].plot(yv_r, zf_ok, 'k', lw=2.5, label='sin(2φ) vrai')
+ax[1].plot(sin2phi_hat, zf_ok, 'g--', lw=2, label=f'fermeture (test R²={R2te_r:+.2f})')
+ax[1].axvline(0, color='grey', alpha=.4)
+ax[1].set_xlabel(r'$\sin(2\varphi)$'); ax[1].set_title('Fermeture du tilt', fontweight='bold')
+ax[1].legend(fontsize=9); ax[1].grid(alpha=.3)
+
+# --- 4. Reconstruction finale du flux complet : amplitude (mesurée) x tilt (fermé) ---
+flux_recon_full = rho0[s][ok] * A_dom_z[s][ok] * sin2phi_hat / n_x
+R2_flux_final = r2(flux_ref[np.interp(zf_ok, zQ, np.arange(len(zQ))).astype(int)] if False else
+                    np.interp(zf_ok, zQ, flux_ref), flux_recon_full)
+
+ax[2].plot(np.interp(zf_ok, zQ, flux_ref)*1e3, zf_ok, 'k', lw=2.5, label='flux vrai')
+ax[2].plot(flux_recon_full*1e3, zf_ok, 'm--', lw=2,
+           label=f'amplitude×tilt fermé (R²={R2_flux_final:+.2f})')
 ax[2].axvline(0, color='grey', alpha=.4)
-ax[2].set_xlabel(r'$r_{uw}$'); ax[2].set_title('Fermeture de r_uw', fontweight='bold')
+ax[2].set_xlabel('flux (×10⁻³)')
+ax[2].set_title('Flux reconstruit : amplitude × tilt fermé', fontweight='bold')
 ax[2].legend(fontsize=9); ax[2].grid(alpha=.3)
 
-plt.suptitle("Décomposition amplitude × efficacité : "
-             r"$\rho_0\langle u'w'\rangle = \rho_0\sigma_u\sigma_w \cdot r_{uw}$",
+plt.suptitle("Fermeture géométrique : amplitude (mesurée) × sin(2φ) (STLSQ)",
              fontsize=13, fontweight='bold')
 plt.tight_layout(); plt.show()
-
-# --- 5. Reconstruction finale du flux complet : amplitude (déjà validée) x r_uw fermé ---
-flux_recon_full = rho0[s]*sig_u[s]*sig_w[s] * r_uw_hat
-R2_flux_final = r2(yflux[s], flux_recon_full)
-print(f"\nR² du flux total reconstruit (amplitude x r_uw fermé) = {R2_flux_final:+.3f}")
-
-plt.figure(figsize=(6,7))
-plt.plot(yflux[s]*1e3, alt[s], 'k', lw=2.5, label='flux vrai')
-plt.plot(flux_recon_full*1e3, alt[s], 'm--', lw=2,
-         label=f'amplitude×r_uw fermé (R²={R2_flux_final:+.2f})')
-plt.axvline(0, color='grey', alpha=.4)
-plt.xlabel('flux (×10⁻³)'); plt.ylabel('z (m)')
-plt.title('Flux reconstruit via décomposition amplitude × efficacité', fontweight='bold')
-plt.legend(); plt.grid(alpha=.3); plt.tight_layout(); plt.show()
