@@ -1,140 +1,28 @@
 # ============================================================
-# OBJECTIF 2 — Equation discovery, restreint à 2-18 km
+# Contribution en pourcentage de chaque terme retenu
 # ============================================================
 
-# --- restriction verticale, appliquée aux grandeurs déjà calculées sur la
-#     grille complète (dudz/d2udz2 restent dérivés sur toute la colonne,
-#     puis on tronque — ça évite les artefacts de bord d'une dérivation
-#     faite directement sur la fenêtre réduite) ---
-mask_z = (alt >= 2000) & (alt <= 18000)
-alt_r, rho0_r, ubar_r, wbar_r, dudz_r, d2udz2_r, flux_r = (
-    a[mask_z] for a in (alt, rho0, ubar, wbar, dudz, d2udz2, flux)
-)
-n_z_r = alt_r.size
-print(f'{n_z_r} niveaux entre {alt_r[0]:.0f} et {alt_r[-1]:.0f} m (sur {n_z} au total)')
-
-d3udz3_r  = np.gradient(d2udz2, alt, axis=0)[mask_z]
-dwdz_r    = np.gradient(wbar, alt, axis=0)[mask_z]
-drho0dz_r = np.gradient(rho0, alt)[mask_z][:, None]
-
-
-def build_library():
-    '''Bibliothèque grande échelle, restreinte à 2-18 km.'''
-    Z = np.tile(alt_r[:, None], (1, n_stat))
-    H = alt.max()                          # sommet convectif = pleine colonne (référence physique)
-    rho0_2d = np.tile(rho0_r[:, None], (1, n_stat))
-
-    terms = {
-        'dudz':         dudz_r,
-        'd2udz2':       d2udz2_r,
-        'd3udz3':       d3udz3_r,
-        'dudz2':        dudz_r ** 2,
-        'absdudz_dudz': np.abs(dudz_r) * dudz_r,
-        'dudz_d2udz2':  dudz_r * d2udz2_r,
-        'd2udz2_2':     d2udz2_r ** 2,
-        'u':        ubar_r,
-        'u2':       ubar_r ** 2,
-        'u3':       ubar_r ** 3,
-        'u_dudz':   ubar_r * dudz_r,
-        'u_d2udz2': ubar_r * d2udz2_r,
-        'u2_dudz':  ubar_r ** 2 * dudz_r,
-        'w':        wbar_r,
-        'w2':       wbar_r ** 2,
-        'w_dudz':   wbar_r * dudz_r,
-        'w_d2udz2': wbar_r * d2udz2_r,
-        'dwdz':     dwdz_r,
-        'w_u':      wbar_r * ubar_r,
-        'rho0_dudz':    rho0_2d * dudz_r,
-        'rho0_d2udz2':  rho0_2d * d2udz2_r,
-        'drho0dz_u':    drho0dz_r * ubar_r,
-        'drho0dz_dudz': drho0dz_r * dudz_r,
-        'z_dudz':   Z * dudz_r,
-        'z2_dudz':  Z ** 2 * dudz_r,
-        'z_d2udz2': Z * d2udz2_r,
-        'zHz_dudz': Z * (H - Z) * dudz_r,
-        'zHz':      (Z / H) * (1 - Z / H),
-    }
-    names = list(terms.keys())
-    Theta = np.stack([terms[n].ravel() for n in names], axis=1)
-    return Theta, names
-
-
-def nse(y_true, y_pred):
-    ss_res = np.sum((y_true - y_pred) ** 2)
-    ss_tot = np.sum((y_true - y_true.mean()) ** 2)
-    return 1.0 - ss_res / ss_tot
-
-
-def stlsq(Theta, y, threshold=0.05, n_iter=15, alpha=1e-8):
-    n_terms = Theta.shape[1]
-    coef = np.linalg.solve(Theta.T @ Theta + alpha * np.eye(n_terms), Theta.T @ y)
-    active = np.ones(n_terms, dtype=bool)
-    for _ in range(n_iter):
-        small = np.abs(coef) < threshold
-        if not np.any(small & active):
-            break
-        active[small] = False
-        if not np.any(active):
-            break
-        Xs = Theta[:, active]
-        coef_active = np.linalg.solve(Xs.T @ Xs + alpha * np.eye(Xs.shape[1]), Xs.T @ y)
-        coef = np.zeros(n_terms)
-        coef[active] = coef_active
-    return coef, active
-
-
-# --- fit ---
-Theta, names = build_library()
-y = flux_r.ravel()
-
-mu, sigma = Theta.mean(axis=0), Theta.std(axis=0) + 1e-12
-Theta_n = (Theta - mu) / sigma
-y_n = (y - y.mean()) / (y.std() + 1e-12)
-
-coef_n, active = stlsq(Theta_n, y_n, threshold=0.08)
-coef = coef_n * (y.std() / sigma)
-intercept = y.mean() - mu @ coef
-
-print('Termes retenus :')
-for name, c, a in zip(names, coef, active):
-    if a:
-        print(f'  {name:15s} : {c:+.4e}')
-print(f'  intercept       : {intercept:+.4e}')
-
-flux_pred = (Theta @ coef + intercept).reshape(n_z_r, n_stat)
-r2 = nse(flux_r, flux_pred)
-print(f'\nNSE (2-18 km, z-t complet) = {r2:.3f}')
-
-# --- profil moyen : vrai vs régression, + contribution de chaque terme retenu ---
-fig, ax = plt.subplots(figsize=(6.5, 6))
-
-ax.plot(flux_r.mean(axis=1), alt_r / 1000, color='k', lw=2.2, label='flux vrai (moy. temp.)')
-ax.plot(flux_pred.mean(axis=1), alt_r / 1000, '--', color='k', lw=1.6, label='régression totale')
-
-active_names = [n for n, a in zip(names, active) if a]
-colors = plt.cm.tab10(np.linspace(0, 1, len(active_names)))
-j_active = 0
+importance = {}
 for j, (name, c, a) in enumerate(zip(names, coef, active)):
     if not a:
         continue
-    contrib = (Theta[:, j] * c).reshape(n_z_r, n_stat).mean(axis=1)
-    ax.plot(contrib, alt_r / 1000, lw=1.1, alpha=0.85, color=colors[j_active],
-             label=f'{name} ({c:+.2e})')
-    j_active += 1
+    contrib = (Theta[:, j] * c).reshape(n_z_r, n_stat).mean(axis=1)   # profil moyen dans le temps
+    importance[name] = np.sum(np.abs(contrib))                        # poids intégré sur 2-18 km
 
-ax.axvline(intercept, color='grey', ls=':', lw=1, label=f'intercept ({intercept:+.2e})')
-ax.axvline(0, color='k', lw=0.5)
+importance['intercept'] = np.sum(np.abs(np.full(n_z_r, intercept)))
 
-ax.set_xlabel(r"$\rho_0\langle u'w'\rangle$"); ax.set_ylabel('z (km)')
-ax.legend(fontsize=8, loc='center left', bbox_to_anchor=(1.02, 0.5))
-ax.set_title(f'Profil moyen 2-18 km : vrai vs régression (NSE={r2:.2f})')
-fig.tight_layout(); plt.show()
+total = sum(importance.values())
+pct = {name: 100 * v / total for name, v in importance.items()}
+pct_sorted = dict(sorted(pct.items(), key=lambda kv: kv[1], reverse=True))
 
-# --- scatter vrai vs prédit ---
-fig, ax = plt.subplots(figsize=(5, 5))
-ax.scatter(flux_r.ravel(), flux_pred.ravel(), s=4, alpha=0.3)
-lims = [min(flux_r.min(), flux_pred.min()), max(flux_r.max(), flux_pred.max())]
-ax.plot(lims, lims, 'k--', lw=1)
-ax.set_xlabel('flux vrai'); ax.set_ylabel('flux régression')
-ax.set_title(f'NSE = {r2:.3f}')
+print('Contribution relative (%) au profil moyen 2-18 km :')
+for name, p in pct_sorted.items():
+    print(f'  {name:15s} : {p:5.1f}%')
+
+fig, ax = plt.subplots(figsize=(6, 0.4 * len(pct_sorted) + 1))
+bars = ax.barh(list(pct_sorted.keys())[::-1], list(pct_sorted.values())[::-1], color='steelblue')
+ax.bar_label(bars, fmt='%.1f%%', padding=3, fontsize=9)
+ax.set_xlabel('contribution relative au profil moyen (%)')
+ax.set_title('Poids de chaque terme (2-18 km)')
+ax.set_xlim(0, max(pct_sorted.values()) * 1.15)
 fig.tight_layout(); plt.show()
