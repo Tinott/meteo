@@ -1,37 +1,80 @@
-def relief_watershed(field, sigma_smooth=2, min_distance=7):
-    '''Decompose field (relief) en bassins par watershed.
-    field : (nz, nx), typiquement psi' ou une carte de |Gamma|.
-    sigma_smooth : lissage gaussien avant detection des marqueurs (evite
-    de detecter des dizaines de faux maxima dus au bruit).
-    min_distance : taille de la fenetre pour chercher les extrema locaux.
-    '''
-    field_s = ndimage.gaussian_filter(field, sigma=sigma_smooth)
+# ============================================================
+# OBJECTIF 5 — Circulation, cellules par signe constant de psi
+# ============================================================
 
-    is_max = ndimage.maximum_filter(field_s, size=min_distance) == field_s
-    is_min = ndimage.minimum_filter(field_s, size=min_distance) == field_s
-    lbl_max, n_max = ndimage.label(is_max)
-    lbl_min, n_min = ndimage.label(is_min)
-
-    # marqueurs : positifs pour les bosses (updrafts), negatifs pour les
-    # creux (downdrafts) -> watershed_ift les traite comme deux familles
-    markers = np.zeros(field.shape, dtype=np.int32)
-    markers[lbl_max > 0] = lbl_max[lbl_max > 0]
-    markers[lbl_min > 0] = -lbl_min[lbl_min > 0]
-
-    field_u = ((field - field.min()) / (field.max() - field.min() + 1e-30) * 255).astype(np.uint8)
-    basins = ndimage.watershed_ift(field_u, markers)
-    print(f'{n_max} bosses, {n_min} creux -> {len(np.unique(basins))} bassins')
-    return basins, markers
+def vorticity_uw(U2d, W2d, xv, zv):
+    '''Vorticite physique omega_y = d(u)/dz - d(w)/dx (Stokes), differente
+    du second membre du solveur de Poisson.'''
+    dudz = np.gradient(U2d, zv, axis=0)
+    dwdx = np.gradient(W2d, xv, axis=1)
+    return dudz - dwdx
 
 
-# --- appliqué à psi' (à l'instant central, comme pour circulation_cells) ---
-basins, markers = relief_watershed(psi_a_mid, sigma_smooth=2, min_distance=7)
+def circulation_cells(psi_a, omega, dxl, dzl, min_size=25):
+    '''Segmente psi_a par signe constant (composantes connexes), calcule
+    Gamma = somme(omega)*dx*dz par cellule (Stokes). min_size filtre le
+    bruit de resolution du solveur.'''
+    sign_map = np.where(psi_a >= 0, 1, -1)
+    cells = []
+    for s in (1, -1):
+        mask = sign_map == s
+        lbl, n_comp = ndi_label(mask)
+        for k in range(1, n_comp + 1):
+            comp_mask = lbl == k
+            if comp_mask.sum() < min_size:
+                continue
+            coords = np.argwhere(comp_mask)
+            gamma = omega[comp_mask].sum() * dxl * dzl
+            cz, cx = coords.mean(axis=0)
+            cells.append(dict(sign=s, area=int(comp_mask.sum()), gamma=gamma,
+                               centroid=(cz, cx), coords=coords))
+    cells.sort(key=lambda c: -abs(c['gamma']))
+    return cells, sign_map
 
-fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-axes[0].pcolormesh(x / 1000, alt / 1000, psi_a_mid, cmap='RdBu_r', shading='auto')
+
+# --- application à l'instant central de l'échantillon POD ---
+it_mid = t_idx_pod[len(t_idx_pod) // 2]
+psi_mid = psi_snaps[len(t_idx_pod) // 2]
+psi_a_mid = psi_mid - psi_mid.mean()
+
+ds_u = xr.open_dataset(path3d('ua'))
+ds_w = xr.open_dataset(path3d('wa'))
+U2d_mid = ds_u['ua'].isel({dim_t: t_stat + it_mid}).mean(dim=dim_y).values
+W2d_mid = ds_w['wa'].isel({dim_t: t_stat + it_mid}).mean(dim=dim_y).values
+ds_u.close(); ds_w.close(); gc.collect()
+
+omega_mid = vorticity_uw(U2d_mid, W2d_mid, x, alt)
+dz_mean = np.mean(np.diff(alt))
+
+cells, sign_map = circulation_cells(psi_a_mid, omega_mid, dx, dz_mean, min_size=25)
+
+print(f'{len(cells)} cellules de circulation significatives :')
+for i, c in enumerate(cells[:10]):
+    cz, cx = c['centroid']
+    sens = 'horaire' if c['gamma'] < 0 else 'anti-horaire'
+    print(f"  #{i:2d}  signe={c['sign']:+d}  Gamma={c['gamma']:+.2e}  ({sens})  "
+          f"aire={c['area']:4d} pts  centre=(z={alt[int(cz)]/1000:.1f}km, x={x[int(cx)]/1000:.0f}km)")
+
+# --- carte : une couleur distincte par cellule retenue, numérotée ---
+cell_map = np.full(psi_a_mid.shape, np.nan)
+for i, c in enumerate(cells):
+    for (zz, xx) in c['coords']:
+        cell_map[zz, xx] = i
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+vmax = np.nanpercentile(np.abs(psi_a_mid), 98) + 1e-30
+axes[0].pcolormesh(x / 1000, alt / 1000, psi_a_mid, cmap='RdBu_r',
+                    vmin=-vmax, vmax=vmax, shading='auto')
 axes[0].set_title(r"$\psi'$ (relief)")
-im = axes[1].pcolormesh(x / 1000, alt / 1000, basins, cmap='tab20', shading='auto')
-axes[1].set_title('bassins (watershed)')
+
+cmap_cells = plt.cm.get_cmap('tab20', max(len(cells), 1))
+axes[1].pcolormesh(x / 1000, alt / 1000, cell_map, cmap=cmap_cells, shading='auto')
+for i, c in enumerate(cells):
+    cz, cx = c['centroid']
+    axes[1].annotate(str(i), (x[int(cx)] / 1000, alt[int(cz)] / 1000),
+                      fontsize=8, ha='center', va='center', fontweight='bold')
+axes[1].set_title(f'{len(cells)} cellules de circulation (numérotées)')
+
 for ax in axes:
     ax.set_xlabel('x (km)'); ax.set_ylabel('z (km)')
 fig.tight_layout(); plt.show()
