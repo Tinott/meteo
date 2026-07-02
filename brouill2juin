@@ -1,4 +1,4 @@
- ============================================================
+# ============================================================
 # OBJECTIF 2 — Equation discovery, restreint à 2-18 km
 # ============================================================
 
@@ -83,7 +83,7 @@ def stlsq(Theta, y, threshold=0.05, n_iter=15, alpha=1e-8):
     return coef, active
 
 
-# --- fit ---
+# --- fit initial (STLSQ) ---
 Theta, names = build_library()
 y = flux_r.ravel()
 
@@ -95,17 +95,38 @@ coef_n, active = stlsq(Theta_n, y_n, threshold=0.08)
 coef = coef_n * (y.std() / sigma)
 intercept = y.mean() - mu @ coef
 
-print('Termes retenus :')
+print('Termes retenus (STLSQ, avant filtre) :')
 for name, c, a in zip(names, coef, active):
     if a:
         print(f'  {name:15s} : {c:+.4e}')
-print(f'  intercept       : {intercept:+.4e}')
 
-flux_pred = (Theta @ coef + intercept).reshape(n_z_r, n_stat)
+# ============================================================
+# --- ETAPE AJOUTEE : ne garder que les termes dominants
+#     (coefficient physique |coef| > 1e-2), puis refit OLS
+#     dessus uniquement (relève le biais du seuillage précédent) ---
+# ============================================================
+active2 = active & (np.abs(coef) > 1e-2)
+print(f'\n{active2.sum()} termes gardés après filtre |coef| > 1e-2 :')
+print('  ', [n for n, a in zip(names, active2) if a])
+
+Xs2 = Theta_n[:, active2]
+coef_active2, *_ = np.linalg.lstsq(Xs2, y_n, rcond=None)
+coef_n2 = np.zeros(len(names))
+coef_n2[active2] = coef_active2
+coef2 = coef_n2 * (y.std() / sigma)
+intercept2 = y.mean() - mu @ coef2
+
+print('\nTermes finaux (refit OLS sur le sous-ensemble filtré) :')
+for name, c, a in zip(names, coef2, active2):
+    if a:
+        print(f'  {name:15s} : {c:+.4e}')
+print(f'  intercept       : {intercept2:+.4e}')
+
+flux_pred = (Theta @ coef2 + intercept2).reshape(n_z_r, n_stat)
 r2 = nse(flux_r, flux_pred)
-print(f'\nNSE (2-18 km, z-t complet) = {r2:.3f}')
+print(f'\nNSE (2-18 km, termes filtrés) = {r2:.3f}')
 
-# --- comparaison affichage ---
+# --- comparaison affichage : flux réel vs régression filtrée ---
 fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
 vmax = np.nanpercentile(np.abs(flux_r), 98) + 1e-30
 
@@ -117,7 +138,7 @@ fig.colorbar(im0, ax=axes[0])
 
 im1 = axes[1].pcolormesh(np.arange(n_stat), alt_r / 1000, flux_pred,
                           cmap='RdBu_r', vmin=-vmax, vmax=vmax, shading='auto')
-axes[1].set_title(f'Régression STLSQ (NSE={r2:.2f})')
+axes[1].set_title(f'Régression filtrée (NSE={r2:.2f})')
 axes[1].set_xlabel('indice temporel')
 fig.colorbar(im1, ax=axes[1])
 
@@ -132,16 +153,16 @@ fig.tight_layout(); plt.show()
 
 fig, ax = plt.subplots(figsize=(5, 5))
 ax.plot(flux_r.mean(axis=1), alt_r / 1000, label='flux vrai (moy. temp.)')
-ax.plot(flux_pred.mean(axis=1), alt_r / 1000, '--', label='régression (moy. temp.)')
+ax.plot(flux_pred.mean(axis=1), alt_r / 1000, '--', label='régression filtrée (moy. temp.)')
 ax.axvline(0, color='k', lw=0.5)
 ax.set_xlabel(r"$\rho_0\langle u'w'\rangle$"); ax.set_ylabel('z (km)')
-ax.legend(); ax.set_title('Profil moyen 2-18 km : vrai vs régression')
+ax.legend(); ax.set_title('Profil moyen 2-18 km : vrai vs régression filtrée')
 fig.tight_layout(); plt.show()
 
 fig, ax = plt.subplots(figsize=(5, 5))
 ax.scatter(flux_r.ravel(), flux_pred.ravel(), s=4, alpha=0.3)
 lims = [min(flux_r.min(), flux_pred.min()), max(flux_r.max(), flux_pred.max())]
 ax.plot(lims, lims, 'k--', lw=1)
-ax.set_xlabel('flux vrai'); ax.set_ylabel('flux régression')
+ax.set_xlabel('flux vrai'); ax.set_ylabel('flux régression filtrée')
 ax.set_title(f'NSE = {r2:.3f}')
 fig.tight_layout(); plt.show()
