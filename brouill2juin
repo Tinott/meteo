@@ -1,38 +1,148 @@
-# --- cisaillement / fermeture en longueur de mélange ---
-        'dudz':        dudz,
-        'd2udz2':      d2udz2,
-        'd3udz3':      d3udz3,
-        'dudz2':       dudz ** 2,                       # production de cisaillement S^2
-        'absdudz_dudz': np.abs(dudz) * dudz,             # K ~ l^2 |S| S, fermeture signée
-        'dudz_d2udz2': dudz * d2udz2,
-        'd2udz2_2':    d2udz2 ** 2,
+# ============================================================
+# OBJECTIF 2 — Equation discovery, termes physiques grande échelle
+# ============================================================
 
-        # --- vent moyen ---
-        'u':      ubar,
-        'u2':     ubar ** 2,
-        'u3':     ubar ** 3,
-        'u_dudz': ubar * dudz,
+def build_library():
+    '''Bibliothèque de candidats grande échelle (aucune nouvelle donnée chargée,
+    uniquement ubar, wbar, dudz, d2udz2, rho0, alt déjà calculés).'''
+    Z = np.tile(alt[:, None], (1, n_stat))
+    H = alt.max()
+
+    d3udz3  = np.gradient(d2udz2, alt, axis=0)
+    dwdz    = np.gradient(wbar, alt, axis=0)
+    drho0dz = np.gradient(rho0, alt)[:, None]           # (nz,1), broadcast sur t
+    rho0_2d = np.tile(rho0[:, None], (1, n_stat))
+
+    terms = {
+        # cisaillement / fermeture en longueur de mélange
+        'dudz':         dudz,
+        'd2udz2':       d2udz2,
+        'd3udz3':       d3udz3,
+        'dudz2':        dudz ** 2,
+        'absdudz_dudz': np.abs(dudz) * dudz,
+        'dudz_d2udz2':  dudz * d2udz2,
+        'd2udz2_2':     d2udz2 ** 2,
+        # vent moyen
+        'u':        ubar,
+        'u2':       ubar ** 2,
+        'u3':       ubar ** 3,
+        'u_dudz':   ubar * dudz,
         'u_d2udz2': ubar * d2udz2,
-        'u2_dudz': ubar ** 2 * dudz,
-
-        # --- vent vertical ---
+        'u2_dudz':  ubar ** 2 * dudz,
+        # vent vertical
         'w':        wbar,
         'w2':       wbar ** 2,
         'w_dudz':   wbar * dudz,
         'w_d2udz2': wbar * d2udz2,
         'dwdz':     dwdz,
         'w_u':      wbar * ubar,
-
-        # --- densité / fermeture down-gradient classique (à confronter à Romps 2014) ---
-        'rho0_dudz':   rho0_2d * dudz,       # -K*rho0*dudz : LE terme down-gradient
-        'rho0_d2udz2': rho0_2d * d2udz2,
+        # densité / down-gradient classique
+        'rho0_dudz':    rho0_2d * dudz,
+        'rho0_d2udz2':  rho0_2d * d2udz2,
         'drho0dz_u':    drho0dz * ubar,
         'drho0dz_dudz': drho0dz * dudz,
+        # structure verticale (forme CMT z/zc(1-z/zc))
+        'z_dudz':   Z * dudz,
+        'z2_dudz':  Z ** 2 * dudz,
+        'z_d2udz2': Z * d2udz2,
+        'zHz_dudz': Z * (H - Z) * dudz,
+        'zHz':      (Z / H) * (1 - Z / H),
+    }
+    names = list(terms.keys())
+    Theta = np.stack([terms[n].ravel() for n in names], axis=1)
+    return Theta, names
 
-        # --- structure verticale (cohérent avec le fit A*(z/zc)(1-z/zc)^n déjà validé) ---
-        'z_dudz':    Z * dudz,
-        'z2_dudz':   Z ** 2 * dudz,
-        'z_d2udz2':  Z * d2udz2,
-        'zHz_dudz':  Z * (H - Z) * dudz,     # forme "profil CMT" appliquée au cisaillement
-        'zHz':       (Z / H) * (1 - Z / H),  # juste la forme géométrique, sans dérivée
-    
+
+def nse(y_true, y_pred):
+    '''Nash-Sutcliffe efficiency = R^2.'''
+    ss_res = np.sum((y_true - y_pred) ** 2)
+    ss_tot = np.sum((y_true - y_true.mean()) ** 2)
+    return 1.0 - ss_res / ss_tot
+
+
+def stlsq(Theta, y, threshold=0.05, n_iter=15, alpha=1e-8):
+    '''Sequential Thresholded Least-Squares (numpy pur, style SINDy).'''
+    n_terms = Theta.shape[1]
+    coef = np.linalg.solve(Theta.T @ Theta + alpha * np.eye(n_terms), Theta.T @ y)
+    active = np.ones(n_terms, dtype=bool)
+    for _ in range(n_iter):
+        small = np.abs(coef) < threshold
+        if not np.any(small & active):
+            break
+        active[small] = False
+        if not np.any(active):
+            break
+        Xs = Theta[:, active]
+        coef_active = np.linalg.solve(Xs.T @ Xs + alpha * np.eye(Xs.shape[1]), Xs.T @ y)
+        coef = np.zeros(n_terms)
+        coef[active] = coef_active
+    return coef, active
+
+
+# --- fit --------------------------------------------------------------
+Theta, names = build_library()
+y = flux.ravel()
+
+mu, sigma = Theta.mean(axis=0), Theta.std(axis=0) + 1e-12
+Theta_n = (Theta - mu) / sigma
+y_n = (y - y.mean()) / (y.std() + 1e-12)
+
+coef_n, active = stlsq(Theta_n, y_n, threshold=0.08)
+
+# dénormalisation, AVEC ordonnée à l'origine (oubliée dans la 1ere version -
+# sans elle la courbe reconstruite est décalée d'une constante)
+coef = coef_n * (y.std() / sigma)
+intercept = y.mean() - mu @ coef
+
+print('Termes retenus :')
+for name, c, a in zip(names, coef, active):
+    if a:
+        print(f'  {name:15s} : {c:+.4e}')
+print(f'  intercept       : {intercept:+.4e}')
+
+flux_pred = (Theta @ coef + intercept).reshape(n_z, n_stat)
+r2 = nse(flux, flux_pred)
+print(f'\nNSE (flux physique, z-t complet) = {r2:.3f}')
+
+# --- comparaison affichage : flux réel vs régression trouvée ----------
+fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
+vmax = np.nanpercentile(np.abs(flux), 98) + 1e-30
+
+im0 = axes[0].pcolormesh(np.arange(n_stat), alt / 1000, flux,
+                          cmap='RdBu_r', vmin=-vmax, vmax=vmax, shading='auto')
+axes[0].set_title('Flux de Reynolds (vrai)')
+axes[0].set_xlabel('indice temporel'); axes[0].set_ylabel('z (km)')
+fig.colorbar(im0, ax=axes[0])
+
+im1 = axes[1].pcolormesh(np.arange(n_stat), alt / 1000, flux_pred,
+                          cmap='RdBu_r', vmin=-vmax, vmax=vmax, shading='auto')
+axes[1].set_title(f'Régression STLSQ (NSE={r2:.2f})')
+axes[1].set_xlabel('indice temporel')
+fig.colorbar(im1, ax=axes[1])
+
+resid = flux - flux_pred
+vmax_r = np.nanpercentile(np.abs(resid), 98) + 1e-30
+im2 = axes[2].pcolormesh(np.arange(n_stat), alt / 1000, resid,
+                          cmap='PuOr', vmin=-vmax_r, vmax=vmax_r, shading='auto')
+axes[2].set_title('Résidu (vrai - régression)')
+axes[2].set_xlabel('indice temporel')
+fig.colorbar(im2, ax=axes[2])
+fig.tight_layout(); plt.show()
+
+# --- profil moyen dans le temps : vrai vs régression -------------------
+fig, ax = plt.subplots(figsize=(5, 5))
+ax.plot(flux.mean(axis=1), alt / 1000, label='flux vrai (moy. temp.)')
+ax.plot(flux_pred.mean(axis=1), alt / 1000, '--', label='régression (moy. temp.)')
+ax.axvline(0, color='k', lw=0.5)
+ax.set_xlabel(r"$\rho_0\langle u'w'\rangle$"); ax.set_ylabel('z (km)')
+ax.legend(); ax.set_title('Profil moyen : vrai vs régression')
+fig.tight_layout(); plt.show()
+
+# --- scatter vrai vs prédit, tout (z,t) confondu ------------------------
+fig, ax = plt.subplots(figsize=(5, 5))
+ax.scatter(flux.ravel(), flux_pred.ravel(), s=4, alpha=0.3)
+lims = [min(flux.min(), flux_pred.min()), max(flux.max(), flux_pred.max())]
+ax.plot(lims, lims, 'k--', lw=1)
+ax.set_xlabel('flux vrai'); ax.set_ylabel('flux régression')
+ax.set_title(f'NSE = {r2:.3f}')
+fig.tight_layout(); plt.show()
