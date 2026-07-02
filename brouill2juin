@@ -1,28 +1,37 @@
-# ============================================================
-# Contribution en pourcentage de chaque terme retenu
-# ============================================================
+def relief_watershed(field, sigma_smooth=2, min_distance=7):
+    '''Decompose field (relief) en bassins par watershed.
+    field : (nz, nx), typiquement psi' ou une carte de |Gamma|.
+    sigma_smooth : lissage gaussien avant detection des marqueurs (evite
+    de detecter des dizaines de faux maxima dus au bruit).
+    min_distance : taille de la fenetre pour chercher les extrema locaux.
+    '''
+    field_s = ndimage.gaussian_filter(field, sigma=sigma_smooth)
 
-importance = {}
-for j, (name, c, a) in enumerate(zip(names, coef, active)):
-    if not a:
-        continue
-    contrib = (Theta[:, j] * c).reshape(n_z_r, n_stat).mean(axis=1)   # profil moyen dans le temps
-    importance[name] = np.sum(np.abs(contrib))                        # poids intégré sur 2-18 km
+    is_max = ndimage.maximum_filter(field_s, size=min_distance) == field_s
+    is_min = ndimage.minimum_filter(field_s, size=min_distance) == field_s
+    lbl_max, n_max = ndimage.label(is_max)
+    lbl_min, n_min = ndimage.label(is_min)
 
-importance['intercept'] = np.sum(np.abs(np.full(n_z_r, intercept)))
+    # marqueurs : positifs pour les bosses (updrafts), negatifs pour les
+    # creux (downdrafts) -> watershed_ift les traite comme deux familles
+    markers = np.zeros(field.shape, dtype=np.int32)
+    markers[lbl_max > 0] = lbl_max[lbl_max > 0]
+    markers[lbl_min > 0] = -lbl_min[lbl_min > 0]
 
-total = sum(importance.values())
-pct = {name: 100 * v / total for name, v in importance.items()}
-pct_sorted = dict(sorted(pct.items(), key=lambda kv: kv[1], reverse=True))
+    field_u = ((field - field.min()) / (field.max() - field.min() + 1e-30) * 255).astype(np.uint8)
+    basins = ndimage.watershed_ift(field_u, markers)
+    print(f'{n_max} bosses, {n_min} creux -> {len(np.unique(basins))} bassins')
+    return basins, markers
 
-print('Contribution relative (%) au profil moyen 2-18 km :')
-for name, p in pct_sorted.items():
-    print(f'  {name:15s} : {p:5.1f}%')
 
-fig, ax = plt.subplots(figsize=(6, 0.4 * len(pct_sorted) + 1))
-bars = ax.barh(list(pct_sorted.keys())[::-1], list(pct_sorted.values())[::-1], color='steelblue')
-ax.bar_label(bars, fmt='%.1f%%', padding=3, fontsize=9)
-ax.set_xlabel('contribution relative au profil moyen (%)')
-ax.set_title('Poids de chaque terme (2-18 km)')
-ax.set_xlim(0, max(pct_sorted.values()) * 1.15)
+# --- appliqué à psi' (à l'instant central, comme pour circulation_cells) ---
+basins, markers = relief_watershed(psi_a_mid, sigma_smooth=2, min_distance=7)
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+axes[0].pcolormesh(x / 1000, alt / 1000, psi_a_mid, cmap='RdBu_r', shading='auto')
+axes[0].set_title(r"$\psi'$ (relief)")
+im = axes[1].pcolormesh(x / 1000, alt / 1000, basins, cmap='tab20', shading='auto')
+axes[1].set_title('bassins (watershed)')
+for ax in axes:
+    ax.set_xlabel('x (km)'); ax.set_ylabel('z (km)')
 fig.tight_layout(); plt.show()
