@@ -1,35 +1,58 @@
-# ============================================================
-# OBJECTIF 2 — Lasso (2-18 km), post-Lasso debias, comparaison au flux
+ ============================================================
+# OBJECTIF 2 — Equation discovery, restreint à 2-18 km
 # ============================================================
 
-# --- restriction verticale (dérivées calculées sur la grille complète, puis tronquées) ---
+# --- restriction verticale, appliquée aux grandeurs déjà calculées sur la
+#     grille complète (dudz/d2udz2 restent dérivés sur toute la colonne,
+#     puis on tronque — ça évite les artefacts de bord d'une dérivation
+#     faite directement sur la fenêtre réduite) ---
 mask_z = (alt >= 2000) & (alt <= 18000)
 alt_r, rho0_r, ubar_r, wbar_r, dudz_r, d2udz2_r, flux_r = (
     a[mask_z] for a in (alt, rho0, ubar, wbar, dudz, d2udz2, flux)
 )
 n_z_r = alt_r.size
+print(f'{n_z_r} niveaux entre {alt_r[0]:.0f} et {alt_r[-1]:.0f} m (sur {n_z} au total)')
+
 d3udz3_r  = np.gradient(d2udz2, alt, axis=0)[mask_z]
 dwdz_r    = np.gradient(wbar, alt, axis=0)[mask_z]
 drho0dz_r = np.gradient(rho0, alt)[mask_z][:, None]
-print(f'{n_z_r} niveaux entre {alt_r[0]:.0f} et {alt_r[-1]:.0f} m')
 
 
 def build_library():
+    '''Bibliothèque grande échelle, restreinte à 2-18 km.'''
     Z = np.tile(alt_r[:, None], (1, n_stat))
-    H = alt.max()
+    H = alt.max()                          # sommet convectif = pleine colonne (référence physique)
     rho0_2d = np.tile(rho0_r[:, None], (1, n_stat))
+
     terms = {
-        'dudz': dudz_r, 'd2udz2': d2udz2_r, 'd3udz3': d3udz3_r,
-        'dudz2': dudz_r ** 2, 'absdudz_dudz': np.abs(dudz_r) * dudz_r,
-        'dudz_d2udz2': dudz_r * d2udz2_r, 'd2udz2_2': d2udz2_r ** 2,
-        'u': ubar_r, 'u2': ubar_r ** 2, 'u3': ubar_r ** 3,
-        'u_dudz': ubar_r * dudz_r, 'u_d2udz2': ubar_r * d2udz2_r, 'u2_dudz': ubar_r ** 2 * dudz_r,
-        'w': wbar_r, 'w2': wbar_r ** 2, 'w_dudz': wbar_r * dudz_r, 'w_d2udz2': wbar_r * d2udz2_r,
-        'dwdz': dwdz_r, 'w_u': wbar_r * ubar_r,
-        'rho0_dudz': rho0_2d * dudz_r, 'rho0_d2udz2': rho0_2d * d2udz2_r,
-        'drho0dz_u': drho0dz_r * ubar_r, 'drho0dz_dudz': drho0dz_r * dudz_r,
-        'z_dudz': Z * dudz_r, 'z2_dudz': Z ** 2 * dudz_r, 'z_d2udz2': Z * d2udz2_r,
-        'zHz_dudz': Z * (H - Z) * dudz_r, 'zHz': (Z / H) * (1 - Z / H),
+        'dudz':         dudz_r,
+        'd2udz2':       d2udz2_r,
+        'd3udz3':       d3udz3_r,
+        'dudz2':        dudz_r ** 2,
+        'absdudz_dudz': np.abs(dudz_r) * dudz_r,
+        'dudz_d2udz2':  dudz_r * d2udz2_r,
+        'd2udz2_2':     d2udz2_r ** 2,
+        'u':        ubar_r,
+        'u2':       ubar_r ** 2,
+        'u3':       ubar_r ** 3,
+        'u_dudz':   ubar_r * dudz_r,
+        'u_d2udz2': ubar_r * d2udz2_r,
+        'u2_dudz':  ubar_r ** 2 * dudz_r,
+        'w':        wbar_r,
+        'w2':       wbar_r ** 2,
+        'w_dudz':   wbar_r * dudz_r,
+        'w_d2udz2': wbar_r * d2udz2_r,
+        'dwdz':     dwdz_r,
+        'w_u':      wbar_r * ubar_r,
+        'rho0_dudz':    rho0_2d * dudz_r,
+        'rho0_d2udz2':  rho0_2d * d2udz2_r,
+        'drho0dz_u':    drho0dz_r * ubar_r,
+        'drho0dz_dudz': drho0dz_r * dudz_r,
+        'z_dudz':   Z * dudz_r,
+        'z2_dudz':  Z ** 2 * dudz_r,
+        'z_d2udz2': Z * d2udz2_r,
+        'zHz_dudz': Z * (H - Z) * dudz_r,
+        'zHz':      (Z / H) * (1 - Z / H),
     }
     names = list(terms.keys())
     Theta = np.stack([terms[n].ravel() for n in names], axis=1)
@@ -37,115 +60,50 @@ def build_library():
 
 
 def nse(y_true, y_pred):
-    return 1.0 - np.sum((y_true - y_pred) ** 2) / np.sum((y_true - y_true.mean()) ** 2)
+    ss_res = np.sum((y_true - y_pred) ** 2)
+    ss_tot = np.sum((y_true - y_true.mean()) ** 2)
+    return 1.0 - ss_res / ss_tot
 
 
-def soft_threshold(rho, lam):
-    return np.sign(rho) * np.maximum(np.abs(rho) - lam, 0.0)
-
-
-def lasso_cd(X, y, lam, n_iter=500, tol=1e-7, beta_init=None):
-    n_, p_ = X.shape
-    beta = np.zeros(p_) if beta_init is None else beta_init.copy()
-    r = y - X @ beta
+def stlsq(Theta, y, threshold=0.05, n_iter=15, alpha=1e-8):
+    n_terms = Theta.shape[1]
+    coef = np.linalg.solve(Theta.T @ Theta + alpha * np.eye(n_terms), Theta.T @ y)
+    active = np.ones(n_terms, dtype=bool)
     for _ in range(n_iter):
-        b_old = beta.copy()
-        for j in range(p_):
-            r = r + X[:, j] * beta[j]
-            rho = (X[:, j] @ r) / n_
-            beta[j] = soft_threshold(rho, lam)
-            r = r - X[:, j] * beta[j]
-        if np.max(np.abs(beta - b_old)) < tol:
+        small = np.abs(coef) < threshold
+        if not np.any(small & active):
             break
-    return beta
-
-
-def walk_forward_splits(n_samples, n_splits=5):
-    fold = n_samples // (n_splits + 1)
-    for i in range(1, n_splits + 1):
-        tr = np.arange(0, i * fold)
-        te = np.arange(i * fold, min((i + 1) * fold, n_samples))
-        if len(te) > 0:
-            yield tr, te
-
-
-def walk_forward_splits_blocked(n_stat, n_z_r, n_splits=5):
-    '''Theta est ravel() avec z qui varie vite -> un fold = des instants t entiers.'''
-    for tr_t, te_t in walk_forward_splits(n_stat, n_splits):
-        tr = np.concatenate([np.arange(t * n_z_r, (t + 1) * n_z_r) for t in tr_t])
-        te = np.concatenate([np.arange(t * n_z_r, (t + 1) * n_z_r) for t in te_t])
-        yield tr, te
+        active[small] = False
+        if not np.any(active):
+            break
+        Xs = Theta[:, active]
+        coef_active = np.linalg.solve(Xs.T @ Xs + alpha * np.eye(Xs.shape[1]), Xs.T @ y)
+        coef = np.zeros(n_terms)
+        coef[active] = coef_active
+    return coef, active
 
 
 # --- fit ---
 Theta, names = build_library()
 y = flux_r.ravel()
+
 mu, sigma = Theta.mean(axis=0), Theta.std(axis=0) + 1e-12
 Theta_n = (Theta - mu) / sigma
 y_n = (y - y.mean()) / (y.std() + 1e-12)
 
-lambdas = np.logspace(-3, 0, 25)[::-1]
-beta_warm, n_nonzero_path = None, []
-for lam in lambdas:
-    beta_warm = lasso_cd(Theta_n, y_n, lam, beta_init=beta_warm)
-    n_nonzero_path.append(int(np.sum(np.abs(beta_warm) > 1e-8)))
-
-fig, ax = plt.subplots(figsize=(6, 4))
-ax.plot(lambdas, n_nonzero_path, 'o-', ms=3)
-ax.set_xscale('log'); ax.set_xlabel(r'$\lambda$'); ax.set_ylabel('termes non-nuls')
-ax.set_title('Chemin de régularisation Lasso')
-fig.tight_layout(); plt.show()
-
-cv_scores = []
-for lam in lambdas:
-    scores = []
-    for tr, te in walk_forward_splits_blocked(n_stat, n_z_r, n_splits=5):
-        b = lasso_cd(Theta_n[tr], y_n[tr], lam, n_iter=300)
-        pred = Theta_n[te] @ b
-        scores.append(nse(y_n[te], pred))
-    cv_scores.append(np.mean(scores))
-
-best_i = int(np.argmax(cv_scores))
-lam_best = lambdas[best_i]
-
-# garde-fou : si la CV retient le modèle vide, c'est un résultat en soi (peu de
-# signal temporel généralisable à ce niveau), mais inutilisable pour comparer au
-# flux -> on prend alors le plus petit lambda du chemin qui garde >=1 terme.
-coef_n_lasso = lasso_cd(Theta_n, y_n, lam_best, n_iter=1000)
-if np.sum(np.abs(coef_n_lasso) > 1e-8) == 0:
-    print('CV a retenu le modèle vide (peu de signal généralisable) -> fallback')
-    idx_fallback = next(i for i, n in enumerate(n_nonzero_path) if n > 0)
-    lam_best = lambdas[idx_fallback]
-    coef_n_lasso = lasso_cd(Theta_n, y_n, lam_best, n_iter=1000)
-
-print(f'lambda retenu = {lam_best:.4f}  (NSE CV = {cv_scores[best_i]:.3f})')
-
-fig, ax = plt.subplots(figsize=(6, 4))
-ax.plot(lambdas, cv_scores, 'o-', ms=3)
-ax.axvline(lam_best, color='grey', ls='--', lw=0.8)
-ax.set_xscale('log'); ax.set_xlabel(r'$\lambda$'); ax.set_ylabel('NSE walk-forward CV')
-ax.set_title('Sélection de lambda')
-fig.tight_layout(); plt.show()
-
-# --- post-Lasso : support du Lasso, valeurs par OLS (lève le biais de rétrécissement) ---
-active = np.abs(coef_n_lasso) > 1e-8
-Xa = Theta_n[:, active]
-coef_a, *_ = np.linalg.lstsq(Xa, y_n, rcond=None)
-coef_n_debiased = np.zeros_like(coef_n_lasso)
-coef_n_debiased[active] = coef_a
-
-coef = coef_n_debiased * (y.std() / sigma)
+coef_n, active = stlsq(Theta_n, y_n, threshold=0.08)
+coef = coef_n * (y.std() / sigma)
 intercept = y.mean() - mu @ coef
 
-print(f'\n{active.sum()} termes retenus (Lasso), valeurs par OLS :')
-for name, cn, c in zip(names, coef_n_debiased, coef):
-    if np.abs(cn) > 1e-8:
+print('Termes retenus :')
+for name, c, a in zip(names, coef, active):
+    if a:
         print(f'  {name:15s} : {c:+.4e}')
 print(f'  intercept       : {intercept:+.4e}')
 
 flux_pred = (Theta @ coef + intercept).reshape(n_z_r, n_stat)
 r2 = nse(flux_r, flux_pred)
-print(f'\nNSE (post-Lasso, 2-18 km) = {r2:.3f}')
+print(f'\nNSE (2-18 km, z-t complet) = {r2:.3f}')
 
 # --- comparaison affichage ---
 fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
@@ -159,14 +117,14 @@ fig.colorbar(im0, ax=axes[0])
 
 im1 = axes[1].pcolormesh(np.arange(n_stat), alt_r / 1000, flux_pred,
                           cmap='RdBu_r', vmin=-vmax, vmax=vmax, shading='auto')
-axes[1].set_title(f'Post-Lasso (NSE={r2:.2f})')
+axes[1].set_title(f'Régression STLSQ (NSE={r2:.2f})')
 axes[1].set_xlabel('indice temporel')
 fig.colorbar(im1, ax=axes[1])
 
 resid = flux_r - flux_pred
-vmax_res = np.nanpercentile(np.abs(resid), 98) + 1e-30
+vmax_r = np.nanpercentile(np.abs(resid), 98) + 1e-30
 im2 = axes[2].pcolormesh(np.arange(n_stat), alt_r / 1000, resid,
-                          cmap='PuOr', vmin=-vmax_res, vmax=vmax_res, shading='auto')
+                          cmap='PuOr', vmin=-vmax_r, vmax=vmax_r, shading='auto')
 axes[2].set_title('Résidu (vrai - régression)')
 axes[2].set_xlabel('indice temporel')
 fig.colorbar(im2, ax=axes[2])
@@ -174,16 +132,16 @@ fig.tight_layout(); plt.show()
 
 fig, ax = plt.subplots(figsize=(5, 5))
 ax.plot(flux_r.mean(axis=1), alt_r / 1000, label='flux vrai (moy. temp.)')
-ax.plot(flux_pred.mean(axis=1), alt_r / 1000, '--', label='post-Lasso (moy. temp.)')
+ax.plot(flux_pred.mean(axis=1), alt_r / 1000, '--', label='régression (moy. temp.)')
 ax.axvline(0, color='k', lw=0.5)
 ax.set_xlabel(r"$\rho_0\langle u'w'\rangle$"); ax.set_ylabel('z (km)')
-ax.legend(); ax.set_title('Profil moyen 2-18 km : vrai vs post-Lasso')
+ax.legend(); ax.set_title('Profil moyen 2-18 km : vrai vs régression')
 fig.tight_layout(); plt.show()
 
 fig, ax = plt.subplots(figsize=(5, 5))
 ax.scatter(flux_r.ravel(), flux_pred.ravel(), s=4, alpha=0.3)
 lims = [min(flux_r.min(), flux_pred.min()), max(flux_r.max(), flux_pred.max())]
 ax.plot(lims, lims, 'k--', lw=1)
-ax.set_xlabel('flux vrai'); ax.set_ylabel('flux post-Lasso')
+ax.set_xlabel('flux vrai'); ax.set_ylabel('flux régression')
 ax.set_title(f'NSE = {r2:.3f}')
 fig.tight_layout(); plt.show()
