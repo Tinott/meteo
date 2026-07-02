@@ -1,28 +1,38 @@
-def dashboard_multi_time(its, cmap_name='viridis'):
-    '''Panneau de profils verticaux superposant plusieurs instants (dégradé = temps).'''
-    cmap = plt.get_cmap(cmap_name)
-    colors = cmap(np.linspace(0, 1, len(its)))
+# --- cisaillement / fermeture en longueur de mélange ---
+        'dudz':        dudz,
+        'd2udz2':      d2udz2,
+        'd3udz3':      d3udz3,
+        'dudz2':       dudz ** 2,                       # production de cisaillement S^2
+        'absdudz_dudz': np.abs(dudz) * dudz,             # K ~ l^2 |S| S, fermeture signée
+        'dudz_d2udz2': dudz * d2udz2,
+        'd2udz2_2':    d2udz2 ** 2,
 
-    fig, axes = plt.subplots(1, 5, figsize=(17, 5), sharey=True)
-    panels = [
-        (flux,   r"$\rho_0\langle u'w'\rangle$"),
-        (dudz,   r"$\partial_z \bar u$"),
-        (ubar,   r"$\bar u$ (m/s)"),
-        (wbar,   r"$\bar w$ (m/s)"),
-        (d2udz2, r"$\partial_z^2 \bar u$"),
-    ]
-    for ax, (field, label) in zip(axes, panels):
-        for it, c in zip(its, colors):
-            ax.plot(field[:, it], alt / 1000, lw=1.2, color=c)
-        ax.axvline(0, color='k', lw=0.5)
-        ax.set_xlabel(label)
-    axes[0].set_ylabel('z (km)')
+        # --- vent moyen ---
+        'u':      ubar,
+        'u2':     ubar ** 2,
+        'u3':     ubar ** 3,
+        'u_dudz': ubar * dudz,
+        'u_d2udz2': ubar * d2udz2,
+        'u2_dudz': ubar ** 2 * dudz,
 
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=t_stat, vmax=t_stat + n_stat - 1))
-    fig.colorbar(sm, ax=axes, label='indice temporel global', pad=0.01, aspect=30)
-    fig.suptitle(f'Diagnostics — {len(its)} instants entre t={t_stat+its[0]} et t={t_stat+its[-1]}')
-    plt.show()
+        # --- vent vertical ---
+        'w':        wbar,
+        'w2':       wbar ** 2,
+        'w_dudz':   wbar * dudz,
+        'w_d2udz2': wbar * d2udz2,
+        'dwdz':     dwdz,
+        'w_u':      wbar * ubar,
 
+        # --- densité / fermeture down-gradient classique (à confronter à Romps 2014) ---
+        'rho0_dudz':   rho0_2d * dudz,       # -K*rho0*dudz : LE terme down-gradient
+        'rho0_d2udz2': rho0_2d * d2udz2,
+        'drho0dz_u':    drho0dz * ubar,
+        'drho0dz_dudz': drho0dz * dudz,
 
-its = np.linspace(0, n_stat - 1, 10, dtype=int)
-dashboard_multi_time(its)
+        # --- structure verticale (cohérent avec le fit A*(z/zc)(1-z/zc)^n déjà validé) ---
+        'z_dudz':    Z * dudz,
+        'z2_dudz':   Z ** 2 * dudz,
+        'z_d2udz2':  Z * d2udz2,
+        'zHz_dudz':  Z * (H - Z) * dudz,     # forme "profil CMT" appliquée au cisaillement
+        'zHz':       (Z / H) * (1 - Z / H),  # juste la forme géométrique, sans dérivée
+    
