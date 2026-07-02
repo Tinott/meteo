@@ -105,15 +105,32 @@ flux_pred = (Theta @ coef + intercept).reshape(n_z_r, n_stat)
 r2 = nse(flux_r, flux_pred)
 print(f'\nNSE (2-18 km, z-t complet) = {r2:.3f}')
 
+# --- profil moyen : vrai vs régression, + contribution de chaque terme retenu ---
+fig, ax = plt.subplots(figsize=(6.5, 6))
 
-fig, ax = plt.subplots(figsize=(5, 5))
-ax.plot(flux_r.mean(axis=1), alt_r / 1000, label='flux vrai (moy. temp.)')
-ax.plot(flux_pred.mean(axis=1), alt_r / 1000, '--', label='régression (moy. temp.)')
+ax.plot(flux_r.mean(axis=1), alt_r / 1000, color='k', lw=2.2, label='flux vrai (moy. temp.)')
+ax.plot(flux_pred.mean(axis=1), alt_r / 1000, '--', color='k', lw=1.6, label='régression totale')
+
+active_names = [n for n, a in zip(names, active) if a]
+colors = plt.cm.tab10(np.linspace(0, 1, len(active_names)))
+j_active = 0
+for j, (name, c, a) in enumerate(zip(names, coef, active)):
+    if not a:
+        continue
+    contrib = (Theta[:, j] * c).reshape(n_z_r, n_stat).mean(axis=1)
+    ax.plot(contrib, alt_r / 1000, lw=1.1, alpha=0.85, color=colors[j_active],
+             label=f'{name} ({c:+.2e})')
+    j_active += 1
+
+ax.axvline(intercept, color='grey', ls=':', lw=1, label=f'intercept ({intercept:+.2e})')
 ax.axvline(0, color='k', lw=0.5)
+
 ax.set_xlabel(r"$\rho_0\langle u'w'\rangle$"); ax.set_ylabel('z (km)')
-ax.legend(); ax.set_title('Profil moyen 2-18 km : vrai vs régression')
+ax.legend(fontsize=8, loc='center left', bbox_to_anchor=(1.02, 0.5))
+ax.set_title(f'Profil moyen 2-18 km : vrai vs régression (NSE={r2:.2f})')
 fig.tight_layout(); plt.show()
 
+# --- scatter vrai vs prédit ---
 fig, ax = plt.subplots(figsize=(5, 5))
 ax.scatter(flux_r.ravel(), flux_pred.ravel(), s=4, alpha=0.3)
 lims = [min(flux_r.min(), flux_pred.min()), max(flux_r.max(), flux_pred.max())]
