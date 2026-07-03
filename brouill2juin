@@ -1,80 +1,26 @@
-# ============================================================
-# OBJECTIF 5 — Circulation, cellules par signe constant de psi
-# ============================================================
+# Contributions au profil moyen du flux (2–18 km)
 
-def vorticity_uw(U2d, W2d, xv, zv):
-    '''Vorticite physique omega_y = d(u)/dz - d(w)/dx (Stokes), differente
-    du second membre du solveur de Poisson.'''
-    dudz = np.gradient(U2d, zv, axis=0)
-    dwdx = np.gradient(W2d, xv, axis=1)
-    return dudz - dwdx
+Le flux prédit s'écrit :  Φ(z,t) ≈ Σ_k ξ_k · θ_k(z,t) + b
 
+| Terme          |   %   | Formule θ_k                    | Interprétation |
+|----------------|-------|--------------------------------|----------------|
+| dudz           | 37.6% | ∂ū/∂z                          | Cisaillement vertical pur — closure down-gradient classique (K·∂ū/∂z) |
+| zHz_dudz       | 17.6% | z·(H−z)·∂ū/∂z                  | Cisaillement pondéré par une parabole nulle au sol et au sommet H : renforce la contribution en milieu de troposphère |
+| z_dudz         |  9.8% | z·∂ū/∂z                        | Cisaillement croissant avec l'altitude |
+| intercept      |  7.6% | b  (constante)                 | Terme constant, offset du flux (voir plus bas) |
+| rho0_dudz      |  6.9% | ρ₀·∂ū/∂z                       | Cisaillement pondéré par la densité — flux de quantité de mouvement massique |
+| d2udz2         |  4.1% | ∂²ū/∂z²                        | Courbure du profil de vent — terme hyper-diffusif |
+| drho0dz_dudz   |  3.6% | (∂ρ₀/∂z)·∂ū/∂z                 | Couplage stratification de densité × cisaillement |
+| zHz            |  3.2% | (z/H)·(1−z/H)                  | Forme parabolique seule — structure verticale du flux indépendante du vent |
+| z_d2udz2       |  2.6% | z·∂²ū/∂z²                      | Courbure pondérée par l'altitude |
 
-def circulation_cells(psi_a, omega, dxl, dzl, min_size=25):
-    '''Segmente psi_a par signe constant (composantes connexes), calcule
-    Gamma = somme(omega)*dx*dz par cellule (Stokes). min_size filtre le
-    bruit de resolution du solveur.'''
-    sign_map = np.where(psi_a >= 0, 1, -1)
-    cells = []
-    for s in (1, -1):
-        mask = sign_map == s
-        lbl, n_comp = ndi_label(mask)
-        for k in range(1, n_comp + 1):
-            comp_mask = lbl == k
-            if comp_mask.sum() < min_size:
-                continue
-            coords = np.argwhere(comp_mask)
-            gamma = omega[comp_mask].sum() * dxl * dzl
-            cz, cx = coords.mean(axis=0)
-            cells.append(dict(sign=s, area=int(comp_mask.sum()), gamma=gamma,
-                               centroid=(cz, cx), coords=coords))
-    cells.sort(key=lambda c: -abs(c['gamma']))
-    return cells, sign_map
+## Familles de termes
 
+**Cisaillement modulé (~75.5 %)** : dudz + zHz_dudz + z_dudz + rho0_dudz + drho0dz_dudz
+→ tous en ∂ū/∂z, avec des poids z, ρ₀, z(H−z). C'est le squelette down-gradient de la closure.
 
-# --- application à l'instant central de l'échantillon POD ---
-it_mid = t_idx_pod[len(t_idx_pod) // 2]
-psi_mid = psi_snaps[len(t_idx_pod) // 2]
-psi_a_mid = psi_mid - psi_mid.mean()
+**Courbure (~6.7 %)** : d2udz2 + z_d2udz2
+→ termes en ∂²ū/∂z², corrections d'ordre supérieur (hyper-diffusion).
 
-ds_u = xr.open_dataset(path3d('ua'))
-ds_w = xr.open_dataset(path3d('wa'))
-U2d_mid = ds_u['ua'].isel({dim_t: t_stat + it_mid}).mean(dim=dim_y).values
-W2d_mid = ds_w['wa'].isel({dim_t: t_stat + it_mid}).mean(dim=dim_y).values
-ds_u.close(); ds_w.close(); gc.collect()
-
-omega_mid = vorticity_uw(U2d_mid, W2d_mid, x, alt)
-dz_mean = np.mean(np.diff(alt))
-
-cells, sign_map = circulation_cells(psi_a_mid, omega_mid, dx, dz_mean, min_size=25)
-
-print(f'{len(cells)} cellules de circulation significatives :')
-for i, c in enumerate(cells[:10]):
-    cz, cx = c['centroid']
-    sens = 'horaire' if c['gamma'] < 0 else 'anti-horaire'
-    print(f"  #{i:2d}  signe={c['sign']:+d}  Gamma={c['gamma']:+.2e}  ({sens})  "
-          f"aire={c['area']:4d} pts  centre=(z={alt[int(cz)]/1000:.1f}km, x={x[int(cx)]/1000:.0f}km)")
-
-# --- carte : une couleur distincte par cellule retenue, numérotée ---
-cell_map = np.full(psi_a_mid.shape, np.nan)
-for i, c in enumerate(cells):
-    for (zz, xx) in c['coords']:
-        cell_map[zz, xx] = i
-
-fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-vmax = np.nanpercentile(np.abs(psi_a_mid), 98) + 1e-30
-axes[0].pcolormesh(x / 1000, alt / 1000, psi_a_mid, cmap='RdBu_r',
-                    vmin=-vmax, vmax=vmax, shading='auto')
-axes[0].set_title(r"$\psi'$ (relief)")
-
-cmap_cells = plt.cm.get_cmap('tab20', max(len(cells), 1))
-axes[1].pcolormesh(x / 1000, alt / 1000, cell_map, cmap=cmap_cells, shading='auto')
-for i, c in enumerate(cells):
-    cz, cx = c['centroid']
-    axes[1].annotate(str(i), (x[int(cx)] / 1000, alt[int(cz)] / 1000),
-                      fontsize=8, ha='center', va='center', fontweight='bold')
-axes[1].set_title(f'{len(cells)} cellules de circulation (numérotées)')
-
-for ax in axes:
-    ax.set_xlabel('x (km)'); ax.set_ylabel('z (km)')
-fig.tight_layout(); plt.show()
+**Structure verticale imposée (~10.8 %)** : intercept + zHz
+→ termes indépendants du vent, fixent une forme/un offset de base du profil.
