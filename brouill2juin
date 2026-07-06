@@ -1,91 +1,82 @@
 # ============================================================
-# OBJECTIF 5 (suite) — REGRESSION INDEPENDANTE PAR REGION (cible A)
-# Pour chaque region connexe (x,t) de fort cisaillement :
-#   - fermeture ajustee sur l'echantillon (z,x,t) de CETTE region :
-#         F = alpha*ubar + beta*d_z ubar + gamma*d2_z ubar
-#     avec  F = d_z(rho0<u'w'>)   (la divergence de flux, ta formule).
-#   - on compare le profil F predit au profil F VRAI moyen de la region.
+# SELECTION DES MODES PAR CONTRIBUTION AU FLUX (et non par energie)
+# On a demontre :  Phi_n = rho0 * lambda_n * <phi_n^u , phi_n^w>
+# => on trie les modes par |contribution au flux| decroissante,
+#    puis on regarde combien il en faut pour reconstruire le flux.
 # ============================================================
-zsel  = np.where(mask15)[0]                 # indices z dans 0-15 km
-zkm15 = alt[mask15] / 1000.0
 
-def nse(a, b):
-    return 1 - np.sum((a-b)**2) / np.sum((a-a.mean())**2)
+# --- 1. contribution de chaque mode au flux ---
+phi_u = modes_flat[:, :half]           # partie u de chaque mode : (Ns, nz*nx_r)
+phi_w = modes_flat[:, half:]           # partie w de chaque mode
+c_n   = np.sum(phi_u * phi_w, axis=1)  # <phi_u, phi_w> : alignement spatial u-w
+Phi_n = evals * c_n                     # contribution (signee) du mode au flux ~ lambda_n * c_n
 
-def fit_region_A(ix_r, it_r, lam=1e-2):
-    """Regression de F = d_z(rho0<u'w'>) sur l'echantillon (z,x,t) de la region.
-    Renvoie coeffs physiques, profils F vrai/predit moyens (0-15km), NSE, cond."""
-    Xrows, yrows = [], []
-    for ix, it in zip(ix_r, it_r):
-        Xrows.append(np.stack([ubar_xz[zsel, ix, it],
-                               dudz_xz[zsel, ix, it],
-                               d2udz2_xz[zsel, ix, it]], axis=1))
-        yrows.append(F_xz[zsel, ix, it])
-    X = np.concatenate(Xrows); y = np.concatenate(yrows)
-    mu, sd = X.mean(0), X.std(0) + 1e-12
-    Xn = (X - mu) / sd
-    c = np.linalg.solve(Xn.T @ Xn + lam*np.eye(3), Xn.T @ y)
-    coef_phys = c / sd
-    nse_reg = nse(y, Xn @ c)                       # NSE sur tout l'echantillon de la region
-    cond    = np.linalg.cond(Xn)                   # conditionnement (diagnostic collinearite)
-    # profils moyens 0-15km : vrai et predit
-    n_col = len(ix_r)
-    F_true = np.zeros(len(zsel)); F_pred = np.zeros(len(zsel))
-    for ix, it in zip(ix_r, it_r):
-        Xi = np.stack([ubar_xz[zsel, ix, it], dudz_xz[zsel, ix, it],
-                       d2udz2_xz[zsel, ix, it]], axis=1)
-        F_true += F_xz[zsel, ix, it]
-        F_pred += ((Xi - mu) / sd) @ c
-    return coef_phys, F_true/n_col, F_pred/n_col, nse_reg, cond
+order_energy = np.arange(len(evals))            # ordre POD standard (energie decroissante)
+order_flux   = np.argsort(np.abs(Phi_n))[::-1]  # ordre par |contribution flux| decroissante
 
-# --- boucle sur chaque region connexe (deja etiquetee : lab_xt, labels_uniq) ---
-results = []
-for r in labels_uniq:
-    m_xt = (lab_xt == r)
-    if m_xt.sum() < 5:                # ignore les regions trop petites (fit instable)
-        continue
-    ix_r, it_r = np.where(m_xt)
-    coef, F_true, F_pred, nse_reg, cond = fit_region_A(ix_r, it_r)
-    results.append((r, m_xt.sum(), coef, F_true, F_pred, nse_reg, cond,
-                    x[ix_r], it_r + t_stat))
-    print(f'region {r:2d} ({m_xt.sum():4d} col) : '
-          f'NSE={nse_reg:+.3f} | cond={cond:7.1f} | '
-          f'(a,b,c)={np.array2string(coef, precision=2)} | '
-          f'x={x[ix_r].min()/1000:.0f}-{x[ix_r].max()/1000:.0f}km '
-          f't={it_r.min()+t_stat}-{it_r.max()+t_stat}')
+# --- 2. tableau : ou se classent les modes energetiques pour le flux ? ---
+print(' mode | energie% |   c_n     | contrib flux |  rang(flux)')
+for n in order_energy[:min(10, len(evals))]:
+    rf = int(np.where(order_flux == n)[0][0])
+    print(f'  {n:4d} | {energy[n]*100:6.2f}% | {c_n[n]:+.4f} | {Phi_n[n]:+.3e} |   {rf:4d}')
 
-if not results:
-    print('Aucune region assez grande — baisse le seuil (percentile) de l objectif 5.')
+# --- 3. reconstruction avec un SOUS-ENSEMBLE choisi de modes ---
+def reconstruct_flux_subset(idx):
+    """Flux reconstruit en gardant UNIQUEMENT les modes d'indices idx."""
+    idx = list(idx)
+    if len(idx) == 0:
+        return np.zeros(n_z)
+    rec = Smean[None, :] + a_n[:, idx] @ modes_flat[idx]
+    up_r = rec[:, :half].reshape(Ns, n_z, nx_r)
+    wp_r = rec[:, half:].reshape(Ns, n_z, nx_r)
+    up_r = up_r.reshape(n_snap_t, ny_r, n_z, nx_r).transpose(0, 2, 1, 3)
+    wp_r = wp_r.reshape(n_snap_t, ny_r, n_z, nx_r).transpose(0, 2, 1, 3)
+    up_r = up_r - up_r.mean(axis=(2, 3), keepdims=True)
+    wp_r = wp_r - wp_r.mean(axis=(2, 3), keepdims=True)
+    return (rho0[None, :] * (up_r * wp_r).mean(axis=(2, 3))).mean(axis=0)
 
-# --- graphe : pour chaque region, F vrai vs F predit (profils moyens 0-15km) ---
-if results:
-    results.sort(key=lambda s: s[1], reverse=True)      # plus grandes d'abord
-    top = results[:min(6, len(results))]
-    ncol = min(3, len(top)); nrow = int(np.ceil(len(top)/ncol))
-    fig, axes = plt.subplots(nrow, ncol, figsize=(4.2*ncol, 4.2*nrow),
-                             sharey=True, squeeze=False)
-    for k, (r, npix, coef, F_true, F_pred, nse_reg, cond, xr_, tr_) in enumerate(top):
-        ax = axes[k//ncol][k%ncol]
-        ax.plot(F_true, zkm15, 'k',  lw=2, label='F vrai')
-        ax.plot(F_pred, zkm15, 'r--', lw=1.6, label='F fermeture')
-        ax.axvline(0, color='k', lw=0.5); ax.set_ylim(0, Z_TOP_KM)
-        ax.set_title(f'region {r} ({npix} col)\nNSE={nse_reg:.2f}, cond={cond:.0f}',
-                     fontsize=10)
-        ax.set_xlabel(r"$\partial_z(\rho_0\langle u'w'\rangle)$")
-        if k % ncol == 0: ax.set_ylabel('z (km)')
-        if k == 0: ax.legend(fontsize=8)
-    for k in range(len(top), nrow*ncol):     # cache les axes vides
-        axes[k//ncol][k%ncol].axis('off')
-    fig.suptitle('Fermeture locale par region : F vrai vs F predit (cible A)')
+# --- 4. courbe NSE(N) : ordre energie vs ordre contribution-flux ---
+N_list = np.unique(np.clip(
+    np.round(np.linspace(1, min(Ns-1, 200), 30)).astype(int), 1, Ns-1))
+nse_energy = np.array([nse(flux_true_profile,
+                           reconstruct_flux_subset(order_energy[:N])) for N in N_list])
+nse_flux   = np.array([nse(flux_true_profile,
+                           reconstruct_flux_subset(order_flux[:N]))   for N in N_list])
+
+# N minimal pour NSE >= 0.9 dans chaque ordre
+def n_needed(nse_arr, N_arr, target=0.9):
+    hit = np.where(nse_arr >= target)[0]
+    return int(N_arr[hit[0]]) if hit.size else None
+n_e = n_needed(nse_energy, N_list); n_f = n_needed(nse_flux, N_list)
+print(f'\nPour NSE_flux >= 0.90 :')
+print(f'  tri energie      -> {n_e} modes')
+print(f'  tri contribution -> {n_f} modes   (gain = {("%d modes" % (n_e-n_f)) if (n_e and n_f) else "n/a"})')
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+axes[0].plot(N_list, nse_energy, 'o-', label='ordre energie (POD standard)')
+axes[0].plot(N_list, nse_flux,   's-', label='ordre contribution au flux')
+axes[0].axhline(0.9, color='grey', ls='--', lw=0.8)
+axes[0].set_xlabel('nombre de modes gardes N'); axes[0].set_ylabel('NSE flux')
+axes[0].set_title('Reconstruction du flux : quel ordre de selection ?')
+axes[0].legend(); axes[0].set_xscale('log')
+
+# spectre : contribution au flux |Phi_n| vs energie lambda_n (rangs differents)
+axes[1].bar(np.arange(min(30, len(evals))),
+            np.abs(Phi_n)[order_flux][:30] / np.abs(Phi_n).sum(),
+            color='steelblue', label='|contrib flux| (triee)')
+axes[1].set_xlabel('modes tries par contribution au flux (rang)')
+axes[1].set_ylabel('part du flux total'); axes[1].set_title('Spectre de flux des modes')
+axes[1].legend()
+fig.tight_layout(); plt.show()
+
+# --- 5. flux reconstruit avec les n_f modes "flux" vs profil vrai ---
+if n_f:
+    flux_sel = reconstruct_flux_subset(order_flux[:n_f])
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.plot(flux_true_profile[mask_show], zkm[mask_show], 'k', lw=2, label='flux vrai')
+    ax.plot(flux_sel[mask_show], zkm[mask_show], 'r--',
+            label=f'{n_f} modes selectionnes (NSE={nse(flux_true_profile,flux_sel):.2f})')
+    ax.axvline(0, color='k', lw=0.5); ax.set_ylim(0, Z_TOP_KM)
+    ax.set_xlabel(r"$\rho_0\langle u'w'\rangle$"); ax.set_ylabel('z (km)')
+    ax.legend(); ax.set_title('Flux : selection par contribution')
     fig.tight_layout(); plt.show()
-
-# --- bilan : NSE et conditionnement par region ---
-if results:
-    print('\n=== Bilan fermeture (cible A) par region ===')
-    for (r, npix, coef, _, _, nse_reg, cond, _, _) in results:
-        flag = ' [mal conditionne]' if cond > 1e3 else ''
-        print(f'  region {r:2d}: NSE={nse_reg:+.3f}, cond={cond:.0f}{flag}')
-    print('\nNB : cond >> 1 => ubar, d_z ubar, d2_z ubar quasi-collineaires sur la')
-    print('region ; les coefficients (a,b,c) sont alors instables meme si le NSE')
-    print('est correct. C est une limite physique de la fermeture lineaire locale,')
-    print('pas un bug. Un cond faible = coefficients fiables.')
