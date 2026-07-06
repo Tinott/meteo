@@ -1,156 +1,91 @@
 # ============================================================
-# OBJECTIF 5 — Zones de fort cisaillement par COLONNE (x,t)
-# Critere :  max_{0<=z<=15km} |d_z ubar(x,z,t)| > seuil
-#   ou ubar = moyenne EN Y (resolu en x).  -> on cherche les
-#   colonnes (x,t) qui qualifient. Pour un meme t il peut y
-#   avoir plusieurs x. PAS de moyenne verticale par t.
+# OBJECTIF 5 (suite) — REGRESSION INDEPENDANTE PAR REGION (cible A)
+# Pour chaque region connexe (x,t) de fort cisaillement :
+#   - fermeture ajustee sur l'echantillon (z,x,t) de CETTE region :
+#         F = alpha*ubar + beta*d_z ubar + gamma*d2_z ubar
+#     avec  F = d_z(rho0<u'w'>)   (la divergence de flux, ta formule).
+#   - on compare le profil F predit au profil F VRAI moyen de la region.
 # ============================================================
-
-# --- 1. ubar RESOLU EN X : ubar_xz(z, x, t) = <u>_y  (niveau par niveau, RAM) ---
-ubar_xz = np.zeros((n_z, n_x, n_stat), dtype=np.float32)
-ds_u = xr.open_dataset(path3d('ua'))
-for iz in range(n_z):
-    u = ds_u['ua'].isel({dim_z: iz, dim_t: idx_stat}).values     # (n_stat, ny, nx)
-    ubar_xz[iz] = u.mean(axis=1).T                               # <u>_y -> (nx, n_stat)
-ds_u.close(); gc.collect()
-print('ubar_xz (z,x,t) :', ubar_xz.shape)
-
-# derivee verticale (colonne complete puis restriction 0-15km) ---
-dudz_xz = np.gradient(ubar_xz, alt, axis=0)                      # (n_z, n_x, n_stat)
-mask15  = (alt >= 0) & (alt <= Z_TOP_KM * 1000)
-
-# --- 2. critere PAR COLONNE : max vertical de |d_z ubar| sur 0-15 km ---
-shear_col = np.max(np.abs(dudz_xz[mask15]), axis=0)             # (n_x, n_stat) : 1 scalaire / colonne
-seuil_shear = np.percentile(shear_col, 90)                     # seuil = quantile 90% (reglable)
-strong_cols = shear_col > seuil_shear                          # (n_x, n_stat) booleen
-n_strong = int(strong_cols.sum())
-print(f'seuil |d_z ubar|_max = {seuil_shear:.2e} s^-1')
-print(f'{n_strong}/{strong_cols.size} colonnes (x,t) fortes '
-      f'({100*n_strong/strong_cols.size:.1f}%)')
-
-# nombre de colonnes x fortes par instant (illustre "plusieurs x pour un t")
-n_x_par_t = strong_cols.sum(axis=0)
-print(f'colonnes fortes par instant : min={n_x_par_t.min()}, '
-      f'median={int(np.median(n_x_par_t))}, max={n_x_par_t.max()}')
-
-# --- 3. carte (x,t) des colonnes fortes + continuite ---
-# regions connexes dans le plan (x,t) : x periodique -> on gere le raccord
-lab_xt, n_xt = ndi_label(strong_cols)
-# raccord periodique en x (colonne 0 et n_x-1 adjacentes)
-for it in range(n_stat):
-    if strong_cols[0, it] and strong_cols[-1, it]:
-        a, b = lab_xt[0, it], lab_xt[-1, it]
-        if a != b: lab_xt[lab_xt == b] = a
-labels_uniq = np.unique(lab_xt[lab_xt > 0])
-print(f'{len(labels_uniq)} region(s) connexe(s) dans le plan (x,t) '
-      f'[x periodique raccorde]')
-
-fig, axes = plt.subplots(1, 2, figsize=(14, 4.5))
-im0 = axes[0].pcolormesh(np.arange(n_stat)+t_stat, x/1000, shear_col,
-                         cmap='viridis', shading='auto')
-axes[0].axhline(0, color='w', lw=0)  # placeholder
-cs = axes[0].contour(np.arange(n_stat)+t_stat, x/1000,
-                     strong_cols.astype(float), levels=[0.5],
-                     colors='r', linewidths=0.8)
-axes[0].set_xlabel('t (indice global)'); axes[0].set_ylabel('x (km)')
-axes[0].set_title(r'$\max_{0-15km}|\partial_z\bar u|(x,t)$ + seuil')
-fig.colorbar(im0, ax=axes[0], pad=0.02, label='intensite cisaillement')
-
-axes[1].pcolormesh(np.arange(n_stat)+t_stat, x/1000, strong_cols.astype(float),
-                   cmap='Greys', shading='auto')
-axes[1].set_xlabel('t (indice global)'); axes[1].set_ylabel('x (km)')
-axes[1].set_title('Colonnes fortes (x,t) — noir = qualifie')
-fig.suptitle('Zones de fort cisaillement : critere par colonne (x,t)')
-fig.tight_layout(); plt.show()
-
-# --- 4. moyennes REGIONALES (par region connexe, pas par t) ---
-# on a besoin du flux et des grandeurs resolues en x -> on les recalcule <.>_y
-# flux_xz(z,x,t) = rho0 <u'w'>_y  (u',w' = ecart a la moyenne horizontale <.>_{y,x})
-flux_xz = np.zeros((n_z, n_x, n_stat), dtype=np.float32)
-wbar_xz = np.zeros((n_z, n_x, n_stat), dtype=np.float32)
-ds_u = xr.open_dataset(path3d('ua'))
-ds_w = xr.open_dataset(path3d('wa'))
-for iz in range(n_z):
-    u = ds_u['ua'].isel({dim_z: iz, dim_t: idx_stat}).values     # (n_stat, ny, nx)
-    w = ds_w['wa'].isel({dim_z: iz, dim_t: idx_stat}).values
-    ub_h = u.mean(axis=(1, 2), keepdims=True)                    # <u>_{y,x}(t)
-    wb_h = w.mean(axis=(1, 2), keepdims=True)
-    up = u - ub_h; wp = w - wb_h
-    flux_xz[iz] = (rho0[iz] * (up * wp).mean(axis=1)).T          # <u'w'>_y -> (nx,n_stat)
-    wbar_xz[iz] = w.mean(axis=1).T
-ds_u.close(); ds_w.close(); gc.collect()
-
-d2udz2_xz = np.gradient(dudz_xz, alt, axis=0)
-
-print('\nMoyennes regionales (sur chaque region connexe du plan x-t) :')
-region_stats = []
-for r in labels_uniq:
-    # masque (n_x, n_stat) de la region ; on moyenne les grandeurs sur 0-15km
-    m_xt = (lab_xt == r)
-    if m_xt.sum() < 3:      # ignore les micro-regions
-        continue
-    # indices (ix, it) de la region
-    ix_r, it_r = np.where(m_xt)
-    # profil vertical moyen des colonnes de la region, sur 0-15 km
-    prof_flux = flux_xz[mask15][:, ix_r, it_r].mean(axis=1)      # (n_z15,)
-    prof_dudz = dudz_xz[mask15][:, ix_r, it_r].mean(axis=1)
-    prof_u    = ubar_xz[mask15][:, ix_r, it_r].mean(axis=1)
-    region_stats.append((r, m_xt.sum(), prof_flux, prof_dudz, prof_u,
-                         x[ix_r], it_r + t_stat))
-    print(f'  region {r}: {m_xt.sum()} colonnes | '
-          f'x={x[ix_r].min()/1000:.0f}-{x[ix_r].max()/1000:.0f}km, '
-          f't={it_r.min()+t_stat}-{it_r.max()+t_stat} | '
-          f'<|dudz|>={np.abs(prof_dudz).mean():.2e}, '
-          f'<flux>={prof_flux.mean():+.2e}')
-
-# --- 5. profils regionaux moyens (flux & cisaillement) ---
+zsel  = np.where(mask15)[0]                 # indices z dans 0-15 km
 zkm15 = alt[mask15] / 1000.0
-if region_stats:
-    # garde les plus grandes regions pour la lisibilite
-    region_stats.sort(key=lambda s: s[1], reverse=True)
-    top = region_stats[:min(5, len(region_stats))]
-    fig, axes = plt.subplots(1, 2, figsize=(11, 5), sharey=True)
-    cmap = plt.get_cmap('tab10')
-    for k, (r, npix, pf, pd, pu, xr_, tr_) in enumerate(top):
-        c = cmap(k)
-        axes[0].plot(pf, zkm15, color=c, label=f'reg {r} ({npix} col.)')
-        axes[1].plot(pd, zkm15, color=c)
-    axes[0].axvline(0, color='k', lw=0.5); axes[0].set_ylim(0, Z_TOP_KM)
-    axes[0].set_xlabel(r"$\rho_0\langle u'w'\rangle$ regional")
-    axes[0].set_ylabel('z (km)'); axes[0].set_title('Flux moyen par region (x,t)')
-    axes[0].legend(fontsize=8)
-    axes[1].axvline(0, color='k', lw=0.5)
-    axes[1].set_xlabel(r'$\partial_z\bar u$ regional')
-    axes[1].set_title('Cisaillement moyen par region')
+
+def nse(a, b):
+    return 1 - np.sum((a-b)**2) / np.sum((a-a.mean())**2)
+
+def fit_region_A(ix_r, it_r, lam=1e-2):
+    """Regression de F = d_z(rho0<u'w'>) sur l'echantillon (z,x,t) de la region.
+    Renvoie coeffs physiques, profils F vrai/predit moyens (0-15km), NSE, cond."""
+    Xrows, yrows = [], []
+    for ix, it in zip(ix_r, it_r):
+        Xrows.append(np.stack([ubar_xz[zsel, ix, it],
+                               dudz_xz[zsel, ix, it],
+                               d2udz2_xz[zsel, ix, it]], axis=1))
+        yrows.append(F_xz[zsel, ix, it])
+    X = np.concatenate(Xrows); y = np.concatenate(yrows)
+    mu, sd = X.mean(0), X.std(0) + 1e-12
+    Xn = (X - mu) / sd
+    c = np.linalg.solve(Xn.T @ Xn + lam*np.eye(3), Xn.T @ y)
+    coef_phys = c / sd
+    nse_reg = nse(y, Xn @ c)                       # NSE sur tout l'echantillon de la region
+    cond    = np.linalg.cond(Xn)                   # conditionnement (diagnostic collinearite)
+    # profils moyens 0-15km : vrai et predit
+    n_col = len(ix_r)
+    F_true = np.zeros(len(zsel)); F_pred = np.zeros(len(zsel))
+    for ix, it in zip(ix_r, it_r):
+        Xi = np.stack([ubar_xz[zsel, ix, it], dudz_xz[zsel, ix, it],
+                       d2udz2_xz[zsel, ix, it]], axis=1)
+        F_true += F_xz[zsel, ix, it]
+        F_pred += ((Xi - mu) / sd) @ c
+    return coef_phys, F_true/n_col, F_pred/n_col, nse_reg, cond
+
+# --- boucle sur chaque region connexe (deja etiquetee : lab_xt, labels_uniq) ---
+results = []
+for r in labels_uniq:
+    m_xt = (lab_xt == r)
+    if m_xt.sum() < 5:                # ignore les regions trop petites (fit instable)
+        continue
+    ix_r, it_r = np.where(m_xt)
+    coef, F_true, F_pred, nse_reg, cond = fit_region_A(ix_r, it_r)
+    results.append((r, m_xt.sum(), coef, F_true, F_pred, nse_reg, cond,
+                    x[ix_r], it_r + t_stat))
+    print(f'region {r:2d} ({m_xt.sum():4d} col) : '
+          f'NSE={nse_reg:+.3f} | cond={cond:7.1f} | '
+          f'(a,b,c)={np.array2string(coef, precision=2)} | '
+          f'x={x[ix_r].min()/1000:.0f}-{x[ix_r].max()/1000:.0f}km '
+          f't={it_r.min()+t_stat}-{it_r.max()+t_stat}')
+
+if not results:
+    print('Aucune region assez grande — baisse le seuil (percentile) de l objectif 5.')
+
+# --- graphe : pour chaque region, F vrai vs F predit (profils moyens 0-15km) ---
+if results:
+    results.sort(key=lambda s: s[1], reverse=True)      # plus grandes d'abord
+    top = results[:min(6, len(results))]
+    ncol = min(3, len(top)); nrow = int(np.ceil(len(top)/ncol))
+    fig, axes = plt.subplots(nrow, ncol, figsize=(4.2*ncol, 4.2*nrow),
+                             sharey=True, squeeze=False)
+    for k, (r, npix, coef, F_true, F_pred, nse_reg, cond, xr_, tr_) in enumerate(top):
+        ax = axes[k//ncol][k%ncol]
+        ax.plot(F_true, zkm15, 'k',  lw=2, label='F vrai')
+        ax.plot(F_pred, zkm15, 'r--', lw=1.6, label='F fermeture')
+        ax.axvline(0, color='k', lw=0.5); ax.set_ylim(0, Z_TOP_KM)
+        ax.set_title(f'region {r} ({npix} col)\nNSE={nse_reg:.2f}, cond={cond:.0f}',
+                     fontsize=10)
+        ax.set_xlabel(r"$\partial_z(\rho_0\langle u'w'\rangle)$")
+        if k % ncol == 0: ax.set_ylabel('z (km)')
+        if k == 0: ax.legend(fontsize=8)
+    for k in range(len(top), nrow*ncol):     # cache les axes vides
+        axes[k//ncol][k%ncol].axis('off')
+    fig.suptitle('Fermeture locale par region : F vrai vs F predit (cible A)')
     fig.tight_layout(); plt.show()
 
-# --- 6. fermeture locale sur les COLONNES fortes : F = a*u + b*dudz + c*d2udz2 ---
-#   F = d_z(rho0<u'w'>) evaluee colonne par colonne, restreinte 0-15km
-#   regression sur l'echantillon {(z, x, t) : colonne forte, z dans 0-15km}
-F_xz = np.gradient(flux_xz, alt, axis=0)                        # (n_z, n_x, n_stat)
-
-# echantillon : tous les (z, x, t) avec (x,t) colonne forte et z dans 0-15km
-zsel = np.where(mask15)[0]
-Xrows, yrows = [], []
-for (ix, it) in zip(*np.where(strong_cols)):
-    Xrows.append(np.stack([ubar_xz[zsel, ix, it],
-                           dudz_xz[zsel, ix, it],
-                           d2udz2_xz[zsel, ix, it]], axis=1))
-    yrows.append(F_xz[zsel, ix, it])
-Xall = np.concatenate(Xrows); yall = np.concatenate(yrows)
-
-# split walk-forward en temps
-t_med = t_stat + n_stat // 2
-it_all = np.concatenate([np.full(len(zsel), it) for (ix, it) in zip(*np.where(strong_cols))])
-tr = it_all < (n_stat // 2); te = ~tr
-
-def nse(a, b): return 1 - np.sum((a-b)**2) / np.sum((a-a.mean())**2)
-mu, sd = Xall[tr].mean(0), Xall[tr].std(0)+1e-12
-c = np.linalg.solve(((Xall[tr]-mu)/sd).T@((Xall[tr]-mu)/sd) + 1e-2*np.eye(3),
-                    ((Xall[tr]-mu)/sd).T@yall[tr])
-coef_phys = c / sd
-pred_te = ((Xall[te]-mu)/sd) @ c
-print('\n=== Fermeture locale sur colonnes fortes (0-15 km) ===')
-print(f'  coeffs (alpha,beta,gamma) = {np.array2string(coef_phys, precision=3)}')
-print(f'  NSE test (walk-forward)   = {nse(yall[te], pred_te):+.3f}')
-print(f'  (echantillon : {tr.sum()} train / {te.sum()} test points (z,x,t))')
+# --- bilan : NSE et conditionnement par region ---
+if results:
+    print('\n=== Bilan fermeture (cible A) par region ===')
+    for (r, npix, coef, _, _, nse_reg, cond, _, _) in results:
+        flag = ' [mal conditionne]' if cond > 1e3 else ''
+        print(f'  region {r:2d}: NSE={nse_reg:+.3f}, cond={cond:.0f}{flag}')
+    print('\nNB : cond >> 1 => ubar, d_z ubar, d2_z ubar quasi-collineaires sur la')
+    print('region ; les coefficients (a,b,c) sont alors instables meme si le NSE')
+    print('est correct. C est une limite physique de la fermeture lineaire locale,')
+    print('pas un bug. Un cond faible = coefficients fiables.')
