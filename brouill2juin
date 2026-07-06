@@ -1,15 +1,7 @@
-# DIAGNOSTIC
-print("amplitude flux vrai (reduit)  :", np.abs(flux_true_profile).max())
-print("amplitude flux POD            :", np.abs(flux_pod).max())
-print("amplitude flux 3D complet ref :", np.abs(flux[:, t_idx_pod].mean(axis=1)).max())
-print("ratio POD/vrai (par niveau, median):",
-      np.median(np.abs(flux_pod) / (np.abs(flux_true_profile) + 1e-30)))
-print("variance expliquee cumulee a n_modes:", cum_energy[n_modes-1])
-
-
-# reconstruit le flux directement depuis les snapshots, SANS POD (N = tous les modes)
-flux_full_from_snaps = reconstruct_flux_pod(Ns - 1)
-print("NSE reco complete (tous modes) :", nse(flux_true_profile, flux_full_from_snaps))
-
-
-print(xr.open_dataset(path3d('ua'))['ua'].dims)
+amplitude flux vrai (reduit)  : 0.013311125106419639
+amplitude flux POD            : 0.001816387817205974
+amplitude flux 3D complet ref : 0.01362621018608265
+ratio POD/vrai (par niveau, median): 0.1308111885563279
+variance expliquee cumulee a n_modes: 0.9002675895808058
+NSE reco complete (tous modes) : 0.9999999975031393
+('time', 'altitude', 'y', 'x')
