@@ -1,9 +1,9 @@
 # ============================================================
-# BASES FIXES DE RELIEF (sans pywt) pour decomposer psi'
+# BASES FIXES DE RELIEF (sans pywt) pour decomposer psi' et reconstruire le flux
 #   Bases typiques de surface, aucune apprise sur les donnees :
 #     - DCT 2D        (reliefs bornes, JPEG)
 #     - Fourier 2D    (x periodique)
-#     - Ondelettes 2D (Haar, multi-echelle, codee a la main en numpy)
+#     - Haar 2D       (ondelette multi-echelle, numpy pur, gere tailles impaires)
 #     - Legendre 2D   (polynomiale, surfaces lisses)
 #   Pour chaque base : projection -> troncature -> derivation
 #   -> u',w' -> flux, compare au flux VRAI.
@@ -13,24 +13,29 @@ from numpy.polynomial import legendre as Lg
 
 # --- passage relief -> flux ---
 def flux_from_psi(pa):
+    """pa:(Np,n_z,n_x) -> profil rho0<u'w'>(z) via u'=d_z psi/rho0, w'=-d_x psi/rho0."""
     up = np.gradient(pa, alt, axis=1) / rho0[None, :, None]
     wp = -np.gradient(pa, x,   axis=2) / rho0[None, :, None]
     up = up - up.mean(axis=2, keepdims=True)
     wp = wp - wp.mean(axis=2, keepdims=True)
     return (rho0[None, :] * (up * wp).mean(axis=2)).mean(axis=0)
 
+# borne haute : flux via psi COMPLET (non tronque) = plafond de la voie psi
 flux_psi_ceiling = flux_from_psi(psi_ano)
 nse_ceiling = nse(flux_true_profile, flux_psi_ceiling)
 print(f'[borne haute] flux via psi COMPLET : NSE = {nse_ceiling:+.3f}')
 print('  -> aucune base ne peut depasser ce plafond (psi moyenne-y ne porte que T1)\n')
 
 def keep_frac(flat, frac):
+    """garde les frac (0-1) plus gros coefficients (en module), annule le reste."""
     k = max(1, int(frac * flat.size))
     idx = np.argpartition(np.abs(flat), -k)[-k:]
     out = np.zeros_like(flat); out[idx] = flat[idx]
     return out
 
-# --- ondelette Haar 2D separable (numpy pur) ---
+# ------------------------------------------------------------
+#  Ondelette Haar 2D (numpy pur) — gere les tailles IMPAIRES via padding
+# ------------------------------------------------------------
 def _haar_fwd_1d(v):
     n = len(v) // 2
     a = (v[0:2*n:2] + v[1:2*n:2]) / np.sqrt(2)
@@ -40,10 +45,14 @@ def _haar_inv_1d(a, d):
     n = len(a); v = np.zeros(2*n)
     v[0:2*n:2] = (a + d) / np.sqrt(2); v[1:2*n:2] = (a - d) / np.sqrt(2)
     return v
+def _next_pow2(n):
+    p = 1
+    while p < n: p *= 2
+    return p
 def haar2d_fwd(img, levels):
     out = img.astype(float).copy(); h, w = out.shape; ch, cw = h, w
     for _ in range(levels):
-        if ch < 2 or cw < 2: break
+        if ch < 2 or cw < 2 or ch % 2 or cw % 2: break
         for i in range(ch):
             a, d = _haar_fwd_1d(out[i, :cw]); out[i, :cw//2] = a; out[i, cw//2:cw] = d
         for j in range(cw):
@@ -54,7 +63,7 @@ def haar2d_inv(coef, levels, shape):
     out = coef.astype(float).copy(); h, w = shape
     sizes = []; ch, cw = h, w
     for _ in range(levels):
-        if ch < 2 or cw < 2: break
+        if ch < 2 or cw < 2 or ch % 2 or cw % 2: break
         sizes.append((ch, cw)); ch //= 2; cw //= 2
     for (ch, cw) in reversed(sizes):
         for j in range(cw):
@@ -63,7 +72,9 @@ def haar2d_inv(coef, levels, shape):
             out[i, :cw] = _haar_inv_1d(out[i, :cw//2], out[i, cw//2:cw])
     return out
 
-# --- les 4 reconstructions ---
+# ------------------------------------------------------------
+#  Les 4 reconstructions (base -> troncature -> reco)
+# ------------------------------------------------------------
 def recon_dct(pa, frac):
     out = np.empty_like(pa)
     for t in range(pa.shape[0]):
@@ -79,11 +90,16 @@ def recon_fft(pa, frac):
     return out
 
 def recon_haar(pa, frac, levels=3):
+    """Pad a la puissance de 2 (reflexion), tronque, recoupe a la taille d'origine."""
+    nt, nz, nx = pa.shape
+    Hz, Hx = _next_pow2(nz), _next_pow2(nx)
     out = np.empty_like(pa)
-    for t in range(pa.shape[0]):
-        C = haar2d_fwd(pa[t], levels)
+    for t in range(nt):
+        p = np.pad(pa[t], ((0, Hz-nz), (0, Hx-nx)), mode='reflect')
+        C = haar2d_fwd(p, levels)
         Cm = keep_frac(C.ravel(), frac).reshape(C.shape)
-        out[t] = haar2d_inv(Cm, levels, pa[t].shape)
+        r = haar2d_inv(Cm, levels, p.shape)
+        out[t] = r[:nz, :nx]
     return out
 
 def legendre_basis(n, deg):
@@ -100,7 +116,9 @@ def recon_legendre(pa, frac):
         out[t] = Bz @ (Bz.T @ pa[t] @ Bx) @ Bx.T
     return out
 
-# --- balayage NSE(flux) vs fraction, pour chaque base ---
+# ------------------------------------------------------------
+#  Balayage : NSE(flux) vs fraction de coefficients, pour chaque base
+# ------------------------------------------------------------
 fracs = np.array([0.02, 0.05, 0.1, 0.2, 0.3, 0.5])
 bases = {'DCT': recon_dct, 'Fourier': recon_fft,
          'Haar': recon_haar, 'Legendre': recon_legendre}
@@ -115,7 +133,9 @@ print('frac% |  ' + ' | '.join(f'{n:>9s}' for n in bases))
 for i, fr in enumerate(fracs):
     print(f' {fr*100:4.0f} |  ' + ' | '.join(f'{results[n][i]:+9.3f}' for n in bases))
 
-# --- graphe ---
+# ------------------------------------------------------------
+#  Graphes : convergence + meilleur profil vs flux vrai
+# ------------------------------------------------------------
 fig, axes = plt.subplots(1, 2, figsize=(13, 5))
 for name in bases:
     axes[0].plot(fracs*100, results[name], 'o-', label=name)
@@ -135,7 +155,7 @@ axes[1].plot(flux_best[mask_show], zkm[mask_show], 'r--',
              label=f'{best_name} {best_fr*100:.0f}% (NSE={results[best_name].max():.2f})')
 axes[1].axvline(0, color='k', lw=0.5); axes[1].set_ylim(0, Z_TOP_KM)
 axes[1].set_xlabel(r"$\rho_0\langle u'w'\rangle$"); axes[1].set_ylabel('z (km)')
-axes[1].legend(fontsize=9); axes[1].set_title('Meilleure base vs vrai flux')
+axes[1].legend(fontsize=9); axes[1].set_title('Meilleure base de relief vs vrai flux')
 fig.tight_layout(); plt.show()
 
 print(f'\nMeilleure base de relief : {best_name} '
