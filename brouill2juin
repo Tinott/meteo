@@ -1,53 +1,108 @@
-import numpy as np
-from scipy.fft import dctn, idctn
+# ============================================================
+# RELIEF psi' — ANOMALIE SPATIALE (option A : ecart a <psi>_x)
+#   psi'(x,z,t) = psi(x,z,t) - <psi>_x(z,t)
+# On construit psi (moyenne-y, via Poisson), on prend l'anomalie
+# spatiale en x, on l'affiche, puis on la decompose (DCT vs POD)
+# et on compare la reconstruction du flux.
+# ============================================================
 
-# On suppose que 'psi_snaps' est déjà calculé (forme: Ns, n_z, nx_r)
-# x_r et zkm sont les grilles spatiales (en mètres pour les dérivées)
-dx = 1000.0  # à ajuster selon la grille
-dz = (zkm[1] - zkm[0]) * 1000.0  # conversion en mètres
+# --- 1. psi(x,z,t) moyenne-y sur les snapshots ---
+psi_snaps = np.zeros((Np, n_z, n_x))
+ds_u = xr.open_dataset(path3d('ua'))
+ds_w = xr.open_dataset(path3d('wa'))
+for i_snap, it in enumerate(t_idx_pod):
+    itg = t_stat + it
+    U2d = ds_u['ua'].isel({dim_t: itg}).mean(dim=dim_y).values   # <u>_y : (n_z, n_x)
+    W2d = ds_w['wa'].isel({dim_t: itg}).mean(dim=dim_y).values   # <w>_y
+    psi_snaps[i_snap] = psi_poisson_periodic(U2d, W2d, x, alt, rho0)
+ds_u.close(); ds_w.close(); gc.collect()
 
-# ============================================================================
-# 1. TRONCATURE DCT 2D SUR LE CHAMP PSI
-# ============================================================================
-def reconstruct_psi_dct(psi_field, frac):
-    """Garde la fraction 'frac' des plus gros coefficients DCT de psi."""
-    out_psi = np.empty_like(psi_field)
-    for s in range(psi_field.shape[0]):
-        C = dctn(psi_field[s], norm='ortho')
-        flat = C.ravel()
-        k = max(1, int(frac * flat.size))
-        
-        idx = np.argpartition(np.abs(flat), -k)[-k:]
-        Cm = np.zeros_like(flat)
-        Cm[idx] = flat[idx]
-        
-        out_psi[s] = idctn(Cm.reshape(C.shape), norm='ortho')
-    return out_psi
+# --- 2. anomalie SPATIALE : retrait de la moyenne en x, par (t,z) ---
+psi_xmean = psi_snaps.mean(axis=2, keepdims=True)   # <psi>_x : (Np, n_z, 1)
+psi_ano   = psi_snaps - psi_xmean                    # psi'(x,z,t)
+print('psi_ano (anomalie spatiale en x) :', psi_ano.shape)
+print('verif : <psi_ano>_x ~ 0 ?', np.abs(psi_ano.mean(axis=2)).max())
 
-# ============================================================================
-# 2. DÉDUCTION DE U' ET W' PAR DÉRIVATION NUMÉRIQUE
-# ============================================================================
-def velocities_from_psi(psi_field, dx, dz):
-    """Calcule u' = d(psi)/dz et w' = -d(psi)/dx par schémas de gradient central."""
-    # np.gradient renvoie les dérivées selon les axes (axe 0 = z, axe 1 = x)
-    u_rec = np.gradient(psi_field, dz, axis=1)  # d(psi)/dz
-    w_rec = -np.gradient(psi_field, dx, axis=2) # -d(psi)/dx
-    return u_rec, w_rec
+# --- 3. apercu du relief a un instant ---
+it0 = Np // 2
+fig, ax = plt.subplots(figsize=(7, 4))
+vmax = np.percentile(np.abs(psi_ano[it0]), 98) + 1e-30
+im = ax.pcolormesh(x/1000, zkm, psi_ano[it0], cmap='terrain',
+                   shading='auto', vmin=-vmax, vmax=vmax)
+ax.set_ylim(0, Z_TOP_KM); ax.set_xlabel('x (km)'); ax.set_ylabel('z (km)')
+ax.set_title(r"Relief $\psi'(x,z)=\psi-\langle\psi\rangle_x$ a un instant")
+fig.colorbar(im, ax=ax)
+fig.tight_layout(); plt.show()
 
-# ============================================================================
-# 3. PIPELINE DE RECONSTRUCTION ET ÉVALUATION DU FLUX
-# ============================================================================
-frac_test = 0.05  # On teste avec seulement 5% des modes de psi
+# --- 4. compressibilite du relief : DCT 2D vs POD (erreur de reco de psi') ---
+def dct_truncate(field2d, frac):
+    C = dctn(field2d, norm='ortho'); flat = C.ravel()
+    k = max(1, int(frac * flat.size))
+    idx = np.argpartition(np.abs(flat), -k)[-k:]
+    Cm = np.zeros_like(flat); Cm[idx] = flat[idx]
+    return idctn(Cm.reshape(C.shape), norm='ortho'), k
 
-# a. Troncature de la fonction de courant
-psi_trunc = reconstruct_psi_dct(psi_snaps, frac_test)
+fracs = np.array([0.005, 0.01, 0.02, 0.05, 0.1])
+err_dct = []
+for fr in fracs:
+    e = [np.sum((psi_ano[it] - dct_truncate(psi_ano[it], fr)[0])**2) /
+         (np.sum(psi_ano[it]**2) + 1e-30) for it in range(Np)]
+    err_dct.append(np.mean(e))
+err_dct = np.array(err_dct)
 
-# b. Dérivation pour obtenir u' et w'
-u_from_psi, w_from_psi = velocities_from_psi(psi_trunc, dx, dz)
+# POD sur psi' (anomalie spatiale) : erreur de reco avec K modes
+Apsi   = psi_ano.reshape(Np, -1)
+Apsi_c = Apsi - Apsi.mean(0)
+Cpsi   = Apsi_c @ Apsi_c.T / Np
+evp, evcp = np.linalg.eigh(Cpsi); op = evp.argsort()[::-1]
+evp = np.clip(evp[op], 0, None); evcp = evcp[:, op]
+mpsi = evcp.T @ Apsi_c; mpsi /= (np.linalg.norm(mpsi, axis=1) + 1e-30)[:, None]
+apsi = Apsi_c @ mpsi.T
+err_pod = []
+Ks = np.maximum(1, (fracs * n_z).astype(int))
+for K in Ks:
+    recon = Apsi.mean(0)[None] + apsi[:, :K] @ mpsi[:K]
+    err_pod.append(np.mean(np.sum((Apsi - recon)**2, axis=1) /
+                           (np.sum(Apsi**2, axis=1) + 1e-30)))
+err_pod = np.array(err_pod)
 
-# c. Calcul du flux de Reynolds à partir de ces vitesses reconstruites
-flux_reconstructed_from_psi = flux_from_uw(u_from_psi, w_from_psi)
+fig, ax = plt.subplots(figsize=(6.5, 4.5))
+ax.loglog(fracs*100, err_dct, 'o-', label='DCT 2D (relief)')
+ax.loglog(fracs*100, err_pod, 's--', label='POD (K modes ~ meme # ddl)')
+ax.set_xlabel('fraction de coefficients gardes (%)')
+ax.set_ylabel(r"erreur relative de reco de $\psi'$")
+ax.set_title(r"Compressibilite du relief $\psi'$ (anomalie spatiale) : DCT vs POD")
+ax.legend(); ax.grid(True, which='both', alpha=0.3)
+fig.tight_layout(); plt.show()
+for fr, ed, ep in zip(fracs, err_dct, err_pod):
+    print(f'  {fr*100:4.1f}% coeffs  ->  err DCT={ed:.4f}   err POD={ep:.4f}')
 
-# d. Évaluation de la performance (NSE)
-score_nse = nse(flux_true_profile, flux_reconstructed_from_psi)
-print(f"NSE du flux reconstruit via {frac_test*100}% des modes de PSI = {score_nse:.4f}")
+# --- 5. reconstruire le flux de Reynolds depuis psi' (complet et tronque DCT) ---
+def flux_from_psi(psi_arr):
+    """u' = d_z psi'/rho0 , w' = -d_x psi'/rho0  -> profil rho0<u'w'>(z)."""
+    up = np.gradient(psi_arr, alt, axis=1) / rho0[None, :, None]
+    wp = -np.gradient(psi_arr, x,   axis=2) / rho0[None, :, None]
+    up = up - up.mean(axis=2, keepdims=True)
+    wp = wp - wp.mean(axis=2, keepdims=True)
+    return (rho0[None, :] * (up * wp).mean(axis=2)).mean(axis=0)
+
+flux_psi_full = flux_from_psi(psi_ano)
+nse_psi_full  = nse(flux_true_profile, flux_psi_full)
+
+psi_trunc = np.zeros_like(psi_ano)
+for it in range(Np):
+    psi_trunc[it], _ = dct_truncate(psi_ano[it], 0.02)
+flux_psi_dct = flux_from_psi(psi_trunc)
+nse_psi_dct  = nse(flux_true_profile, flux_psi_dct)
+
+print(f'\nNSE flux via psi complet         = {nse_psi_full:+.3f}')
+print(f'NSE flux via psi (2% coeffs DCT) = {nse_psi_dct:+.3f}')
+
+fig, ax = plt.subplots(figsize=(5.5, 5))
+ax.plot(flux_true_profile[mask_show], zkm[mask_show], 'k', lw=2, label='flux vrai 3D')
+ax.plot(flux_psi_full[mask_show], zkm[mask_show], '-',  label=f'psi complet ({nse_psi_full:.2f})')
+ax.plot(flux_psi_dct[mask_show],  zkm[mask_show], '--', label=f'psi 2% DCT ({nse_psi_dct:.2f})')
+ax.axvline(0, color='k', lw=0.5); ax.set_ylim(0, Z_TOP_KM)
+ax.set_xlabel(r"$\rho_0\langle u'w'\rangle$"); ax.set_ylabel('z (km)')
+ax.legend(fontsize=9); ax.set_title(r"Flux via base de $\psi'$ (anomalie spatiale)")
+fig.tight_layout(); plt.show()
