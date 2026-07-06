@@ -1,24 +1,95 @@
-# --- troncature basee sur le FLUX, pas sur l'energie du champ ---
-N_grid = np.unique(np.clip(
-    np.round(np.linspace(1, Ns-1, 40)).astype(int), 1, Ns-1))
-nse_curve = np.array([nse(flux_true_profile, reconstruct_flux_pod(N)) for N in N_grid])
+# ============================================================
+# SECTION RELIEF (3D) — DCT 2D vs POD comme base pour [u';w']
+# Logique : on decompose le champ d'anomalie, on tronque, on reforme
+# le flux 3D reconstruit, on le compare au flux 3D VRAI.
+# (On NE passe PAS par psi : psi n'encode que la partie rotationnelle
+#  et ne peut pas reconstruire le flux 3D total — verifie separement.)
+# ============================================================
 
-# plus petit N atteignant 90% du NSE maximal (=~1)
-target = 0.90
-n_flux = int(N_grid[np.argmax(nse_curve >= target)]) if np.any(nse_curve >= target) else Ns-1
-print(f'{n_flux} modes pour NSE_flux >= {target} '
-      f'(vs {n_modes} modes pour 90% energie du champ)')
+# --- 0. snapshots (t, iy) : etat 2D (z,x), champ resolu en y ---
+# reutilise up_snaps, wp_snaps, Ns, n_snap_t, ny_r, nx_r, x_r, iy_r, ix_r
+# et flux_true_profile deja construits dans la section POD 3D.
+half = n_z * nx_r
 
-fig, ax = plt.subplots(figsize=(7,4))
-ax.plot(N_grid, nse_curve, 'o-', ms=3)
-ax.axhline(target, color='grey', ls='--', lw=0.8)
-ax.axvline(n_flux, color='red', ls='--', lw=0.8, label=f'N={n_flux}')
-ax.axvline(n_modes, color='green', ls=':', lw=0.8, label=f'90% energie (N={n_modes})')
-ax.set_xlabel('nombre de modes N'); ax.set_ylabel('NSE flux')
-ax.set_title('Convergence du flux (echelle reelle des modes necessaires)')
-ax.legend(); ax.set_xscale('log'); fig.tight_layout(); plt.show()
+def flux_from_uw(u2, w2):
+    """u2,w2 : (Ns, n_z, nx_r) -> profil rho0<u'w'>_{y,x}(z) sur grille reduite."""
+    u = u2.reshape(n_snap_t, ny_r, n_z, nx_r).transpose(0, 2, 1, 3)
+    w = w2.reshape(n_snap_t, ny_r, n_z, nx_r).transpose(0, 2, 1, 3)
+    u = u - u.mean(axis=(2, 3), keepdims=True)
+    w = w - w.mean(axis=(2, 3), keepdims=True)
+    return (rho0[None, :] * (u * w).mean(axis=(2, 3))).mean(axis=0)
 
-# reconstruction finale
-flux_pod = reconstruct_flux_pod(n_flux)
-nse_pod  = nse(flux_true_profile, flux_pod)
-print(f'NSE flux final = {nse_pod:+.3f}')
+# sanity : champs exacts -> flux exact (doit valoir ~1.0)
+nse_sanity = nse(flux_true_profile, flux_from_uw(up_snaps, wp_snaps))
+print(f'[sanity] flux depuis u,w exacts : NSE = {nse_sanity:.4f}  (doit etre ~1.0)')
+
+
+# --- 1. DCT 2D : troncature par snapshot, sur u' ET w' ---
+def dct_trunc_field(F3, frac):
+    """F3:(Ns,n_z,nx_r) ; garde les frac plus gros coeffs DCT de chaque snapshot."""
+    out = np.empty_like(F3)
+    for s in range(F3.shape[0]):
+        C = dctn(F3[s], norm='ortho')
+        flat = C.ravel()
+        k = max(1, int(frac * flat.size))
+        idx = np.argpartition(np.abs(flat), -k)[-k:]
+        Cm = np.zeros_like(flat); Cm[idx] = flat[idx]
+        out[s] = idctn(Cm.reshape(C.shape), norm='ortho')
+    return out
+
+fracs = np.array([0.01, 0.02, 0.05, 0.1, 0.3])
+nse_dct = []
+for fr in fracs:
+    ut = dct_trunc_field(up_snaps, fr)
+    wt = dct_trunc_field(wp_snaps, fr)
+    nse_dct.append(nse(flux_true_profile, flux_from_uw(ut, wt)))
+    print(f'  DCT {fr*100:4.1f}% coeffs -> NSE flux = {nse_dct[-1]:+.3f}')
+nse_dct = np.array(nse_dct)
+
+
+# --- 2. POD 3D : deja calculee (modes_flat, a_n, Smean) ; NSE flux vs N ---
+def flux_pod_N(N):
+    rec = Smean[None, :] + a_n[:, :N] @ modes_flat[:N]
+    return flux_from_uw(rec[:, :half].reshape(Ns, n_z, nx_r),
+                        rec[:, half:].reshape(Ns, n_z, nx_r))
+
+# nombre de coeffs POD equivalent a une fraction : N modes ~ N/Ns "fraction"
+N_grid = np.unique(np.clip((fracs * Ns).astype(int), 1, Ns - 1))
+nse_pod_grid = np.array([nse(flux_true_profile, flux_pod_N(N)) for N in N_grid])
+for N, s in zip(N_grid, nse_pod_grid):
+    print(f'  POD {N:4d} modes ({N/Ns*100:4.1f}%) -> NSE flux = {s:+.3f}')
+
+
+# --- 3. comparaison DCT vs POD sur le FLUX (le vrai critere de merite) ---
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+axes[0].plot(fracs * 100, nse_dct, 'o-', label='DCT 2D directe')
+axes[0].plot(N_grid / Ns * 100, nse_pod_grid, 's-', label='POD 3D')
+axes[0].axhline(0, color='k', lw=0.5)
+axes[0].axhline(1, color='grey', ls='--', lw=0.8)
+axes[0].set_xlabel('fraction de coefficients / modes (%)')
+axes[0].set_ylabel('NSE flux reconstruit')
+axes[0].set_title('DCT vs POD : reconstruction du FLUX')
+axes[0].legend(); axes[0].set_xscale('log')
+
+# profils a une troncature "raisonnable" (5%)
+i5 = int(np.argmin(np.abs(fracs - 0.05)))
+ut5 = dct_trunc_field(up_snaps, 0.05); wt5 = dct_trunc_field(wp_snaps, 0.05)
+flux_dct5 = flux_from_uw(ut5, wt5)
+N5 = int(np.clip(int(0.05 * Ns), 1, Ns - 1))
+flux_pod5 = flux_pod_N(N5)
+
+axes[1].plot(flux_true_profile[mask_show], zkm[mask_show], 'k', lw=2, label='flux vrai 3D')
+axes[1].plot(flux_pod5[mask_show], zkm[mask_show], '-',
+             label=f'POD {N5} modes (NSE={nse(flux_true_profile,flux_pod5):.2f})')
+axes[1].plot(flux_dct5[mask_show], zkm[mask_show], '--',
+             label=f'DCT 5% (NSE={nse(flux_true_profile,flux_dct5):.2f})')
+axes[1].axvline(0, color='k', lw=0.5); axes[1].set_ylim(0, Z_TOP_KM)
+axes[1].set_xlabel(r"$\rho_0\langle u'w'\rangle$"); axes[1].set_ylabel('z (km)')
+axes[1].legend(fontsize=9); axes[1].set_title('Profils a ~5% de troncature')
+fig.tight_layout(); plt.show()
+
+print('\nConclusion : la POD reconstruit le flux avec bien moins de coefficients')
+print('que la DCT. La DCT compresse bien le CHAMP mais mal le FLUX, car le flux')
+print('vit dans la correlation croisee u\'w\' que les coeffs DCT dominants ne')
+print('preservent pas — la POD, elle, maximise la covariance capturee.')
