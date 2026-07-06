@@ -1,7 +1,24 @@
-amplitude flux vrai (reduit)  : 0.013311125106419639
-amplitude flux POD            : 0.001816387817205974
-amplitude flux 3D complet ref : 0.01362621018608265
-ratio POD/vrai (par niveau, median): 0.1308111885563279
-variance expliquee cumulee a n_modes: 0.9002675895808058
-NSE reco complete (tous modes) : 0.9999999975031393
-('time', 'altitude', 'y', 'x')
+# --- troncature basee sur le FLUX, pas sur l'energie du champ ---
+N_grid = np.unique(np.clip(
+    np.round(np.linspace(1, Ns-1, 40)).astype(int), 1, Ns-1))
+nse_curve = np.array([nse(flux_true_profile, reconstruct_flux_pod(N)) for N in N_grid])
+
+# plus petit N atteignant 90% du NSE maximal (=~1)
+target = 0.90
+n_flux = int(N_grid[np.argmax(nse_curve >= target)]) if np.any(nse_curve >= target) else Ns-1
+print(f'{n_flux} modes pour NSE_flux >= {target} '
+      f'(vs {n_modes} modes pour 90% energie du champ)')
+
+fig, ax = plt.subplots(figsize=(7,4))
+ax.plot(N_grid, nse_curve, 'o-', ms=3)
+ax.axhline(target, color='grey', ls='--', lw=0.8)
+ax.axvline(n_flux, color='red', ls='--', lw=0.8, label=f'N={n_flux}')
+ax.axvline(n_modes, color='green', ls=':', lw=0.8, label=f'90% energie (N={n_modes})')
+ax.set_xlabel('nombre de modes N'); ax.set_ylabel('NSE flux')
+ax.set_title('Convergence du flux (echelle reelle des modes necessaires)')
+ax.legend(); ax.set_xscale('log'); fig.tight_layout(); plt.show()
+
+# reconstruction finale
+flux_pod = reconstruct_flux_pod(n_flux)
+nse_pod  = nse(flux_true_profile, flux_pod)
+print(f'NSE flux final = {nse_pod:+.3f}')
