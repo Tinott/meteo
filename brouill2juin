@@ -1,108 +1,120 @@
 # ============================================================
-# RELIEF psi' — ANOMALIE SPATIALE (option A : ecart a <psi>_x)
-#   psi'(x,z,t) = psi(x,z,t) - <psi>_x(z,t)
-# On construit psi (moyenne-y, via Poisson), on prend l'anomalie
-# spatiale en x, on l'affiche, puis on la decompose (DCT vs POD)
-# et on compare la reconstruction du flux.
+# BASES FIXES DE RELIEF pour decomposer psi' et reconstruire le flux
+#   On teste des bases TYPIQUES de surface/relief (pas apprises) :
+#     - DCT 2D        (base des reliefs bornes, JPEG)
+#     - Fourier 2D    (naturelle car x periodique)
+#     - Ondelettes 2D (multi-echelle, base reine des reliefs)
+#     - Legendre 2D   (polynomiale, surfaces lisses)
+#   Pour chaque base : on projette psi', on tronque, on derive
+#   -> u',w' -> flux, et on compare au flux VRAI.
 # ============================================================
+import pywt
+from scipy.fft import dctn, idctn, fftn, ifftn
+from numpy.polynomial import legendre as Lg
 
-# --- 1. psi(x,z,t) moyenne-y sur les snapshots ---
-psi_snaps = np.zeros((Np, n_z, n_x))
-ds_u = xr.open_dataset(path3d('ua'))
-ds_w = xr.open_dataset(path3d('wa'))
-for i_snap, it in enumerate(t_idx_pod):
-    itg = t_stat + it
-    U2d = ds_u['ua'].isel({dim_t: itg}).mean(dim=dim_y).values   # <u>_y : (n_z, n_x)
-    W2d = ds_w['wa'].isel({dim_t: itg}).mean(dim=dim_y).values   # <w>_y
-    psi_snaps[i_snap] = psi_poisson_periodic(U2d, W2d, x, alt, rho0)
-ds_u.close(); ds_w.close(); gc.collect()
-
-# --- 2. anomalie SPATIALE : retrait de la moyenne en x, par (t,z) ---
-psi_xmean = psi_snaps.mean(axis=2, keepdims=True)   # <psi>_x : (Np, n_z, 1)
-psi_ano   = psi_snaps - psi_xmean                    # psi'(x,z,t)
-print('psi_ano (anomalie spatiale en x) :', psi_ano.shape)
-print('verif : <psi_ano>_x ~ 0 ?', np.abs(psi_ano.mean(axis=2)).max())
-
-# --- 3. apercu du relief a un instant ---
-it0 = Np // 2
-fig, ax = plt.subplots(figsize=(7, 4))
-vmax = np.percentile(np.abs(psi_ano[it0]), 98) + 1e-30
-im = ax.pcolormesh(x/1000, zkm, psi_ano[it0], cmap='terrain',
-                   shading='auto', vmin=-vmax, vmax=vmax)
-ax.set_ylim(0, Z_TOP_KM); ax.set_xlabel('x (km)'); ax.set_ylabel('z (km)')
-ax.set_title(r"Relief $\psi'(x,z)=\psi-\langle\psi\rangle_x$ a un instant")
-fig.colorbar(im, ax=ax)
-fig.tight_layout(); plt.show()
-
-# --- 4. compressibilite du relief : DCT 2D vs POD (erreur de reco de psi') ---
-def dct_truncate(field2d, frac):
-    C = dctn(field2d, norm='ortho'); flat = C.ravel()
-    k = max(1, int(frac * flat.size))
-    idx = np.argpartition(np.abs(flat), -k)[-k:]
-    Cm = np.zeros_like(flat); Cm[idx] = flat[idx]
-    return idctn(Cm.reshape(C.shape), norm='ortho'), k
-
-fracs = np.array([0.005, 0.01, 0.02, 0.05, 0.1])
-err_dct = []
-for fr in fracs:
-    e = [np.sum((psi_ano[it] - dct_truncate(psi_ano[it], fr)[0])**2) /
-         (np.sum(psi_ano[it]**2) + 1e-30) for it in range(Np)]
-    err_dct.append(np.mean(e))
-err_dct = np.array(err_dct)
-
-# POD sur psi' (anomalie spatiale) : erreur de reco avec K modes
-Apsi   = psi_ano.reshape(Np, -1)
-Apsi_c = Apsi - Apsi.mean(0)
-Cpsi   = Apsi_c @ Apsi_c.T / Np
-evp, evcp = np.linalg.eigh(Cpsi); op = evp.argsort()[::-1]
-evp = np.clip(evp[op], 0, None); evcp = evcp[:, op]
-mpsi = evcp.T @ Apsi_c; mpsi /= (np.linalg.norm(mpsi, axis=1) + 1e-30)[:, None]
-apsi = Apsi_c @ mpsi.T
-err_pod = []
-Ks = np.maximum(1, (fracs * n_z).astype(int))
-for K in Ks:
-    recon = Apsi.mean(0)[None] + apsi[:, :K] @ mpsi[:K]
-    err_pod.append(np.mean(np.sum((Apsi - recon)**2, axis=1) /
-                           (np.sum(Apsi**2, axis=1) + 1e-30)))
-err_pod = np.array(err_pod)
-
-fig, ax = plt.subplots(figsize=(6.5, 4.5))
-ax.loglog(fracs*100, err_dct, 'o-', label='DCT 2D (relief)')
-ax.loglog(fracs*100, err_pod, 's--', label='POD (K modes ~ meme # ddl)')
-ax.set_xlabel('fraction de coefficients gardes (%)')
-ax.set_ylabel(r"erreur relative de reco de $\psi'$")
-ax.set_title(r"Compressibilite du relief $\psi'$ (anomalie spatiale) : DCT vs POD")
-ax.legend(); ax.grid(True, which='both', alpha=0.3)
-fig.tight_layout(); plt.show()
-for fr, ed, ep in zip(fracs, err_dct, err_pod):
-    print(f'  {fr*100:4.1f}% coeffs  ->  err DCT={ed:.4f}   err POD={ep:.4f}')
-
-# --- 5. reconstruire le flux de Reynolds depuis psi' (complet et tronque DCT) ---
-def flux_from_psi(psi_arr):
-    """u' = d_z psi'/rho0 , w' = -d_x psi'/rho0  -> profil rho0<u'w'>(z)."""
-    up = np.gradient(psi_arr, alt, axis=1) / rho0[None, :, None]
-    wp = -np.gradient(psi_arr, x,   axis=2) / rho0[None, :, None]
+# --- psi'(x,z,t) : moyenne-y + anomalie spatiale (deja construit plus haut) ---
+# psi_ano  (Np, n_z, n_x)  et  flux_true_profile  supposes disponibles.
+# Si besoin, cible = flux du relief complet (borne haute de la voie psi) :
+def flux_from_psi(pa):
+    up = np.gradient(pa, alt, axis=1) / rho0[None, :, None]
+    wp = -np.gradient(pa, x,   axis=2) / rho0[None, :, None]
     up = up - up.mean(axis=2, keepdims=True)
     wp = wp - wp.mean(axis=2, keepdims=True)
     return (rho0[None, :] * (up * wp).mean(axis=2)).mean(axis=0)
 
-flux_psi_full = flux_from_psi(psi_ano)
-nse_psi_full  = nse(flux_true_profile, flux_psi_full)
+# borne haute atteignable par la voie psi (relief complet, non tronque)
+flux_psi_ceiling = flux_from_psi(psi_ano)
+nse_ceiling = nse(flux_true_profile, flux_psi_ceiling)
+print(f'[borne haute] flux via psi COMPLET : NSE = {nse_ceiling:+.3f}')
+print('  -> aucune base ne peut depasser ce plafond (limite physique de psi moyenne-y)\n')
 
-psi_trunc = np.zeros_like(psi_ano)
-for it in range(Np):
-    psi_trunc[it], _ = dct_truncate(psi_ano[it], 0.02)
-flux_psi_dct = flux_from_psi(psi_trunc)
-nse_psi_dct  = nse(flux_true_profile, flux_psi_dct)
+def keep_frac(coef_flat, frac):
+    k = max(1, int(frac * coef_flat.size))
+    idx = np.argpartition(np.abs(coef_flat), -k)[-k:]
+    out = np.zeros_like(coef_flat); out[idx] = coef_flat[idx]
+    return out
 
-print(f'\nNSE flux via psi complet         = {nse_psi_full:+.3f}')
-print(f'NSE flux via psi (2% coeffs DCT) = {nse_psi_dct:+.3f}')
+# --- 1. DCT 2D ---
+def recon_dct(pa, frac):
+    out = np.empty_like(pa)
+    for t in range(pa.shape[0]):
+        C = dctn(pa[t], norm='ortho')
+        out[t] = idctn(keep_frac(C.ravel(), frac).reshape(C.shape), norm='ortho')
+    return out
 
-fig, ax = plt.subplots(figsize=(5.5, 5))
-ax.plot(flux_true_profile[mask_show], zkm[mask_show], 'k', lw=2, label='flux vrai 3D')
-ax.plot(flux_psi_full[mask_show], zkm[mask_show], '-',  label=f'psi complet ({nse_psi_full:.2f})')
-ax.plot(flux_psi_dct[mask_show],  zkm[mask_show], '--', label=f'psi 2% DCT ({nse_psi_dct:.2f})')
-ax.axvline(0, color='k', lw=0.5); ax.set_ylim(0, Z_TOP_KM)
-ax.set_xlabel(r"$\rho_0\langle u'w'\rangle$"); ax.set_ylabel('z (km)')
-ax.legend(fontsize=9); ax.set_title(r"Flux via base de $\psi'$ (anomalie spatiale)")
+# --- 2. Fourier 2D ---
+def recon_fft(pa, frac):
+    out = np.empty_like(pa)
+    for t in range(pa.shape[0]):
+        C = fftn(pa[t])
+        out[t] = np.real(ifftn(keep_frac(C.ravel(), frac).reshape(C.shape)))
+    return out
+
+# --- 3. Ondelettes 2D (Daubechies db4, x periodique) ---
+def recon_wave(pa, frac, wl='db4'):
+    out = np.empty_like(pa)
+    for t in range(pa.shape[0]):
+        coeffs = pywt.wavedec2(pa[t], wl, mode='periodization')
+        arr, sl = pywt.coeffs_to_array(coeffs)
+        arr2 = keep_frac(arr.ravel(), frac).reshape(arr.shape)
+        c2 = pywt.array_to_coeffs(arr2, sl, output_format='wavedec2')
+        out[t] = pywt.waverec2(c2, wl, mode='periodization')[:pa.shape[1], :pa.shape[2]]
+    return out
+
+# --- 4. Legendre 2D (produit tensoriel, surfaces lisses) ---
+def legendre_basis(n, deg):
+    xs = np.linspace(-1, 1, n); B = np.zeros((n, deg))
+    for d in range(deg):
+        c = np.zeros(deg); c[d] = 1; B[:, d] = Lg.legval(xs, c)
+    return B / (np.linalg.norm(B, axis=0, keepdims=True) + 1e-30)
+def recon_legendre(pa, frac):
+    nz, nx = pa.shape[1], pa.shape[2]
+    deg = max(2, int(np.sqrt(frac * nz * nx)))
+    Bz = legendre_basis(nz, min(deg, nz)); Bx = legendre_basis(nx, min(deg, nx))
+    out = np.empty_like(pa)
+    for t in range(pa.shape[0]):
+        out[t] = Bz @ (Bz.T @ pa[t] @ Bx) @ Bx.T
+    return out
+
+# --- balayage : NSE(flux) vs fraction de coefficients, pour chaque base ---
+fracs = np.array([0.02, 0.05, 0.1, 0.2, 0.3, 0.5])
+bases = {'DCT': recon_dct, 'Fourier': recon_fft,
+         'Ondelettes': recon_wave, 'Legendre': recon_legendre}
+results = {name: [] for name in bases}
+for fr in fracs:
+    for name, fn in bases.items():
+        results[name].append(nse(flux_true_profile, flux_from_psi(fn(psi_ano, fr))))
+for name in bases:
+    results[name] = np.array(results[name])
+
+print('frac% |  ' + ' | '.join(f'{n:>10s}' for n in bases))
+for i, fr in enumerate(fracs):
+    print(f' {fr*100:4.0f} |  ' +
+          ' | '.join(f'{results[n][i]:+10.3f}' for n in bases))
+
+# --- graphe : convergence de chaque base vers le flux vrai ---
+fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+for name in bases:
+    axes[0].plot(fracs*100, results[name], 'o-', label=name)
+axes[0].axhline(nse_ceiling, color='grey', ls='--', lw=0.8,
+                label=f'plafond psi ({nse_ceiling:.2f})')
+axes[0].axhline(0, color='k', lw=0.5)
+axes[0].set_xlabel('fraction de coefficients gardes (%)')
+axes[0].set_ylabel('NSE flux reconstruit')
+axes[0].set_title('Bases de relief : reconstruction du flux')
+axes[0].legend(fontsize=9); axes[0].set_xscale('log')
+
+# profils au meilleur cas (base + frac qui maximise le NSE)
+best_name = max(bases, key=lambda n: results[n].max())
+best_fr   = fracs[int(np.argmax(results[best_name]))]
+flux_best = flux_from_psi(bases[best_name](psi_ano, best_fr))
+axes[1].plot(flux_true_profile[mask_show], zkm[mask_show], 'k', lw=2, label='flux VRAI')
+axes[1].plot(flux_best[mask_show], zkm[mask_show], 'r--',
+             label=f'{best_name} {best_fr*100:.0f}% (NSE={results[best_name].max():.2f})')
+axes[1].axvline(0, color='k', lw=0.5); axes[1].set_ylim(0, Z_TOP_KM)
+axes[1].set_xlabel(r"$\rho_0\langle u'w'\rangle$"); axes[1].set_ylabel('z (km)')
+axes[1].legend(fontsize=9); axes[1].set_title('Meilleure base de relief vs vrai flux')
 fig.tight_layout(); plt.show()
+
+print(f'\nMeilleure base de relief : {best_name} '
+      f'(NSE={results[best_name].max():+.3f} a {best_fr*100:.0f}% de coeffs)')
