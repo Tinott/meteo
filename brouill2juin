@@ -1,119 +1,72 @@
-# ============================================================================
-# --- psi(x,z,t) moyenne-y sur les memes snapshots, puis anomalie spatiale psi' ---
-# ============================================================================
-psi_snaps = np.zeros((Np, n_z, n_x))
-ds_u = xr.open_dataset(path3d('ua'))
-ds_w = xr.open_dataset(path3d('wa'))
-
-for i_snap, it in enumerate(t_idx_pod):
-    itg = t_stat + it
-    U2d = ds_u['ua'].isel({dim_t: itg}).mean(dim=dim_y).values
-    W2d = ds_w['wa'].isel({dim_t: itg}).mean(dim=dim_y).values
-    psi_snaps[i_snap] = psi_poisson_periodic(U2d, W2d, x, alt, rho0)
-
-ds_u.close(); ds_w.close(); gc.collect()
-
-# --- CORRECTION : Anomalie SPATIALE (on prend la moyenne sur l'axe x, cad axis=2) ---
-# psi_snaps a pour forme (Np, n_z, n_x). On moyenne sur x et on conserve les dimensions pour le broadcasting.
-psi_mean_spatial = psi_snaps.mean(axis=2, keepdims=True)  # Profil moyen en x pour chaque instant et altitude
-psi_ano = psi_snaps - psi_mean_spatial                   # Anomalie spatiale psi'(x,z,t)
-print('psi_ano (anomalie spatiale) :', psi_ano.shape)
-
-it0 = Np // 2
-fig, ax = plt.subplots(figsize=(7, 4))
-vmax = np.percentile(np.abs(psi_ano[it0]), 98) + 1e-30
-im = ax.pcolormesh(x/1000, zkm, psi_ano[it0], cmap='terrain',
-                   shading='auto', vmin=-vmax, vmax=vmax)
-ax.set_ylim(0, Z_TOP_KM); ax.set_xlabel('x (km)'); ax.set_ylabel('z (km)')
-ax.set_title(r"Relief d'anomalie spatiale $\psi'(x,z)$ à un instant")
-fig.colorbar(im, ax=ax)
-fig.tight_layout(); plt.show()
-
+import numpy as np
+import matplotlib.subplots as plt
+from scipy.fft import dct, idct
 
 # ============================================================================
-# SECTION RELIEF (3D) — DCT 2D vs POD comme base pour [u';w'] spatiaux
+# OJECTIF : Garder seulement quelques fonctions optimales et les analyser
 # ============================================================================
-half = n_z * nx_r
 
-def flux_from_uw(u2, w2):
-    """u2,w2 : (Ns, n_z, nx_r) -> profil rho0<u'w'>_{y,x}(z) sur grille reduite."""
+# 1. Calcul du flux de Reynolds vrai (Référence 1D de taille n_z)
+def get_true_flux_profile(u2, w2):
     u = u2.reshape(n_snap_t, ny_r, n_z, nx_r).transpose(0, 2, 1, 3)
     w = w2.reshape(n_snap_t, ny_r, n_z, nx_r).transpose(0, 2, 1, 3)
-    
-    # --- CORRECTION SPATIALE : Les anomalies u' et w' doivent etre prises par rapport à la moyenne spatiale (x) ---
-    u = u - u.mean(axis=3, keepdims=True) # Moyenne sur nx_r uniquement
-    w = w - w.mean(axis=3, keepdims=True) # Moyenne sur nx_r uniquement
-    
+    u = u - u.mean(axis=(2, 3), keepdims=True)
+    w = w - w.mean(axis=(2, 3), keepdims=True)
     return (rho0[None, :] * (u * w).mean(axis=(2, 3))).mean(axis=0)
 
-# Sanity check
-nse_sanity = nse(flux_true_profile, flux_from_uw(up_snaps, wp_snaps))
-print(f'[sanity] flux depuis u,w exacts (anomalie spatiale) : NSE = {nse_sanity:.4f} (doit etre ~1.0)')
+flux_true = get_true_flux_profile(up_snaps, wp_snaps)
 
+# 2. Transformation DCT-II pour obtenir TOUS les coefficients
+C_all = dct(flux_true, norm='ortho')
+n_z = len(flux_true)
 
-# --- 1. DCT 2D : troncature par snapshot, sur u' ET w' spatiaux ---
-def dct_trunc_field(F3, frac):
-    """F3:(Ns,n_z,nx_r) ; garde les frac plus gros coeffs DCT de chaque snapshot."""
-    out = np.empty_like(F3)
-    for s in range(F3.shape[0]):
-        C = dctn(F3[s], norm='ortho')
-        flat = C.ravel()
-        k = max(1, int(frac * flat.size))
-        idx = np.argpartition(np.abs(flat), -k)[-k:]
-        Cm = np.zeros_like(flat); Cm[idx] = flat[idx]
-        out[s] = idctn(Cm.reshape(C.shape), norm='ortho')
-    return out
+# 3. Sélection des N_keep meilleures fonctions (ex: les 3 plus importantes)
+N_keep = 3
+# On trie par valeur absolue décroissante pour trouver les indices des fonctions dominantes
+best_indices = np.argsort(np.abs(C_all))[::-1][:N_keep]
 
-fracs = np.array([0.01, 0.02, 0.05, 0.1, 0.3])
-nse_dct = []
-for fr in fracs:
-    ut = dct_trunc_field(up_snaps, fr)
-    wt = dct_trunc_field(wp_snaps, fr)
-    nse_dct.append(nse(flux_true_profile, flux_from_uw(ut, wt)))
-    print(f' DCT {fr*100:4.1f}% coeffs -> NSE flux = {nse_dct[-1]:+.3f}')
-nse_dct = np.array(nse_dct)
+print(f"--- Analyse des {N_keep} fonctions DCT optimales pour le flux ---")
+for rank, idx in enumerate(best_indices):
+    contrib = (C_all[idx]**2) / np.sum(C_all**2) * 100
+    print(f"Rang {rank+1} : Fonction Cosinus n°{idx} (Fréquence verticale k_z={idx}) -> Explique {contrib:.2f}% de la variance du flux")
 
-
-# --- 2. POD 3D Spatiale : Reconstruction et évaluation de la covariance ---
-def flux_pod_N(N):
-    rec = Smean[None, :] + a_n[:, :N] @ modes_flat[:N]
-    return flux_from_uw(rec[:, :half].reshape(Ns, n_z, nx_r),
-                        rec[:, half:].reshape(Ns, n_z, nx_r))
-
-# Nombre de coeffs POD equivalent a une fraction
-N_grid = np.unique(np.clip((fracs * Ns).astype(int), 1, Ns - 1))
-nse_pod_grid = np.array([nse(flux_true_profile, flux_pod_N(N)) for N in N_grid])
-for N, s in zip(N_grid, nse_pod_grid):
-    print(f' POD {N:4d} modes ({N/Ns*100:4.1f}%) -> NSE flux = {s:+.3f}')
-
-
-# --- 3. Comparaison DCT vs POD sur le FLUX ---
+# ============================================================================
+# VISUALISATION ET ANALYSE DES FONCTIONS SÉLECTIONNÉES
+# ============================================================================
 fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
-axes[0].plot(fracs * 100, nse_dct, 'o-', label='DCT 2D directe')
-axes[0].plot(N_grid / Ns * 100, nse_pod_grid, 's-', label='POD 3D')
-axes[0].axhline(0, color='k', lw=0.5)
-axes[0].axhline(1, color='grey', ls='--', lw=0.8)
-axes[0].set_xlabel('fraction de coefficients / modes (%)')
-axes[0].set_ylabel('NSE flux reconstruit')
-axes[0].set_title('DCT vs POD : reconstruction du FLUX (Spatial)')
-axes[0].legend(); axes[0].set_xscale('log')
+# --- Graphique 1 : Visualisation des fonctions de base isolées ---
+# On reconstruit la forme de chaque fonction de base sélectionnée à son échelle réelle
+for idx in best_indices:
+    C_single = np.zeros(n_z)
+    C_single[idx] = C_all[idx]  # On ne garde QUE ce coefficient
+    mode_shape = idct(C_single, norm='ortho')
+    axes[0].plot(mode_shape[mask_show], zkm[mask_show], '--', 
+                 label=f'Mode k_z={idx} (Coeff={C_all[idx]:.2e})')
 
-# Profils à une troncature raisonnable de 20%
-ut5 = dct_trunc_field(up_snaps, 0.2); wt5 = dct_trunc_field(wp_snaps, 0.2)
-flux_dct5 = flux_from_uw(ut5, wt5)
-N5 = int(np.clip(int(0.2 * Ns), 1, Ns - 1))
-flux_pod5 = flux_pod_N(N5)
+axes[0].axvline(0, color='k', lw=0.5)
+axes[0].set_ylim(0, Z_TOP_KM)
+axes[0].set_xlabel("Amplitude de la composante")
+axes[0].set_ylabel("z (km)")
+axes[0].set_title("Forme brute des fonctions retenues")
+axes[0].legend()
 
-axes[1].plot(flux_true_profile[mask_show], zkm[mask_show], 'k', lw=2, label='flux vrai 3D')
-axes[1].plot(flux_pod5[mask_show], zkm[mask_show], '-',
-             label=f'POD {N5} modes (NSE={nse(flux_true_profile,flux_pod5):.2f})')
-axes[1].plot(flux_dct5[mask_show], zkm[mask_show], '--',
-             label=f'DCT 20% (NSE={nse(flux_true_profile,flux_dct5):.2f})')
-axes[1].axvline(0, color='k', lw=0.5); axes[1].set_ylim(0, Z_TOP_KM)
-axes[1].set_xlabel(r"$\rho_0\langle u'w'\rangle$"); axes[1].set_ylabel('z (km)')
-axes[1].legend(fontsize=9); axes[1].set_title('Profils à ~20% de troncature')
-fig.tight_layout(); plt.show()
+# --- Graphique 2 : Reconstruction cumulée vs Flux Vrai ---
+C_truncated = np.zeros(n_z)
+C_truncated[best_indices] = C_all[best_indices] # On garde uniquement les N_keep coefficients
+flux_reconstructed = idct(C_truncated, norm='ortho')
+score_nse = nse(flux_true, flux_reconstructed)
 
-print('\nConclusion : Avec l\'anomalie spatiale, la POD maximise toujours la covariance capturée')
-print('et surpasse la DCT 2D pour reproduire fidèlement le flux croisé u\'w\'.')
+axes[1].plot(flux_true[mask_show], zkm[mask_show], 'k', lw=2.5, label='Flux Vrai 3D')
+axes[1].plot(flux_reconstructed[mask_show], zkm[mask_show], 'r-', lw=2,
+             label=f'Reconstruction ({N_keep} modes, NSE={score_nse:.3f})')
+
+axes[1].axvline(0, color='k', lw=0.5)
+axes[1].set_ylim(0, Z_TOP_KM)
+axes[1].set_xlabel(r"$\rho_0\langle u'w'\rangle$")
+axes[1].set_ylabel("z (km)")
+axes[1].set_title(f"Reconstruction finale avec {N_keep} fonctions")
+axes[1].legend()
+
+fig.tight_layout()
+plt.show()
