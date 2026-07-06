@@ -1,95 +1,156 @@
 # ============================================================
-# SECTION RELIEF (3D) — DCT 2D vs POD comme base pour [u';w']
-# Logique : on decompose le champ d'anomalie, on tronque, on reforme
-# le flux 3D reconstruit, on le compare au flux 3D VRAI.
-# (On NE passe PAS par psi : psi n'encode que la partie rotationnelle
-#  et ne peut pas reconstruire le flux 3D total — verifie separement.)
+# OBJECTIF 5 — Zones de fort cisaillement par COLONNE (x,t)
+# Critere :  max_{0<=z<=15km} |d_z ubar(x,z,t)| > seuil
+#   ou ubar = moyenne EN Y (resolu en x).  -> on cherche les
+#   colonnes (x,t) qui qualifient. Pour un meme t il peut y
+#   avoir plusieurs x. PAS de moyenne verticale par t.
 # ============================================================
 
-# --- 0. snapshots (t, iy) : etat 2D (z,x), champ resolu en y ---
-# reutilise up_snaps, wp_snaps, Ns, n_snap_t, ny_r, nx_r, x_r, iy_r, ix_r
-# et flux_true_profile deja construits dans la section POD 3D.
-half = n_z * nx_r
+# --- 1. ubar RESOLU EN X : ubar_xz(z, x, t) = <u>_y  (niveau par niveau, RAM) ---
+ubar_xz = np.zeros((n_z, n_x, n_stat), dtype=np.float32)
+ds_u = xr.open_dataset(path3d('ua'))
+for iz in range(n_z):
+    u = ds_u['ua'].isel({dim_z: iz, dim_t: idx_stat}).values     # (n_stat, ny, nx)
+    ubar_xz[iz] = u.mean(axis=1).T                               # <u>_y -> (nx, n_stat)
+ds_u.close(); gc.collect()
+print('ubar_xz (z,x,t) :', ubar_xz.shape)
 
-def flux_from_uw(u2, w2):
-    """u2,w2 : (Ns, n_z, nx_r) -> profil rho0<u'w'>_{y,x}(z) sur grille reduite."""
-    u = u2.reshape(n_snap_t, ny_r, n_z, nx_r).transpose(0, 2, 1, 3)
-    w = w2.reshape(n_snap_t, ny_r, n_z, nx_r).transpose(0, 2, 1, 3)
-    u = u - u.mean(axis=(2, 3), keepdims=True)
-    w = w - w.mean(axis=(2, 3), keepdims=True)
-    return (rho0[None, :] * (u * w).mean(axis=(2, 3))).mean(axis=0)
+# derivee verticale (colonne complete puis restriction 0-15km) ---
+dudz_xz = np.gradient(ubar_xz, alt, axis=0)                      # (n_z, n_x, n_stat)
+mask15  = (alt >= 0) & (alt <= Z_TOP_KM * 1000)
 
-# sanity : champs exacts -> flux exact (doit valoir ~1.0)
-nse_sanity = nse(flux_true_profile, flux_from_uw(up_snaps, wp_snaps))
-print(f'[sanity] flux depuis u,w exacts : NSE = {nse_sanity:.4f}  (doit etre ~1.0)')
+# --- 2. critere PAR COLONNE : max vertical de |d_z ubar| sur 0-15 km ---
+shear_col = np.max(np.abs(dudz_xz[mask15]), axis=0)             # (n_x, n_stat) : 1 scalaire / colonne
+seuil_shear = np.percentile(shear_col, 90)                     # seuil = quantile 90% (reglable)
+strong_cols = shear_col > seuil_shear                          # (n_x, n_stat) booleen
+n_strong = int(strong_cols.sum())
+print(f'seuil |d_z ubar|_max = {seuil_shear:.2e} s^-1')
+print(f'{n_strong}/{strong_cols.size} colonnes (x,t) fortes '
+      f'({100*n_strong/strong_cols.size:.1f}%)')
 
+# nombre de colonnes x fortes par instant (illustre "plusieurs x pour un t")
+n_x_par_t = strong_cols.sum(axis=0)
+print(f'colonnes fortes par instant : min={n_x_par_t.min()}, '
+      f'median={int(np.median(n_x_par_t))}, max={n_x_par_t.max()}')
 
-# --- 1. DCT 2D : troncature par snapshot, sur u' ET w' ---
-def dct_trunc_field(F3, frac):
-    """F3:(Ns,n_z,nx_r) ; garde les frac plus gros coeffs DCT de chaque snapshot."""
-    out = np.empty_like(F3)
-    for s in range(F3.shape[0]):
-        C = dctn(F3[s], norm='ortho')
-        flat = C.ravel()
-        k = max(1, int(frac * flat.size))
-        idx = np.argpartition(np.abs(flat), -k)[-k:]
-        Cm = np.zeros_like(flat); Cm[idx] = flat[idx]
-        out[s] = idctn(Cm.reshape(C.shape), norm='ortho')
-    return out
+# --- 3. carte (x,t) des colonnes fortes + continuite ---
+# regions connexes dans le plan (x,t) : x periodique -> on gere le raccord
+lab_xt, n_xt = ndi_label(strong_cols)
+# raccord periodique en x (colonne 0 et n_x-1 adjacentes)
+for it in range(n_stat):
+    if strong_cols[0, it] and strong_cols[-1, it]:
+        a, b = lab_xt[0, it], lab_xt[-1, it]
+        if a != b: lab_xt[lab_xt == b] = a
+labels_uniq = np.unique(lab_xt[lab_xt > 0])
+print(f'{len(labels_uniq)} region(s) connexe(s) dans le plan (x,t) '
+      f'[x periodique raccorde]')
 
-fracs = np.array([0.01, 0.02, 0.05, 0.1, 0.3])
-nse_dct = []
-for fr in fracs:
-    ut = dct_trunc_field(up_snaps, fr)
-    wt = dct_trunc_field(wp_snaps, fr)
-    nse_dct.append(nse(flux_true_profile, flux_from_uw(ut, wt)))
-    print(f'  DCT {fr*100:4.1f}% coeffs -> NSE flux = {nse_dct[-1]:+.3f}')
-nse_dct = np.array(nse_dct)
+fig, axes = plt.subplots(1, 2, figsize=(14, 4.5))
+im0 = axes[0].pcolormesh(np.arange(n_stat)+t_stat, x/1000, shear_col,
+                         cmap='viridis', shading='auto')
+axes[0].axhline(0, color='w', lw=0)  # placeholder
+cs = axes[0].contour(np.arange(n_stat)+t_stat, x/1000,
+                     strong_cols.astype(float), levels=[0.5],
+                     colors='r', linewidths=0.8)
+axes[0].set_xlabel('t (indice global)'); axes[0].set_ylabel('x (km)')
+axes[0].set_title(r'$\max_{0-15km}|\partial_z\bar u|(x,t)$ + seuil')
+fig.colorbar(im0, ax=axes[0], pad=0.02, label='intensite cisaillement')
 
-
-# --- 2. POD 3D : deja calculee (modes_flat, a_n, Smean) ; NSE flux vs N ---
-def flux_pod_N(N):
-    rec = Smean[None, :] + a_n[:, :N] @ modes_flat[:N]
-    return flux_from_uw(rec[:, :half].reshape(Ns, n_z, nx_r),
-                        rec[:, half:].reshape(Ns, n_z, nx_r))
-
-# nombre de coeffs POD equivalent a une fraction : N modes ~ N/Ns "fraction"
-N_grid = np.unique(np.clip((fracs * Ns).astype(int), 1, Ns - 1))
-nse_pod_grid = np.array([nse(flux_true_profile, flux_pod_N(N)) for N in N_grid])
-for N, s in zip(N_grid, nse_pod_grid):
-    print(f'  POD {N:4d} modes ({N/Ns*100:4.1f}%) -> NSE flux = {s:+.3f}')
-
-
-# --- 3. comparaison DCT vs POD sur le FLUX (le vrai critere de merite) ---
-fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-
-axes[0].plot(fracs * 100, nse_dct, 'o-', label='DCT 2D directe')
-axes[0].plot(N_grid / Ns * 100, nse_pod_grid, 's-', label='POD 3D')
-axes[0].axhline(0, color='k', lw=0.5)
-axes[0].axhline(1, color='grey', ls='--', lw=0.8)
-axes[0].set_xlabel('fraction de coefficients / modes (%)')
-axes[0].set_ylabel('NSE flux reconstruit')
-axes[0].set_title('DCT vs POD : reconstruction du FLUX')
-axes[0].legend(); axes[0].set_xscale('log')
-
-# profils a une troncature "raisonnable" (5%)
-i5 = int(np.argmin(np.abs(fracs - 0.05)))
-ut5 = dct_trunc_field(up_snaps, 0.05); wt5 = dct_trunc_field(wp_snaps, 0.05)
-flux_dct5 = flux_from_uw(ut5, wt5)
-N5 = int(np.clip(int(0.05 * Ns), 1, Ns - 1))
-flux_pod5 = flux_pod_N(N5)
-
-axes[1].plot(flux_true_profile[mask_show], zkm[mask_show], 'k', lw=2, label='flux vrai 3D')
-axes[1].plot(flux_pod5[mask_show], zkm[mask_show], '-',
-             label=f'POD {N5} modes (NSE={nse(flux_true_profile,flux_pod5):.2f})')
-axes[1].plot(flux_dct5[mask_show], zkm[mask_show], '--',
-             label=f'DCT 5% (NSE={nse(flux_true_profile,flux_dct5):.2f})')
-axes[1].axvline(0, color='k', lw=0.5); axes[1].set_ylim(0, Z_TOP_KM)
-axes[1].set_xlabel(r"$\rho_0\langle u'w'\rangle$"); axes[1].set_ylabel('z (km)')
-axes[1].legend(fontsize=9); axes[1].set_title('Profils a ~5% de troncature')
+axes[1].pcolormesh(np.arange(n_stat)+t_stat, x/1000, strong_cols.astype(float),
+                   cmap='Greys', shading='auto')
+axes[1].set_xlabel('t (indice global)'); axes[1].set_ylabel('x (km)')
+axes[1].set_title('Colonnes fortes (x,t) — noir = qualifie')
+fig.suptitle('Zones de fort cisaillement : critere par colonne (x,t)')
 fig.tight_layout(); plt.show()
 
-print('\nConclusion : la POD reconstruit le flux avec bien moins de coefficients')
-print('que la DCT. La DCT compresse bien le CHAMP mais mal le FLUX, car le flux')
-print('vit dans la correlation croisee u\'w\' que les coeffs DCT dominants ne')
-print('preservent pas — la POD, elle, maximise la covariance capturee.')
+# --- 4. moyennes REGIONALES (par region connexe, pas par t) ---
+# on a besoin du flux et des grandeurs resolues en x -> on les recalcule <.>_y
+# flux_xz(z,x,t) = rho0 <u'w'>_y  (u',w' = ecart a la moyenne horizontale <.>_{y,x})
+flux_xz = np.zeros((n_z, n_x, n_stat), dtype=np.float32)
+wbar_xz = np.zeros((n_z, n_x, n_stat), dtype=np.float32)
+ds_u = xr.open_dataset(path3d('ua'))
+ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    u = ds_u['ua'].isel({dim_z: iz, dim_t: idx_stat}).values     # (n_stat, ny, nx)
+    w = ds_w['wa'].isel({dim_z: iz, dim_t: idx_stat}).values
+    ub_h = u.mean(axis=(1, 2), keepdims=True)                    # <u>_{y,x}(t)
+    wb_h = w.mean(axis=(1, 2), keepdims=True)
+    up = u - ub_h; wp = w - wb_h
+    flux_xz[iz] = (rho0[iz] * (up * wp).mean(axis=1)).T          # <u'w'>_y -> (nx,n_stat)
+    wbar_xz[iz] = w.mean(axis=1).T
+ds_u.close(); ds_w.close(); gc.collect()
+
+d2udz2_xz = np.gradient(dudz_xz, alt, axis=0)
+
+print('\nMoyennes regionales (sur chaque region connexe du plan x-t) :')
+region_stats = []
+for r in labels_uniq:
+    # masque (n_x, n_stat) de la region ; on moyenne les grandeurs sur 0-15km
+    m_xt = (lab_xt == r)
+    if m_xt.sum() < 3:      # ignore les micro-regions
+        continue
+    # indices (ix, it) de la region
+    ix_r, it_r = np.where(m_xt)
+    # profil vertical moyen des colonnes de la region, sur 0-15 km
+    prof_flux = flux_xz[mask15][:, ix_r, it_r].mean(axis=1)      # (n_z15,)
+    prof_dudz = dudz_xz[mask15][:, ix_r, it_r].mean(axis=1)
+    prof_u    = ubar_xz[mask15][:, ix_r, it_r].mean(axis=1)
+    region_stats.append((r, m_xt.sum(), prof_flux, prof_dudz, prof_u,
+                         x[ix_r], it_r + t_stat))
+    print(f'  region {r}: {m_xt.sum()} colonnes | '
+          f'x={x[ix_r].min()/1000:.0f}-{x[ix_r].max()/1000:.0f}km, '
+          f't={it_r.min()+t_stat}-{it_r.max()+t_stat} | '
+          f'<|dudz|>={np.abs(prof_dudz).mean():.2e}, '
+          f'<flux>={prof_flux.mean():+.2e}')
+
+# --- 5. profils regionaux moyens (flux & cisaillement) ---
+zkm15 = alt[mask15] / 1000.0
+if region_stats:
+    # garde les plus grandes regions pour la lisibilite
+    region_stats.sort(key=lambda s: s[1], reverse=True)
+    top = region_stats[:min(5, len(region_stats))]
+    fig, axes = plt.subplots(1, 2, figsize=(11, 5), sharey=True)
+    cmap = plt.get_cmap('tab10')
+    for k, (r, npix, pf, pd, pu, xr_, tr_) in enumerate(top):
+        c = cmap(k)
+        axes[0].plot(pf, zkm15, color=c, label=f'reg {r} ({npix} col.)')
+        axes[1].plot(pd, zkm15, color=c)
+    axes[0].axvline(0, color='k', lw=0.5); axes[0].set_ylim(0, Z_TOP_KM)
+    axes[0].set_xlabel(r"$\rho_0\langle u'w'\rangle$ regional")
+    axes[0].set_ylabel('z (km)'); axes[0].set_title('Flux moyen par region (x,t)')
+    axes[0].legend(fontsize=8)
+    axes[1].axvline(0, color='k', lw=0.5)
+    axes[1].set_xlabel(r'$\partial_z\bar u$ regional')
+    axes[1].set_title('Cisaillement moyen par region')
+    fig.tight_layout(); plt.show()
+
+# --- 6. fermeture locale sur les COLONNES fortes : F = a*u + b*dudz + c*d2udz2 ---
+#   F = d_z(rho0<u'w'>) evaluee colonne par colonne, restreinte 0-15km
+#   regression sur l'echantillon {(z, x, t) : colonne forte, z dans 0-15km}
+F_xz = np.gradient(flux_xz, alt, axis=0)                        # (n_z, n_x, n_stat)
+
+# echantillon : tous les (z, x, t) avec (x,t) colonne forte et z dans 0-15km
+zsel = np.where(mask15)[0]
+Xrows, yrows = [], []
+for (ix, it) in zip(*np.where(strong_cols)):
+    Xrows.append(np.stack([ubar_xz[zsel, ix, it],
+                           dudz_xz[zsel, ix, it],
+                           d2udz2_xz[zsel, ix, it]], axis=1))
+    yrows.append(F_xz[zsel, ix, it])
+Xall = np.concatenate(Xrows); yall = np.concatenate(yrows)
+
+# split walk-forward en temps
+t_med = t_stat + n_stat // 2
+it_all = np.concatenate([np.full(len(zsel), it) for (ix, it) in zip(*np.where(strong_cols))])
+tr = it_all < (n_stat // 2); te = ~tr
+
+def nse(a, b): return 1 - np.sum((a-b)**2) / np.sum((a-a.mean())**2)
+mu, sd = Xall[tr].mean(0), Xall[tr].std(0)+1e-12
+c = np.linalg.solve(((Xall[tr]-mu)/sd).T@((Xall[tr]-mu)/sd) + 1e-2*np.eye(3),
+                    ((Xall[tr]-mu)/sd).T@yall[tr])
+coef_phys = c / sd
+pred_te = ((Xall[te]-mu)/sd) @ c
+print('\n=== Fermeture locale sur colonnes fortes (0-15 km) ===')
+print(f'  coeffs (alpha,beta,gamma) = {np.array2string(coef_phys, precision=3)}')
+print(f'  NSE test (walk-forward)   = {nse(yall[te], pred_te):+.3f}')
+print(f'  (echantillon : {tr.sum()} train / {te.sum()} test points (z,x,t))')
