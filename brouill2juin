@@ -1,162 +1,107 @@
 # ============================================================
-# BASES FIXES DE RELIEF (sans pywt) pour decomposer psi' et reconstruire le flux
-#   Bases typiques de surface, aucune apprise sur les donnees :
-#     - DCT 2D        (reliefs bornes, JPEG)
-#     - Fourier 2D    (x periodique)
-#     - Haar 2D       (ondelette multi-echelle, numpy pur, gere tailles impaires)
-#     - Legendre 2D   (polynomiale, surfaces lisses)
-#   Pour chaque base : projection -> troncature -> derivation
-#   -> u',w' -> flux, compare au flux VRAI.
+# OBJECTIF 5 — VARIANTE A UNE ALTITUDE z0 (auto : plus fort cisaillement moyen)
+#   1. z0 = altitude ou <|d_z ubar|>_{x,t} est maximal (0-15 km)
+#   2. a z0 : colonnes (x,t) fortes = |d_z ubar(z0,x,t)| > seuil
+#   3. regions connexes (x,t) a z0
+#   4. regression PAR REGION :  F(z0,x,t) = a*ubar + b*d_z ubar + c*d2_z ubar
+#      avec F = d_z(rho0<u'w'>) (cible A), echantillon = les (x,t) de la region
 # ============================================================
-from scipy.fft import dctn, idctn, fftn, ifftn
-from numpy.polynomial import legendre as Lg
 
-# --- passage relief -> flux ---
-def flux_from_psi(pa):
-    """pa:(Np,n_z,n_x) -> profil rho0<u'w'>(z) via u'=d_z psi/rho0, w'=-d_x psi/rho0."""
-    up = np.gradient(pa, alt, axis=1) / rho0[None, :, None]
-    wp = -np.gradient(pa, x,   axis=2) / rho0[None, :, None]
-    up = up - up.mean(axis=2, keepdims=True)
-    wp = wp - wp.mean(axis=2, keepdims=True)
-    return (rho0[None, :] * (up * wp).mean(axis=2)).mean(axis=0)
+# --- champs resolus en x : ubar_xz, flux_xz (recalcules si pas deja en memoire) ---
+# On suppose disponibles depuis l'objectif 5 principal :
+#   ubar_xz, dudz_xz, d2udz2_xz, flux_xz  de forme (n_z, n_x, n_stat)
+#   mask15, alt, x, n_stat, t_stat, Z_TOP_KM
+F_xz = np.gradient(flux_xz, alt, axis=0)                         # (n_z, n_x, n_stat)
 
-# borne haute : flux via psi COMPLET (non tronque) = plafond de la voie psi
-flux_psi_ceiling = flux_from_psi(psi_ano)
-nse_ceiling = nse(flux_true_profile, flux_psi_ceiling)
-print(f'[borne haute] flux via psi COMPLET : NSE = {nse_ceiling:+.3f}')
-print('  -> aucune base ne peut depasser ce plafond (psi moyenne-y ne porte que T1)\n')
+def nse(a, b):
+    d = np.sum((a - a.mean())**2)
+    return 1 - np.sum((a-b)**2)/d if d > 0 else np.nan
 
-def keep_frac(flat, frac):
-    """garde les frac (0-1) plus gros coefficients (en module), annule le reste."""
-    k = max(1, int(frac * flat.size))
-    idx = np.argpartition(np.abs(flat), -k)[-k:]
-    out = np.zeros_like(flat); out[idx] = flat[idx]
-    return out
+# --- 1. altitude z0 de plus fort cisaillement MOYEN (moyenne sur x et t) ---
+shear_prof = np.abs(dudz_xz[mask15]).mean(axis=(1, 2))          # (n_z15,)
+z15_idx = np.where(mask15)[0]
+iz0 = z15_idx[np.argmax(shear_prof)]
+print(f'Altitude choisie : z0 = {alt[iz0]/1000:.2f} km '
+      f'(<|d_z ubar|>_x,t = {shear_prof.max():.2e} s^-1)')
 
-# ------------------------------------------------------------
-#  Ondelette Haar 2D (numpy pur) — gere les tailles IMPAIRES via padding
-# ------------------------------------------------------------
-def _haar_fwd_1d(v):
-    n = len(v) // 2
-    a = (v[0:2*n:2] + v[1:2*n:2]) / np.sqrt(2)
-    d = (v[0:2*n:2] - v[1:2*n:2]) / np.sqrt(2)
-    return a, d
-def _haar_inv_1d(a, d):
-    n = len(a); v = np.zeros(2*n)
-    v[0:2*n:2] = (a + d) / np.sqrt(2); v[1:2*n:2] = (a - d) / np.sqrt(2)
-    return v
-def _next_pow2(n):
-    p = 1
-    while p < n: p *= 2
-    return p
-def haar2d_fwd(img, levels):
-    out = img.astype(float).copy(); h, w = out.shape; ch, cw = h, w
-    for _ in range(levels):
-        if ch < 2 or cw < 2 or ch % 2 or cw % 2: break
-        for i in range(ch):
-            a, d = _haar_fwd_1d(out[i, :cw]); out[i, :cw//2] = a; out[i, cw//2:cw] = d
-        for j in range(cw):
-            a, d = _haar_fwd_1d(out[:ch, j]); out[:ch//2, j] = a; out[ch//2:ch, j] = d
-        ch //= 2; cw //= 2
-    return out
-def haar2d_inv(coef, levels, shape):
-    out = coef.astype(float).copy(); h, w = shape
-    sizes = []; ch, cw = h, w
-    for _ in range(levels):
-        if ch < 2 or cw < 2 or ch % 2 or cw % 2: break
-        sizes.append((ch, cw)); ch //= 2; cw //= 2
-    for (ch, cw) in reversed(sizes):
-        for j in range(cw):
-            out[:ch, j] = _haar_inv_1d(out[:ch//2, j], out[ch//2:ch, j])
-        for i in range(ch):
-            out[i, :cw] = _haar_inv_1d(out[i, :cw//2], out[i, cw//2:cw])
-    return out
+# --- 2. colonnes (x,t) fortes A z0 (plus de max vertical : cisaillement direct a z0) ---
+shear_z0 = np.abs(dudz_xz[iz0])                                 # (n_x, n_stat)
+seuil_z0 = np.percentile(shear_z0, 90)                          # reglable
+strong_z0 = shear_z0 > seuil_z0
+print(f'seuil |d_z ubar|(z0) = {seuil_z0:.2e} s^-1  ->  '
+      f'{strong_z0.sum()}/{strong_z0.size} colonnes (x,t) fortes '
+      f'({100*strong_z0.mean():.1f}%)')
 
-# ------------------------------------------------------------
-#  Les 4 reconstructions (base -> troncature -> reco)
-# ------------------------------------------------------------
-def recon_dct(pa, frac):
-    out = np.empty_like(pa)
-    for t in range(pa.shape[0]):
-        C = dctn(pa[t], norm='ortho')
-        out[t] = idctn(keep_frac(C.ravel(), frac).reshape(C.shape), norm='ortho')
-    return out
+# --- 3. regions connexes (x,t) a z0, avec raccord periodique en x ---
+lab_z0, _ = ndi_label(strong_z0)
+for it in range(n_stat):
+    if strong_z0[0, it] and strong_z0[-1, it]:
+        a, b = lab_z0[0, it], lab_z0[-1, it]
+        if a != b: lab_z0[lab_z0 == b] = a
+labs_z0 = np.unique(lab_z0[lab_z0 > 0])
+print(f'{len(labs_z0)} region(s) connexe(s) (x,t) a z0')
 
-def recon_fft(pa, frac):
-    out = np.empty_like(pa)
-    for t in range(pa.shape[0]):
-        C = fftn(pa[t])
-        out[t] = np.real(ifftn(keep_frac(C.ravel(), frac).reshape(C.shape)))
-    return out
-
-def recon_haar(pa, frac, levels=3):
-    """Pad a la puissance de 2 (reflexion), tronque, recoupe a la taille d'origine."""
-    nt, nz, nx = pa.shape
-    Hz, Hx = _next_pow2(nz), _next_pow2(nx)
-    out = np.empty_like(pa)
-    for t in range(nt):
-        p = np.pad(pa[t], ((0, Hz-nz), (0, Hx-nx)), mode='reflect')
-        C = haar2d_fwd(p, levels)
-        Cm = keep_frac(C.ravel(), frac).reshape(C.shape)
-        r = haar2d_inv(Cm, levels, p.shape)
-        out[t] = r[:nz, :nx]
-    return out
-
-def legendre_basis(n, deg):
-    xs = np.linspace(-1, 1, n); B = np.zeros((n, deg))
-    for d in range(deg):
-        c = np.zeros(deg); c[d] = 1; B[:, d] = Lg.legval(xs, c)
-    return B / (np.linalg.norm(B, axis=0, keepdims=True) + 1e-30)
-def recon_legendre(pa, frac):
-    nz, nx = pa.shape[1], pa.shape[2]
-    deg = max(2, int(np.sqrt(frac * nz * nx)))
-    Bz = legendre_basis(nz, min(deg, nz)); Bx = legendre_basis(nx, min(deg, nx))
-    out = np.empty_like(pa)
-    for t in range(pa.shape[0]):
-        out[t] = Bz @ (Bz.T @ pa[t] @ Bx) @ Bx.T
-    return out
-
-# ------------------------------------------------------------
-#  Balayage : NSE(flux) vs fraction de coefficients, pour chaque base
-# ------------------------------------------------------------
-fracs = np.array([0.02, 0.05, 0.1, 0.2, 0.3, 0.5])
-bases = {'DCT': recon_dct, 'Fourier': recon_fft,
-         'Haar': recon_haar, 'Legendre': recon_legendre}
-results = {name: [] for name in bases}
-for fr in fracs:
-    for name, fn in bases.items():
-        results[name].append(nse(flux_true_profile, flux_from_psi(fn(psi_ano, fr))))
-for name in bases:
-    results[name] = np.array(results[name])
-
-print('frac% |  ' + ' | '.join(f'{n:>9s}' for n in bases))
-for i, fr in enumerate(fracs):
-    print(f' {fr*100:4.0f} |  ' + ' | '.join(f'{results[n][i]:+9.3f}' for n in bases))
-
-# ------------------------------------------------------------
-#  Graphes : convergence + meilleur profil vs flux vrai
-# ------------------------------------------------------------
-fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-for name in bases:
-    axes[0].plot(fracs*100, results[name], 'o-', label=name)
-axes[0].axhline(nse_ceiling, color='grey', ls='--', lw=0.8,
-                label=f'plafond psi ({nse_ceiling:.2f})')
-axes[0].axhline(0, color='k', lw=0.5)
-axes[0].set_xlabel('fraction de coefficients gardes (%)')
-axes[0].set_ylabel('NSE flux reconstruit')
-axes[0].set_title('Bases de relief : reconstruction du flux')
-axes[0].legend(fontsize=9); axes[0].set_xscale('log')
-
-best_name = max(bases, key=lambda n: results[n].max())
-best_fr   = fracs[int(np.argmax(results[best_name]))]
-flux_best = flux_from_psi(bases[best_name](psi_ano, best_fr))
-axes[1].plot(flux_true_profile[mask_show], zkm[mask_show], 'k', lw=2, label='flux VRAI')
-axes[1].plot(flux_best[mask_show], zkm[mask_show], 'r--',
-             label=f'{best_name} {best_fr*100:.0f}% (NSE={results[best_name].max():.2f})')
-axes[1].axvline(0, color='k', lw=0.5); axes[1].set_ylim(0, Z_TOP_KM)
-axes[1].set_xlabel(r"$\rho_0\langle u'w'\rangle$"); axes[1].set_ylabel('z (km)')
-axes[1].legend(fontsize=9); axes[1].set_title('Meilleure base de relief vs vrai flux')
+# carte des colonnes fortes a z0
+fig, ax = plt.subplots(figsize=(9, 4))
+im = ax.pcolormesh(np.arange(n_stat)+t_stat, x/1000, shear_z0,
+                   cmap='viridis', shading='auto')
+ax.contour(np.arange(n_stat)+t_stat, x/1000, strong_z0.astype(float),
+           levels=[0.5], colors='r', linewidths=0.8)
+ax.set_xlabel('t (indice global)'); ax.set_ylabel('x (km)')
+ax.set_title(f'|$\\partial_z\\bar u$|(x,t) a z0={alt[iz0]/1000:.1f} km + colonnes fortes (rouge)')
+fig.colorbar(im, ax=ax, pad=0.02, label='cisaillement a z0')
 fig.tight_layout(); plt.show()
 
-print(f'\nMeilleure base de relief : {best_name} '
-      f'(NSE={results[best_name].max():+.3f} a {best_fr*100:.0f}% de coeffs)')
+# --- 4. regression PAR REGION a z0 : F(z0)=a*u+b*dudz+c*d2, echantillon = (x,t) de la region ---
+def fit_region_z0(ix_r, it_r, lam=1e-2):
+    X = np.stack([ubar_xz[iz0, ix_r, it_r],
+                  dudz_xz[iz0, ix_r, it_r],
+                  d2udz2_xz[iz0, ix_r, it_r]], axis=1)           # (ncol, 3)
+    y = F_xz[iz0, ix_r, it_r]                                    # (ncol,)
+    mu, sd = X.mean(0), X.std(0) + 1e-12
+    Xn = (X - mu) / sd
+    c = np.linalg.solve(Xn.T @ Xn + lam*np.eye(3), Xn.T @ y)
+    y_pred = Xn @ c
+    return c/sd, y, y_pred, nse(y, y_pred), np.linalg.cond(Xn)
+
+results = []
+for r in labs_z0:
+    m = (lab_z0 == r)
+    if m.sum() < 5:                       # assez de points (x,t) pour un fit
+        continue
+    ix_r, it_r = np.where(m)
+    coef, y, y_pred, nse_r, cond = fit_region_z0(ix_r, it_r)
+    results.append((r, m.sum(), coef, y, y_pred, nse_r, cond, ix_r, it_r))
+    print(f'region {r:3d} ({m.sum():3d} col) : NSE={nse_r:+.3f} | cond={cond:6.1f} | '
+          f'(a,b,c)={np.array2string(coef, precision=2)}')
+
+if not results:
+    print('Aucune region assez grande a z0 — baisse le percentile du seuil.')
+
+# --- 5. graphe : F predit vs F vrai (nuage par region, car z0 fixe -> pas de profil z) ---
+if results:
+    results.sort(key=lambda s: s[1], reverse=True)
+    top = results[:min(6, len(results))]
+    ncol = min(3, len(top)); nrow = int(np.ceil(len(top)/ncol))
+    fig, axes = plt.subplots(nrow, ncol, figsize=(4.2*ncol, 4.0*nrow), squeeze=False)
+    for k, (r, npx, coef, y, y_pred, nse_r, cond, ix_r, it_r) in enumerate(top):
+        ax = axes[k//ncol][k%ncol]
+        ax.scatter(y, y_pred, s=18, alpha=0.6, color=plt.get_cmap('tab10')(k))
+        lims = [min(y.min(), y_pred.min()), max(y.max(), y_pred.max())]
+        ax.plot(lims, lims, 'k--', lw=1)      # diagonale = prediction parfaite
+        ax.set_title(f'region {r} ({npx} col)\nNSE={nse_r:.2f}, cond={cond:.0f}', fontsize=10)
+        ax.set_xlabel('F vrai'); 
+        if k % ncol == 0: ax.set_ylabel('F predit (fermeture)')
+    for k in range(len(top), nrow*ncol):
+        axes[k//ncol][k%ncol].axis('off')
+    fig.suptitle(f'Fermeture par region a z0={alt[iz0]/1000:.1f} km : F predit vs F vrai')
+    fig.tight_layout(); plt.show()
+
+# --- 6. bilan ---
+if results:
+    print(f'\n=== Bilan fermeture a z0={alt[iz0]/1000:.1f} km, par region ===')
+    nses = [s[5] for s in results]
+    print(f'  {len(results)} regions | NSE median={np.nanmedian(nses):+.3f} | '
+          f'NSE>0 sur {100*np.mean(np.array(nses)>0):.0f}% des regions')
+    print(f'  cond median = {np.median([s[6] for s in results]):.1f} '
+          f'(a z0 fixe, cond faible => coefficients fiables)')
