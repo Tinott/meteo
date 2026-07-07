@@ -1,100 +1,79 @@
-import numpy as np
-import matplotlib.pyplot as plt
+# ============================================================
+#  CONTEXTE DYNAMIQUE & SIGNATURE ONDULATOIRE
+#  Génération des 5 panels (z, t) + Analyse de phase
+# ============================================================
+from matplotlib.colors import TwoSlopeNorm
 
-# =============================================================================
-# 1. PARAMÈTRES DE LA SIMULATION
-# =============================================================================
-# Grille d'espace et de temps
-N_z = 100
-z_top = 15000.0                       # Altitude max (15 km)
-z = np.linspace(0, z_top, N_z)
-dz = z[1] - z[0]
+# --- 1. CONFIGURATION DU GRAPHIQUE À 5 PANELS ---
+fig, axs = plt.subplots(1, 5, figsize=(21, 5.5), sharey=True)
+time_days = (np.arange(n_stat) * dt_phys) / 86400.0
+time_grid, alt_grid = np.meshgrid(time_days, zkm)
 
-N_t = 3000
-dt = 3600.0 * 3                       # Pas de temps (3 heures)
-t = np.arange(N_t) * dt
+# Configuration des variables à tracer
+plots_config = [
+    {"data": ubar_zt, "title": r"Vent moyen $\bar{u}$ (m/s)", "cmap": "RdBu_r", "norm": TwoSlopeNorm(vcenter=0.0)},
+    {"data": wbar_zt * 100, "title": r"Vitesse vert. $\bar{w}$ (cm/s)", "cmap": "RdBu_r", "norm": TwoSlopeNorm(vcenter=0.0)},
+    {"data": flux_zt, "title": r"Flux résolu $\rho_0 \overline{u'w'}$ (Pa)", "cmap": "RdBu_r", "norm": TwoSlopeNorm(vcenter=0.0)},
+    {"data": dudz_zt * 1e3, "title": r"Cisaillement $\partial \bar{u}/\partial z$ ($10^{-3}$ s$^{-1}$)", "cmap": "RdBu_r", "norm": TwoSlopeNorm(vcenter=0.0)},
+    {"data": d2udz2_zt * 1e6, "title": r"Courbure $\partial^2 \bar{u}/\partial z^2$ ($10^{-6}$ m$^{-1}$s$^{-1}$)", "cmap": "RdBu_r", "norm": TwoSlopeNorm(vcenter=0.0)}
+]
 
-# Paramètres physiques
-rho0 = 1.2 * np.exp(-z / 7000.0)      # Profil de densité basique
-N2 = 1e-4 * np.ones(N_z)               # Fréquence de Brunt-Väisälä (stratification uniforme)
-nu = 0.05                             # Viscosité turbulente explicite pour stabiliser (m^2/s)
+# Tracé des pcolor
+for i, config in enumerate(plots_config):
+    ax = axs[i]
+    mesh = ax.pcolormesh(time_grid, alt_grid, config["data"], cmap=config["cmap"], norm=config["norm"], shading='auto')
+    ax.set_title(config["title"], fontsize=12, fontweight='bold')
+    ax.set_xlabel("Temps (jours)", fontsize=11)
+    ax.set_xlim(time_days[0], time_days[-1])
+    ax.set_ylim(0, Z_TOP_KM)
+    fig.colorbar(mesh, ax=ax, orientation='horizontal', pad=0.12, aspect=15)
 
-# Propriétés des ondes (Est + et Ouest -)
-# Les forçages initiaux en surface (z=0)
-F0_plus = 0.005                       # Flux de quantité de mouvement vers l'Est (Pa)
-F0_moins = -0.005                     # Flux de quantité de mouvement vers l'Ouest (Pa)
-
-c_plus = 20.0                         # Vitesse de phase de l'onde Est (m/s)
-c_moins = -20.0                       # Vitesse de phase de l'onde Ouest (m/s)
-k = 2 * np.pi / 100000.0              # Longueur d'onde horizontale (100 km)
-alpha = 1e-6                          # Coefficient d'amortissement linéaire des ondes (ex: friction radiative)
-
-# =============================================================================
-# 2. INITIALISATION ET BOUCLE TEMPORELLE (Schéma d'Euler)
-# =============================================================================
-u = np.zeros((N_t, N_z))               # Vent moyen u(z, t)
-# On peut ajouter un petit cisaillement initial pour briser la symétrie
-u[0, :] = 2.0 * np.sin(2 * np.pi * z / z_top)
-
-for n in range(0, N_t - 1):
-    u_current = u[n, :].copy()
-    
-    # Initialisation des flux à la surface
-    F_plus = F0_plus * np.ones(N_z)
-    F_moins = F0_moins * np.ones(N_z)
-    
-    # Intégration WKB verticale de l'atténuation des ondes
-    # Le taux d'atténuation augmente drastiquement quand (c - u) approche 0 (couches critiques)
-    for iz in range(1, N_z):
-        # Onde Est
-        denom_plus = (c_plus - u_current[iz-1])**2
-        if denom_plus > 0.1:
-            m_plus = np.sqrt(N2[iz-1] / denom_plus)
-            tau_plus = alpha * (m_plus**3) / (k * N2[iz-1])
-            F_plus[iz] = F_plus[iz-1] * np.exp(-tau_plus * dz)
-        else:
-            F_plus[iz] = 0.0
-            
-        # Onde Ouest
-        denom_moins = (c_moins - u_current[iz-1])**2
-        if denom_moins > 0.1:
-            m_moins = np.sqrt(N2[iz-1] / denom_moins)
-            tau_moins = alpha * (m_moins**3) / (k * N2[iz-1])
-            F_moins[iz] = F_moins[iz-1] * np.exp(-tau_moins * dz)
-        else:
-            F_moins[iz] = 0.0
-
-    # Divergence du flux total (Force de trainée des ondes)
-    F_tot = F_plus + F_moins
-    dFdz = np.gradient(F_tot, dz)
-    wave_forcing = -(1.0 / rho0) * dFdz
-    
-    # Diffusion numérique/physique pour lisser le profil
-    d2udz2 = np.gradient(np.gradient(u_current, dz), dz)
-    
-    # Évolution temporelle
-    u[n+1, :] = u_current + dt * (wave_forcing + nu * d2udz2)
-    
-    # Condition aux limites simples (no-slip aux bords)
-    u[n+1, 0] = 0.0
-    u[n+1, -1] = 0.0
-
-# =============================================================================
-# 3. VISUALISATION (Hovmöller diagram)
-# =============================================================================
-plt.figure(figsize=(10, 6), dpi=120)
-time_days = t / 86400.0
-z_km = z / 1000.0
-
-# Tracé des contours du vent moyen u(z,t)
-plt.rcParams.update({'grid.alpha': 0.25, 'image.cmap': 'RdBu_r'})
-caxis = plt.contourf(time_days, z_km, u.T, levels=50, extend='both')
-cbar = plt.colorbar(caxis)
-cbar.set_label('Vent moyen $u$ (m/s)')
-
-plt.title('Modélisation 1D de la descente de phase (Type QBO) induite par des ondes')
-plt.xlabel('Temps (jours)')
-plt.ylabel('Altitude (km)')
-plt.grid(True)
+axs[0].set_ylabel("Altitude $z$ (km)", fontsize=11)
+plt.suptitle("Contexte dynamique (z, t) — Migration vers le bas des structures ondulatoires", fontsize=14, fontweight='bold', y=0.98)
 plt.tight_layout()
 plt.show()
+
+# --- 2. QUANTIFICATION DE LA SIGNATURE ONDULATOIRE (2 - 8 km) ---
+print("\n" + "="*60)
+print(" QUANTIFICATION DE LA SIGNATURE ONDULATOIRE (Couche 2-8 km)")
+print("="*60)
+
+# Filtrage temporel (band-pass ou detrend) pour isoler les anomalies du jet d'est
+ubar_anom = detrend(ubar_zt[m28, :], axis=1)
+
+# Application de la transformée de Hilbert par niveau d'altitude pour extraire la phase de l'onde
+phase_zt = np.angle(hilbert(ubar_anom, axis=1))
+
+# Estimation de la vitesse de phase verticale (dz/dt) par corrélation croisée temporelle
+zkm_m28 = zkm[m28]
+time_steps = np.arange(n_stat)
+lags = np.arange(-20, 20)
+matrix_corr = np.zeros((len(zkm_m28)-1, len(lags)))
+
+for i in range(len(zkm_m28)-1):
+    # Corrélation entre le niveau i et le niveau i+1
+    ref = ubar_anom[i, :]
+    target = ubar_anom[i+1, :]
+    corr = np.correlate(ref - np.mean(ref), target - np.mean(target), mode='same')
+    center = len(corr) // 2
+    matrix_corr[i, :] = corr[center + lags]
+
+# Décalage temporel moyen optimal (lag en indices de temps)
+mean_corr_profile = matrix_corr.mean(axis=0)
+opt_lag_idx = lags[np.argmax(mean_corr_profile)]
+dt_lag_hours = opt_lag_idx * (dt_phys / 3600.0)
+
+# Calcul de la vitesse de descente moyenne (dz/dt)
+dz_mean_m = np.mean(np.diff(alt[m28]))
+dt_mean_s = opt_lag_idx * dt_phys
+
+if dt_mean_s != 0:
+    w_phase_vertical = (dz_mean_m / dt_mean_s) * 1000.0  # mm/s
+    # Inversion de signe pour exprimer une descente positive
+    w_descent = -w_phase_vertical if w_phase_vertical < 0 else w_phase_vertical
+    print(f"-> Décalage temporel optimal entre niveaux adjacents : {dt_lag_hours:+.1f} heures")
+    print(f"-> Vitesse moyenne de migration de la phase vers le bas : {w_descent:.3f} mm/s (~{(w_descent*86.4):.1f} m/jour)")
+else:
+    print("-> Signal hautement stationnaire ou pas temporel dt trop grossier pour résoudre le lag vertical.")
+
+print("-"*60)
