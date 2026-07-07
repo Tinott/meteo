@@ -1,70 +1,41 @@
 # ============================================================
-#  EXPLOITATION : STABILITÉ GÉOPHYSIQUE (NOMBRE DE RICHARDSON)
+#  CORRECTION DU GRAPH Ri : CONTRASTE LOGARITHMIQUE / SATURE
 # ============================================================
+from matplotlib.colors import LogNorm, BoundaryNorm
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.colors import BoundaryNorm
 
-print("\n" + "="*60)
-print(" CALCUL DU NOMBRE DE RICHARDSON DYNAMIQUE (Ri)")
-print("="*60)
+# 1. Nettoyage des valeurs aberrantes ou infinies
+# On borne Ri entre 0 et 10 pour que les zones stables ne masquent pas le signal
+Ri_clipped = np.clip(Ri, 0.01, 10.0)
 
-# --- 1. ESTIMATION DE N^2 (SI NON DÉFINI PRÉCÉDEMMENT) ---
-# Si n2_zt (profil de Brunt-Väisälä vertical ou dynamique) n'existe pas,
-# on prend une valeur standard stratosphérique/troposphérique moyenne (ex: 2e-4 s^-2)
-if 'n2_zt' not in locals() and 'N2' not in locals():
-    # Profil standard simplifié : 1e-4 dans la troposphère, 4e-4 dans la stratosphère
-    # Ajuste cette section si tu as déjà les vraies valeurs de température !
-    N2_base = np.where(zkm < 11, 1.2e-4, 4.0e-4) 
-    n2_matrix = np.tile(N2_base[:, np.newaxis], (1, n_stat))
-    print("-> Note : Utilisation d'un profil standard de N² (faute de n2_zt explicite).")
-elif 'n2_zt' in locals():
-    n2_matrix = n2_zt
-else:
-    n2_matrix = np.ones_like(dudz_zt) * N2
-
-# --- 2. CALCUL DE Ri ---
-# Ri = N^2 / (du/dz)^2
-# On ajoute un epsilon au dénominateur pour éviter les divisions par zéro
-shears_sq = dudz_zt**2
-epsilon = 1e-12
-Ri = n2_matrix / (shears_sq + epsilon)
-
-# --- 3. CARTOGRAPHIE DE L'INSTABILITÉ ---
 fig, ax = plt.subplots(figsize=(8, 5.5))
 
-# On définit des paliers de couleur spécifiques pour mettre en valeur le seuil critique de 0.25
-levels = [0, 0.25, 0.5, 1, 2, 10, 100]
-cmap_ri = plt.colormaps["RdYlBu"]
-norm_ri = BoundaryNorm(levels, ncolors=cmap_ri.N, clip=True)
+# 2. Utilisation de paliers discrets TRES serrés autour de 0.25
+# Tout ce qui est au-dessus de 2 sera en bleu foncé, libérant l'espace pour le reste !
+levels = [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
+cmap_ri = plt.colormaps["RdYlBu"]  # Rouge (instable) -> Jaune -> Bleu (stable)
+norm_ri = BoundaryNorm(levels, ncolors=cmap_ri.N, clip=False)
 
-mesh = ax.pcolormesh(time_grid, alt_grid, Ri, cmap=cmap_ri, norm=norm_ri, shading='auto')
-ax.set_title("Nombre de Richardson Dynamique $Ri$\nZones rouges = Risque de déferlement ($Ri < 0.25$)", fontsize=12, fontweight='bold')
+# Tracé avec la norme resserrée
+mesh = ax.pcolormesh(time_grid, alt_grid, Ri_clipped, cmap=cmap_ri, norm=norm_ri, shading='auto')
+
+# Esthétique et labels
+ax.set_title("Nombre de Richardson Dynamique $Ri$ (Échelle resserrée)\nZones rouges = Risque de déferlement ($Ri < 0.25$)", fontsize=11, fontweight='bold')
 ax.set_xlabel("Temps (jours)", fontsize=11)
 ax.set_ylabel("Altitude $z$ (km)", fontsize=11)
 ax.set_xlim(time_days[0], time_days[-1])
 ax.set_ylim(0, Z_TOP_KM)
 
-# Ajout de la barre de couleur avec étiquettes fixes
-cbar = fig.colorbar(mesh, ax=ax, orientation='vertical', pad=0.05)
-cbar.set_label("$Ri = N^2 / (\partial \bar{u}/\partial z)^2$", fontsize=11)
-cbar.ax.tick_params(labelsize=10)
+# Barre de couleur claire
+cbar = fig.colorbar(mesh, ax=ax, orientation='vertical', pad=0.05, extend='max')
+cbar.set_label("Valeur de $Ri$", fontsize=11)
 
 plt.tight_layout()
 plt.show()
 
-# --- 4. DIAGNOSTIC QUANTITATIF DANS LA COUCHE D'INTÉRÊT (2-8 km) ---
-# m28 est le masque d'altitude défini dans l'exercice précédent pour la couche 2-8 km
+# --- RE-DIAGNOSTIC ---
 Ri_layer = Ri[m28, :]
-total_points = Ri_layer.size
 unstable_points = np.sum(Ri_layer < 0.25)
-pct_unstable = (unstable_points / total_points) * 100
-
-print(f"--- ANALYSE DE LA COUCHE DE PROPAGATION (2 - 8 km) ---")
-print(f"-> Pourcentage de volume (z, t) en instabilité de cisaillement (Ri < 0.25) : {pct_unstable:.2f} %")
-
-if pct_unstable > 5:
-    print("LOG : L'onde transfère activement sa quantité de mouvement à l'écoulement moyen via du déferlement localisé.")
-else:
-    print("LOG : L'onde se propage de manière principalement linéaire et stable dans cette couche, le jet n'est pas assez cisaillé.")
-print("="*60)
+pct_unstable = (unstable_points / Ri_layer.size) * 100
+print(f"Pourcentage de points instables vérifié (Ri < 0.25) : {pct_unstable:.2f} %")
