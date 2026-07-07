@@ -1,107 +1,100 @@
-# ============================================================
-# OBJECTIF 5 — VARIANTE A UNE ALTITUDE z0 (auto : plus fort cisaillement moyen)
-#   1. z0 = altitude ou <|d_z ubar|>_{x,t} est maximal (0-15 km)
-#   2. a z0 : colonnes (x,t) fortes = |d_z ubar(z0,x,t)| > seuil
-#   3. regions connexes (x,t) a z0
-#   4. regression PAR REGION :  F(z0,x,t) = a*ubar + b*d_z ubar + c*d2_z ubar
-#      avec F = d_z(rho0<u'w'>) (cible A), echantillon = les (x,t) de la region
-# ============================================================
+import numpy as np
+import matplotlib.pyplot as plt
 
-# --- champs resolus en x : ubar_xz, flux_xz (recalcules si pas deja en memoire) ---
-# On suppose disponibles depuis l'objectif 5 principal :
-#   ubar_xz, dudz_xz, d2udz2_xz, flux_xz  de forme (n_z, n_x, n_stat)
-#   mask15, alt, x, n_stat, t_stat, Z_TOP_KM
-F_xz = np.gradient(flux_xz, alt, axis=0)                         # (n_z, n_x, n_stat)
+# =============================================================================
+# 1. PARAMÈTRES DE LA SIMULATION
+# =============================================================================
+# Grille d'espace et de temps
+N_z = 100
+z_top = 15000.0                       # Altitude max (15 km)
+z = np.linspace(0, z_top, N_z)
+dz = z[1] - z[0]
 
-def nse(a, b):
-    d = np.sum((a - a.mean())**2)
-    return 1 - np.sum((a-b)**2)/d if d > 0 else np.nan
+N_t = 3000
+dt = 3600.0 * 3                       # Pas de temps (3 heures)
+t = np.arange(N_t) * dt
 
-# --- 1. altitude z0 de plus fort cisaillement MOYEN (moyenne sur x et t) ---
-shear_prof = np.abs(dudz_xz[mask15]).mean(axis=(1, 2))          # (n_z15,)
-z15_idx = np.where(mask15)[0]
-iz0 = z15_idx[np.argmax(shear_prof)]
-print(f'Altitude choisie : z0 = {alt[iz0]/1000:.2f} km '
-      f'(<|d_z ubar|>_x,t = {shear_prof.max():.2e} s^-1)')
+# Paramètres physiques
+rho0 = 1.2 * np.exp(-z / 7000.0)      # Profil de densité basique
+N2 = 1e-4 * np.ones(N_z)               # Fréquence de Brunt-Väisälä (stratification uniforme)
+nu = 0.05                             # Viscosité turbulente explicite pour stabiliser (m^2/s)
 
-# --- 2. colonnes (x,t) fortes A z0 (plus de max vertical : cisaillement direct a z0) ---
-shear_z0 = np.abs(dudz_xz[iz0])                                 # (n_x, n_stat)
-seuil_z0 = np.percentile(shear_z0, 90)                          # reglable
-strong_z0 = shear_z0 > seuil_z0
-print(f'seuil |d_z ubar|(z0) = {seuil_z0:.2e} s^-1  ->  '
-      f'{strong_z0.sum()}/{strong_z0.size} colonnes (x,t) fortes '
-      f'({100*strong_z0.mean():.1f}%)')
+# Propriétés des ondes (Est + et Ouest -)
+# Les forçages initiaux en surface (z=0)
+F0_plus = 0.005                       # Flux de quantité de mouvement vers l'Est (Pa)
+F0_moins = -0.005                     # Flux de quantité de mouvement vers l'Ouest (Pa)
 
-# --- 3. regions connexes (x,t) a z0, avec raccord periodique en x ---
-lab_z0, _ = ndi_label(strong_z0)
-for it in range(n_stat):
-    if strong_z0[0, it] and strong_z0[-1, it]:
-        a, b = lab_z0[0, it], lab_z0[-1, it]
-        if a != b: lab_z0[lab_z0 == b] = a
-labs_z0 = np.unique(lab_z0[lab_z0 > 0])
-print(f'{len(labs_z0)} region(s) connexe(s) (x,t) a z0')
+c_plus = 20.0                         # Vitesse de phase de l'onde Est (m/s)
+c_moins = -20.0                       # Vitesse de phase de l'onde Ouest (m/s)
+k = 2 * np.pi / 100000.0              # Longueur d'onde horizontale (100 km)
+alpha = 1e-6                          # Coefficient d'amortissement linéaire des ondes (ex: friction radiative)
 
-# carte des colonnes fortes a z0
-fig, ax = plt.subplots(figsize=(9, 4))
-im = ax.pcolormesh(np.arange(n_stat)+t_stat, x/1000, shear_z0,
-                   cmap='viridis', shading='auto')
-ax.contour(np.arange(n_stat)+t_stat, x/1000, strong_z0.astype(float),
-           levels=[0.5], colors='r', linewidths=0.8)
-ax.set_xlabel('t (indice global)'); ax.set_ylabel('x (km)')
-ax.set_title(f'|$\\partial_z\\bar u$|(x,t) a z0={alt[iz0]/1000:.1f} km + colonnes fortes (rouge)')
-fig.colorbar(im, ax=ax, pad=0.02, label='cisaillement a z0')
-fig.tight_layout(); plt.show()
+# =============================================================================
+# 2. INITIALISATION ET BOUCLE TEMPORELLE (Schéma d'Euler)
+# =============================================================================
+u = np.zeros((N_t, N_z))               # Vent moyen u(z, t)
+# On peut ajouter un petit cisaillement initial pour briser la symétrie
+u[0, :] = 2.0 * np.sin(2 * np.pi * z / z_top)
 
-# --- 4. regression PAR REGION a z0 : F(z0)=a*u+b*dudz+c*d2, echantillon = (x,t) de la region ---
-def fit_region_z0(ix_r, it_r, lam=1e-2):
-    X = np.stack([ubar_xz[iz0, ix_r, it_r],
-                  dudz_xz[iz0, ix_r, it_r],
-                  d2udz2_xz[iz0, ix_r, it_r]], axis=1)           # (ncol, 3)
-    y = F_xz[iz0, ix_r, it_r]                                    # (ncol,)
-    mu, sd = X.mean(0), X.std(0) + 1e-12
-    Xn = (X - mu) / sd
-    c = np.linalg.solve(Xn.T @ Xn + lam*np.eye(3), Xn.T @ y)
-    y_pred = Xn @ c
-    return c/sd, y, y_pred, nse(y, y_pred), np.linalg.cond(Xn)
+for n in range(0, N_t - 1):
+    u_current = u[n, :].copy()
+    
+    # Initialisation des flux à la surface
+    F_plus = F0_plus * np.ones(N_z)
+    F_moins = F0_moins * np.ones(N_z)
+    
+    # Intégration WKB verticale de l'atténuation des ondes
+    # Le taux d'atténuation augmente drastiquement quand (c - u) approche 0 (couches critiques)
+    for iz in range(1, N_z):
+        # Onde Est
+        denom_plus = (c_plus - u_current[iz-1])**2
+        if denom_plus > 0.1:
+            m_plus = np.sqrt(N2[iz-1] / denom_plus)
+            tau_plus = alpha * (m_plus**3) / (k * N2[iz-1])
+            F_plus[iz] = F_plus[iz-1] * np.exp(-tau_plus * dz)
+        else:
+            F_plus[iz] = 0.0
+            
+        # Onde Ouest
+        denom_moins = (c_moins - u_current[iz-1])**2
+        if denom_moins > 0.1:
+            m_moins = np.sqrt(N2[iz-1] / denom_moins)
+            tau_moins = alpha * (m_moins**3) / (k * N2[iz-1])
+            F_moins[iz] = F_moins[iz-1] * np.exp(-tau_moins * dz)
+        else:
+            F_moins[iz] = 0.0
 
-results = []
-for r in labs_z0:
-    m = (lab_z0 == r)
-    if m.sum() < 5:                       # assez de points (x,t) pour un fit
-        continue
-    ix_r, it_r = np.where(m)
-    coef, y, y_pred, nse_r, cond = fit_region_z0(ix_r, it_r)
-    results.append((r, m.sum(), coef, y, y_pred, nse_r, cond, ix_r, it_r))
-    print(f'region {r:3d} ({m.sum():3d} col) : NSE={nse_r:+.3f} | cond={cond:6.1f} | '
-          f'(a,b,c)={np.array2string(coef, precision=2)}')
+    # Divergence du flux total (Force de trainée des ondes)
+    F_tot = F_plus + F_moins
+    dFdz = np.gradient(F_tot, dz)
+    wave_forcing = -(1.0 / rho0) * dFdz
+    
+    # Diffusion numérique/physique pour lisser le profil
+    d2udz2 = np.gradient(np.gradient(u_current, dz), dz)
+    
+    # Évolution temporelle
+    u[n+1, :] = u_current + dt * (wave_forcing + nu * d2udz2)
+    
+    # Condition aux limites simples (no-slip aux bords)
+    u[n+1, 0] = 0.0
+    u[n+1, -1] = 0.0
 
-if not results:
-    print('Aucune region assez grande a z0 — baisse le percentile du seuil.')
+# =============================================================================
+# 3. VISUALISATION (Hovmöller diagram)
+# =============================================================================
+plt.figure(figsize=(10, 6), dpi=120)
+time_days = t / 86400.0
+z_km = z / 1000.0
 
-# --- 5. graphe : F predit vs F vrai (nuage par region, car z0 fixe -> pas de profil z) ---
-if results:
-    results.sort(key=lambda s: s[1], reverse=True)
-    top = results[:min(6, len(results))]
-    ncol = min(3, len(top)); nrow = int(np.ceil(len(top)/ncol))
-    fig, axes = plt.subplots(nrow, ncol, figsize=(4.2*ncol, 4.0*nrow), squeeze=False)
-    for k, (r, npx, coef, y, y_pred, nse_r, cond, ix_r, it_r) in enumerate(top):
-        ax = axes[k//ncol][k%ncol]
-        ax.scatter(y, y_pred, s=18, alpha=0.6, color=plt.get_cmap('tab10')(k))
-        lims = [min(y.min(), y_pred.min()), max(y.max(), y_pred.max())]
-        ax.plot(lims, lims, 'k--', lw=1)      # diagonale = prediction parfaite
-        ax.set_title(f'region {r} ({npx} col)\nNSE={nse_r:.2f}, cond={cond:.0f}', fontsize=10)
-        ax.set_xlabel('F vrai'); 
-        if k % ncol == 0: ax.set_ylabel('F predit (fermeture)')
-    for k in range(len(top), nrow*ncol):
-        axes[k//ncol][k%ncol].axis('off')
-    fig.suptitle(f'Fermeture par region a z0={alt[iz0]/1000:.1f} km : F predit vs F vrai')
-    fig.tight_layout(); plt.show()
+# Tracé des contours du vent moyen u(z,t)
+plt.rcParams.update({'grid.alpha': 0.25, 'image.cmap': 'RdBu_r'})
+caxis = plt.contourf(time_days, z_km, u.T, levels=50, extend='both')
+cbar = plt.colorbar(caxis)
+cbar.set_label('Vent moyen $u$ (m/s)')
 
-# --- 6. bilan ---
-if results:
-    print(f'\n=== Bilan fermeture a z0={alt[iz0]/1000:.1f} km, par region ===')
-    nses = [s[5] for s in results]
-    print(f'  {len(results)} regions | NSE median={np.nanmedian(nses):+.3f} | '
-          f'NSE>0 sur {100*np.mean(np.array(nses)>0):.0f}% des regions')
-    print(f'  cond median = {np.median([s[6] for s in results]):.1f} '
-          f'(a z0 fixe, cond faible => coefficients fiables)')
+plt.title('Modélisation 1D de la descente de phase (Type QBO) induite par des ondes')
+plt.xlabel('Temps (jours)')
+plt.ylabel('Altitude (km)')
+plt.grid(True)
+plt.tight_layout()
+plt.show()
