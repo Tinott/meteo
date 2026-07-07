@@ -1,21 +1,30 @@
 # ============================================================
-#  CONTEXTE DYNAMIQUE & SIGNATURE ONDULATOIRE
-#  Génération des 5 panels (z, t) + Analyse de phase
+#  CONTEXTE DYNAMIQUE & SIGNATURE ONDULATOIRE (CONTRASTE OPTIMISÉ)
 # ============================================================
 from matplotlib.colors import TwoSlopeNorm
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.signal import hilbert, detrend
 
 # --- 1. CONFIGURATION DU GRAPHIQUE À 5 PANELS ---
 fig, axs = plt.subplots(1, 5, figsize=(21, 5.5), sharey=True)
 time_days = (np.arange(n_stat) * dt_phys) / 86400.0
 time_grid, alt_grid = np.meshgrid(time_days, zkm)
 
-# Configuration des variables à tracer
+# Fonction pour obtenir des bornes symétriques basées sur la robustesse des données
+def get_sym_norm(data, percentile=98):
+    limit = np.percentile(np.abs(data), percentile)
+    # Évite une division par zéro si les données sont nulles
+    limit = max(limit, 1e-15) 
+    return TwoSlopeNorm(vmin=-limit, vcenter=0.0, vmax=limit)
+
+# Configuration des variables avec ajustement automatique du contraste
 plots_config = [
-    {"data": ubar_zt, "title": r"Vent moyen $\bar{u}$ (m/s)", "cmap": "RdBu_r", "norm": TwoSlopeNorm(vcenter=0.0)},
-    {"data": wbar_zt * 100, "title": r"Vitesse vert. $\bar{w}$ (cm/s)", "cmap": "RdBu_r", "norm": TwoSlopeNorm(vcenter=0.0)},
-    {"data": flux_zt, "title": r"Flux résolu $\rho_0 \overline{u'w'}$ (Pa)", "cmap": "RdBu_r", "norm": TwoSlopeNorm(vcenter=0.0)},
-    {"data": dudz_zt * 1e3, "title": r"Cisaillement $\partial \bar{u}/\partial z$ ($10^{-3}$ s$^{-1}$)", "cmap": "RdBu_r", "norm": TwoSlopeNorm(vcenter=0.0)},
-    {"data": d2udz2_zt * 1e6, "title": r"Courbure $\partial^2 \bar{u}/\partial z^2$ ($10^{-6}$ m$^{-1}$s$^{-1}$)", "cmap": "RdBu_r", "norm": TwoSlopeNorm(vcenter=0.0)}
+    {"data": ubar_zt, "title": r"Vent moyen $\bar{u}$ (m/s)", "cmap": "RdBu_r", "norm": get_sym_norm(ubar_zt)},
+    {"data": wbar_zt * 100, "title": r"Vitesse vert. $\bar{w}$ (cm/s)", "cmap": "RdBu_r", "norm": get_sym_norm(wbar_zt * 100, 95)}, # 95 pour éviter l'écrasement par les ondes de sol
+    {"data": flux_zt, "title": r"Flux résolu $\rho_0 \overline{u'w'}$ (Pa)", "cmap": "RdBu_r", "norm": get_sym_norm(flux_zt, 95)},
+    {"data": dudz_zt * 1e3, "title": r"Cisaillement $\partial \bar{u}/\partial z$ ($10^{-3}$ s$^{-1}$)", "cmap": "RdBu_r", "norm": get_sym_norm(dudz_zt * 1e3)},
+    {"data": d2udz2_zt * 1e6, "title": r"Courbure $\partial^2 \bar{u}/\partial z^2$ ($10^{-6}$ m$^{-1}$s$^{-1}$)", "cmap": "RdBu_r", "norm": get_sym_norm(d2udz2_zt * 1e6)}
 ]
 
 # Tracé des pcolor
@@ -26,54 +35,47 @@ for i, config in enumerate(plots_config):
     ax.set_xlabel("Temps (jours)", fontsize=11)
     ax.set_xlim(time_days[0], time_days[-1])
     ax.set_ylim(0, Z_TOP_KM)
-    fig.colorbar(mesh, ax=ax, orientation='horizontal', pad=0.12, aspect=15)
+    
+    # Formatage de la barre de couleur pour être lisible
+    cbar = fig.colorbar(mesh, ax=ax, orientation='horizontal', pad=0.12, aspect=15)
+    cbar.ax.tick_params(labelsize=9)
 
 axs[0].set_ylabel("Altitude $z$ (km)", fontsize=11)
-plt.suptitle("Contexte dynamique (z, t) — Migration vers le bas des structures ondulatoires", fontsize=14, fontweight='bold', y=0.98)
+plt.suptitle("Contexte dynamique (z, t) — Zoom sur la propagation des phases", fontsize=14, fontweight='bold', y=0.98)
 plt.tight_layout()
 plt.show()
 
-# --- 2. QUANTIFICATION DE LA SIGNATURE ONDULATOIRE (2 - 8 km) ---
+# --- 2. QUANTIFICATION ROBUSTE (Exemple étendu au Cisaillement) ---
 print("\n" + "="*60)
-print(" QUANTIFICATION DE LA SIGNATURE ONDULATOIRE (Couche 2-8 km)")
+print(" QUANTIFICATION DE LA SIGNATURE ONDULATOIRE VIA LE CISAILLEMENT")
 print("="*60)
 
-# Filtrage temporel (band-pass ou detrend) pour isoler les anomalies du jet d'est
-ubar_anom = detrend(ubar_zt[m28, :], axis=1)
+# On applique l'analyse sur le cisaillement qui est souvent plus "propre" et exempt de la tendance grande échelle de u_bar
+dudz_anom = detrend(dudz_zt[m28, :], axis=1)
 
-# Application de la transformée de Hilbert par niveau d'altitude pour extraire la phase de l'onde
-phase_zt = np.angle(hilbert(ubar_anom, axis=1))
-
-# Estimation de la vitesse de phase verticale (dz/dt) par corrélation croisée temporelle
 zkm_m28 = zkm[m28]
-time_steps = np.arange(n_stat)
 lags = np.arange(-20, 20)
 matrix_corr = np.zeros((len(zkm_m28)-1, len(lags)))
 
 for i in range(len(zkm_m28)-1):
-    # Corrélation entre le niveau i et le niveau i+1
-    ref = ubar_anom[i, :]
-    target = ubar_anom[i+1, :]
+    ref = dudz_anom[i, :]
+    target = dudz_anom[i+1, :]
     corr = np.correlate(ref - np.mean(ref), target - np.mean(target), mode='same')
     center = len(corr) // 2
     matrix_corr[i, :] = corr[center + lags]
 
-# Décalage temporel moyen optimal (lag en indices de temps)
 mean_corr_profile = matrix_corr.mean(axis=0)
 opt_lag_idx = lags[np.argmax(mean_corr_profile)]
 dt_lag_hours = opt_lag_idx * (dt_phys / 3600.0)
 
-# Calcul de la vitesse de descente moyenne (dz/dt)
 dz_mean_m = np.mean(np.diff(alt[m28]))
 dt_mean_s = opt_lag_idx * dt_phys
 
 if dt_mean_s != 0:
     w_phase_vertical = (dz_mean_m / dt_mean_s) * 1000.0  # mm/s
-    # Inversion de signe pour exprimer une descente positive
     w_descent = -w_phase_vertical if w_phase_vertical < 0 else w_phase_vertical
-    print(f"-> Décalage temporel optimal entre niveaux adjacents : {dt_lag_hours:+.1f} heures")
-    print(f"-> Vitesse moyenne de migration de la phase vers le bas : {w_descent:.3f} mm/s (~{(w_descent*86.4):.1f} m/jour)")
+    print(f"-> Décalage temporel calculé via le cisaillement : {dt_lag_hours:+.1f} heures")
+    print(f"-> Vitesse de descente de la structure de cisaillement : {w_descent:.3f} mm/s (~{(w_descent*86.4):.1f} m/jour)")
 else:
-    print("-> Signal hautement stationnaire ou pas temporel dt trop grossier pour résoudre le lag vertical.")
-
+    print("-> Lag non résolu à cette résolution temporelle.")
 print("-"*60)
