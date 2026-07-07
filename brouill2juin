@@ -1,81 +1,70 @@
 # ============================================================
-#  CONTEXTE DYNAMIQUE & SIGNATURE ONDULATOIRE (CONTRASTE OPTIMISÉ)
+#  EXPLOITATION : STABILITÉ GÉOPHYSIQUE (NOMBRE DE RICHARDSON)
 # ============================================================
-from matplotlib.colors import TwoSlopeNorm
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.signal import hilbert, detrend
+from matplotlib.colors import BoundaryNorm
 
-# --- 1. CONFIGURATION DU GRAPHIQUE À 5 PANELS ---
-fig, axs = plt.subplots(1, 5, figsize=(21, 5.5), sharey=True)
-time_days = (np.arange(n_stat) * dt_phys) / 86400.0
-time_grid, alt_grid = np.meshgrid(time_days, zkm)
+print("\n" + "="*60)
+print(" CALCUL DU NOMBRE DE RICHARDSON DYNAMIQUE (Ri)")
+print("="*60)
 
-# Fonction pour obtenir des bornes symétriques basées sur la robustesse des données
-def get_sym_norm(data, percentile=98):
-    limit = np.percentile(np.abs(data), percentile)
-    # Évite une division par zéro si les données sont nulles
-    limit = max(limit, 1e-15) 
-    return TwoSlopeNorm(vmin=-limit, vcenter=0.0, vmax=limit)
+# --- 1. ESTIMATION DE N^2 (SI NON DÉFINI PRÉCÉDEMMENT) ---
+# Si n2_zt (profil de Brunt-Väisälä vertical ou dynamique) n'existe pas,
+# on prend une valeur standard stratosphérique/troposphérique moyenne (ex: 2e-4 s^-2)
+if 'n2_zt' not in locals() and 'N2' not in locals():
+    # Profil standard simplifié : 1e-4 dans la troposphère, 4e-4 dans la stratosphère
+    # Ajuste cette section si tu as déjà les vraies valeurs de température !
+    N2_base = np.where(zkm < 11, 1.2e-4, 4.0e-4) 
+    n2_matrix = np.tile(N2_base[:, np.newaxis], (1, n_stat))
+    print("-> Note : Utilisation d'un profil standard de N² (faute de n2_zt explicite).")
+elif 'n2_zt' in locals():
+    n2_matrix = n2_zt
+else:
+    n2_matrix = np.ones_like(dudz_zt) * N2
 
-# Configuration des variables avec ajustement automatique du contraste
-plots_config = [
-    {"data": ubar_zt, "title": r"Vent moyen $\bar{u}$ (m/s)", "cmap": "RdBu_r", "norm": get_sym_norm(ubar_zt)},
-    {"data": wbar_zt * 100, "title": r"Vitesse vert. $\bar{w}$ (cm/s)", "cmap": "RdBu_r", "norm": get_sym_norm(wbar_zt * 100, 95)}, # 95 pour éviter l'écrasement par les ondes de sol
-    {"data": flux_zt, "title": r"Flux résolu $\rho_0 \overline{u'w'}$ (Pa)", "cmap": "RdBu_r", "norm": get_sym_norm(flux_zt, 95)},
-    {"data": dudz_zt * 1e3, "title": r"Cisaillement $\partial \bar{u}/\partial z$ ($10^{-3}$ s$^{-1}$)", "cmap": "RdBu_r", "norm": get_sym_norm(dudz_zt * 1e3)},
-    {"data": d2udz2_zt * 1e6, "title": r"Courbure $\partial^2 \bar{u}/\partial z^2$ ($10^{-6}$ m$^{-1}$s$^{-1}$)", "cmap": "RdBu_r", "norm": get_sym_norm(d2udz2_zt * 1e6)}
-]
+# --- 2. CALCUL DE Ri ---
+# Ri = N^2 / (du/dz)^2
+# On ajoute un epsilon au dénominateur pour éviter les divisions par zéro
+shears_sq = dudz_zt**2
+epsilon = 1e-12
+Ri = n2_matrix / (shears_sq + epsilon)
 
-# Tracé des pcolor
-for i, config in enumerate(plots_config):
-    ax = axs[i]
-    mesh = ax.pcolormesh(time_grid, alt_grid, config["data"], cmap=config["cmap"], norm=config["norm"], shading='auto')
-    ax.set_title(config["title"], fontsize=12, fontweight='bold')
-    ax.set_xlabel("Temps (jours)", fontsize=11)
-    ax.set_xlim(time_days[0], time_days[-1])
-    ax.set_ylim(0, Z_TOP_KM)
-    
-    # Formatage de la barre de couleur pour être lisible
-    cbar = fig.colorbar(mesh, ax=ax, orientation='horizontal', pad=0.12, aspect=15)
-    cbar.ax.tick_params(labelsize=9)
+# --- 3. CARTOGRAPHIE DE L'INSTABILITÉ ---
+fig, ax = plt.subplots(figsize=(8, 5.5))
 
-axs[0].set_ylabel("Altitude $z$ (km)", fontsize=11)
-plt.suptitle("Contexte dynamique (z, t) — Zoom sur la propagation des phases", fontsize=14, fontweight='bold', y=0.98)
+# On définit des paliers de couleur spécifiques pour mettre en valeur le seuil critique de 0.25
+levels = [0, 0.25, 0.5, 1, 2, 10, 100]
+cmap_ri = plt.colormaps["RdYlBu"]
+norm_ri = BoundaryNorm(levels, ncolors=cmap_ri.N, clip=True)
+
+mesh = ax.pcolormesh(time_grid, alt_grid, Ri, cmap=cmap_ri, norm=norm_ri, shading='auto')
+ax.set_title("Nombre de Richardson Dynamique $Ri$\nZones rouges = Risque de déferlement ($Ri < 0.25$)", fontsize=12, fontweight='bold')
+ax.set_xlabel("Temps (jours)", fontsize=11)
+ax.set_ylabel("Altitude $z$ (km)", fontsize=11)
+ax.set_xlim(time_days[0], time_days[-1])
+ax.set_ylim(0, Z_TOP_KM)
+
+# Ajout de la barre de couleur avec étiquettes fixes
+cbar = fig.colorbar(mesh, ax=ax, orientation='vertical', pad=0.05)
+cbar.set_label("$Ri = N^2 / (\partial \bar{u}/\partial z)^2$", fontsize=11)
+cbar.ax.tick_params(labelsize=10)
+
 plt.tight_layout()
 plt.show()
 
-# --- 2. QUANTIFICATION ROBUSTE (Exemple étendu au Cisaillement) ---
-print("\n" + "="*60)
-print(" QUANTIFICATION DE LA SIGNATURE ONDULATOIRE VIA LE CISAILLEMENT")
-print("="*60)
+# --- 4. DIAGNOSTIC QUANTITATIF DANS LA COUCHE D'INTÉRÊT (2-8 km) ---
+# m28 est le masque d'altitude défini dans l'exercice précédent pour la couche 2-8 km
+Ri_layer = Ri[m28, :]
+total_points = Ri_layer.size
+unstable_points = np.sum(Ri_layer < 0.25)
+pct_unstable = (unstable_points / total_points) * 100
 
-# On applique l'analyse sur le cisaillement qui est souvent plus "propre" et exempt de la tendance grande échelle de u_bar
-dudz_anom = detrend(dudz_zt[m28, :], axis=1)
+print(f"--- ANALYSE DE LA COUCHE DE PROPAGATION (2 - 8 km) ---")
+print(f"-> Pourcentage de volume (z, t) en instabilité de cisaillement (Ri < 0.25) : {pct_unstable:.2f} %")
 
-zkm_m28 = zkm[m28]
-lags = np.arange(-20, 20)
-matrix_corr = np.zeros((len(zkm_m28)-1, len(lags)))
-
-for i in range(len(zkm_m28)-1):
-    ref = dudz_anom[i, :]
-    target = dudz_anom[i+1, :]
-    corr = np.correlate(ref - np.mean(ref), target - np.mean(target), mode='same')
-    center = len(corr) // 2
-    matrix_corr[i, :] = corr[center + lags]
-
-mean_corr_profile = matrix_corr.mean(axis=0)
-opt_lag_idx = lags[np.argmax(mean_corr_profile)]
-dt_lag_hours = opt_lag_idx * (dt_phys / 3600.0)
-
-dz_mean_m = np.mean(np.diff(alt[m28]))
-dt_mean_s = opt_lag_idx * dt_phys
-
-if dt_mean_s != 0:
-    w_phase_vertical = (dz_mean_m / dt_mean_s) * 1000.0  # mm/s
-    w_descent = -w_phase_vertical if w_phase_vertical < 0 else w_phase_vertical
-    print(f"-> Décalage temporel calculé via le cisaillement : {dt_lag_hours:+.1f} heures")
-    print(f"-> Vitesse de descente de la structure de cisaillement : {w_descent:.3f} mm/s (~{(w_descent*86.4):.1f} m/jour)")
+if pct_unstable > 5:
+    print("LOG : L'onde transfère activement sa quantité de mouvement à l'écoulement moyen via du déferlement localisé.")
 else:
-    print("-> Lag non résolu à cette résolution temporelle.")
-print("-"*60)
+    print("LOG : L'onde se propage de manière principalement linéaire et stable dans cette couche, le jet n'est pas assez cisaillé.")
+print("="*60)
