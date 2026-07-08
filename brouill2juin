@@ -1,53 +1,39 @@
 # ============================================================
-#  FERMETURE  rho0<u'w'>(z) = -tau_s - I_tend - I_adv
-#    I_tend = ∫_0^z rho0 ∂_t ubar dz'      (stockage, ~0 si stationnaire)
-#    I_adv  = ∫_0^z rho0 wbar ∂_z ubar dz' (advection : porte la transmission)
-#  Preuve que la QdM retiree au sol (-tau_s) reapparait en altitude via l'advection.
+#  VERIFICATION POINT PAR POINT :  rho0<u'w'>(z)  ==  -tau_s - I_tend - I_adv
+#  membre de GAUCHE = flux de Reynolds direct
+#  membre de DROITE = reconstruction par le budget
 # ============================================================
 from scipy.integrate import cumulative_trapezoid
 
-# --- profils moyens dans le temps ---
-flux_prof = flux_zt.mean(axis=1) if 'flux_zt' in dir() else flux_uw
-ubar_prof = ubar_zt.mean(axis=1)
+# --- GAUCHE : flux de Reynolds diagnostique ---
+flux_gauche = flux_zt.mean(axis=1) if 'flux_zt' in dir() else flux_uw
 
-# --- contrainte de surface tau_s (extremum couche limite) ---
-iz_bl = np.argmax(np.abs(flux_prof[alt < 2000]))
-tau_s = -flux_prof[iz_bl]
+# --- DROITE : -tau_s - I_tend - I_adv ---
+iz_bl = np.argmax(np.abs(flux_gauche[alt < 2000]))
+tau_s = -flux_gauche[iz_bl]
+dt_ubar = np.gradient(ubar_zt, dt_phys, axis=1)
+dz_ubar = np.gradient(ubar_zt, alt,     axis=0)
+I_tend = cumulative_trapezoid((rho0[:,None]*dt_ubar).mean(1), alt, initial=0)
+I_adv  = cumulative_trapezoid((rho0[:,None]*wbar_zt*dz_ubar).mean(1), alt, initial=0)
+flux_droite = -tau_s - I_tend - I_adv
 
-# --- les deux termes, champ (z,t) puis moyenne temporelle ---
-dt_ubar = np.gradient(ubar_zt, dt_phys, axis=1)   # ∂_t ubar
-dz_ubar = np.gradient(ubar_zt, alt,     axis=0)   # ∂_z ubar
+diff = flux_gauche - flux_droite
 
-integrand_tend = (rho0[:, None] * dt_ubar).mean(axis=1)
-integrand_adv  = (rho0[:, None] * wbar_zt * dz_ubar).mean(axis=1)
-
-# --- integrales cumulees de 0 a z ---
-I_tend = cumulative_trapezoid(integrand_tend, alt, initial=0)
-I_adv  = cumulative_trapezoid(integrand_adv,  alt, initial=0)
-
-# --- reconstruction et verification ---
-flux_reconstruit = -tau_s - I_tend - I_adv
-err = np.max(np.abs(flux_reconstruit - flux_prof)) / np.max(np.abs(flux_prof))
-
-print(f'tau_s (surface)      = {tau_s:+.4f} kg m-1 s-2')
-print(f'|I_tend| max         = {np.abs(I_tend).max():.2e}  (petit => stationnaire)')
-print(f'|I_adv|  max         = {np.abs(I_adv).max():.2e}  (porte la transmission)')
-print(f'erreur fermeture     = {err:.1%}')
-
-# --- figure : flux direct vs reconstruit, et les deux contributions ---
+# --- figure : les deux membres + leur difference a chaque z ---
 fig, ax = plt.subplots(1, 2, figsize=(13, 6), sharey=True)
-ax[0].plot(flux_prof, alt, 'k', lw=2.5, label=r"$\rho_0\overline{u'w'}$ direct")
-ax[0].plot(flux_reconstruit, alt, 'crimson', lw=1.8, ls='--',
-           label=r'reconstruit $-\tau_s-I_{tend}-I_{adv}$')
+ax[0].plot(flux_gauche, alt, 'k',  lw=2.5, label=r"GAUCHE : $\rho_0\overline{u'w'}(z)$")
+ax[0].plot(flux_droite, alt, 'crimson', lw=1.8, ls='--',
+           label=r'DROITE : $-\tau_s-I_{tend}-I_{adv}$')
 ax[0].axvline(0, color='grey', lw=.5); ax[0].set_ylim(0, 15000)
-ax[0].set_xlabel(r'flux ($\times$ kg m$^{-1}$s$^{-2}$)'); ax[0].set_ylabel('z (m)')
-ax[0].set_title('Fermeture du flux', fontweight='bold'); ax[0].legend(fontsize=9)
+ax[0].set_xlabel('flux'); ax[0].set_ylabel('z (m)')
+ax[0].set_title("Les deux membres, pour tout $z$", fontweight='bold')
+ax[0].legend(fontsize=9)
 
-ax[1].plot(np.full_like(alt, -tau_s), alt, 'grey', lw=1.5, label=r'$-\tau_s$ (sol)')
-ax[1].plot(-I_tend, alt, 'royalblue', lw=2, label=r'$-I_{tend}$ (stockage)')
-ax[1].plot(-I_adv,  alt, 'seagreen',  lw=2, label=r'$-I_{adv}$ (advection)')
+ax[1].plot(diff, alt, 'purple', lw=2)
 ax[1].axvline(0, color='grey', lw=.5)
-ax[1].set_xlabel(r'contribution'); ax[1].set_title('Decomposition', fontweight='bold')
-ax[1].legend(fontsize=9)
-plt.suptitle('QdM du sol transmise en altitude via advection', fontweight='bold')
+ax[1].set_xlabel('GAUCHE $-$ DROITE'); ax[1].set_title('Ecart point par point', fontweight='bold')
+plt.suptitle("Verification de l'identite a chaque altitude", fontweight='bold')
 plt.tight_layout(); plt.show()
+
+print(f'ecart max sur tout le profil = {np.abs(diff).max():.2e}')
+print(f'ecart median                 = {np.median(np.abs(diff)):.2e}')
