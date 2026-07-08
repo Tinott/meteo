@@ -1,82 +1,80 @@
+ #============================================================
+#  CONTEXTE DYNAMIQUE & SIGNATURE ONDULATOIRE (CONTRASTE OPTIMISÉ)
 # ============================================================
-#  c_z PAR SPECTRE 2D (t,z) — methode independante de Hilbert
-#  Une onde descendante ~ cos(k_z z - omega t) donne un pic dans
-#  le plan (omega, k_z). La pente c_z = omega/k_z se lit au pic.
-# ============================================================
-from numpy.fft import fft2, fftfreq, fftshift
+from matplotlib.colors import TwoSlopeNorm
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.signal import hilbert, detrend
 
-# champ dans la bande 2-8 km, detrende dans les deux directions
-fld = ubar_zt[m28]                       # (n_z28, n_t)
-fld = detrend(fld, axis=0)               # retire tendance en z
-fld = detrend(fld, axis=1)               # retire tendance en t
-fld = fld - fld.mean()
-win = np.hanning(fld.shape[0])[:,None] * np.hanning(fld.shape[1])[None,:]
-F   = fftshift(np.abs(fft2(fld*win))**2) # densite spectrale de puissance
+# --- 1. CONFIGURATION DU GRAPHIQUE À 5 PANELS ---
+fig, axs = plt.subplots(1, 5, figsize=(21, 5.5), sharey=True)
+time_days = (np.arange(n_stat) * dt_phys) / 86400.0
+time_grid, alt_grid = np.meshgrid(time_days, zkm)
 
-dz  = np.mean(np.diff(alt[m28]))         # m
-kz_ax = fftshift(fftfreq(fld.shape[0], d=dz))  * 2*np.pi   # rad/m
-om_ax = fftshift(fftfreq(fld.shape[1], d=dt_phys)) * 2*np.pi # rad/s
+# Fonction pour obtenir des bornes symétriques basées sur la robustesse des données
+def get_sym_norm(data, percentile=98):
+    limit = np.percentile(np.abs(data), percentile)
+    # Évite une division par zéro si les données sont nulles
+    limit = max(limit, 1e-15) 
+    return TwoSlopeNorm(vmin=-limit, vcenter=0.0, vmax=limit)
 
-# on masque le mode continu (k=0 ou omega=0) puis on cherche le pic
-KZ, OM = np.meshgrid(kz_ax, om_ax, indexing='ij')
-mask0  = (np.abs(KZ) > 1e-9) & (np.abs(OM) > 1e-9)
-Fm     = np.where(mask0, F, 0)
-i,j    = np.unravel_index(np.argmax(Fm), Fm.shape)
-kz_pic, om_pic = KZ[i,j], OM[i,j]
+# Configuration des variables avec ajustement automatique du contraste
+plots_config = [
+    {"data": ubar_zt, "title": r"Vent moyen $\bar{u}$ (m/s)", "cmap": "RdBu_r", "norm": get_sym_norm(ubar_zt)},
+    {"data": wbar_zt * 100, "title": r"Vitesse vert. $\bar{w}$ (cm/s)", "cmap": "RdBu_r", "norm": get_sym_norm(wbar_zt * 100, 95)}, # 95 pour éviter l'écrasement par les ondes de sol
+    {"data": flux_zt, "title": r"Flux résolu $\rho_0 \overline{u'w'}$ (Pa)", "cmap": "RdBu_r", "norm": get_sym_norm(flux_zt, 95)},
+    {"data": dudz_zt * 1e3, "title": r"Cisaillement $\partial \bar{u}/\partial z$ ($10^{-3}$ s$^{-1}$)", "cmap": "RdBu_r", "norm": get_sym_norm(dudz_zt * 1e3)},
+    {"data": d2udz2_zt * 1e6, "title": r"Courbure $\partial^2 \bar{u}/\partial z^2$ ($10^{-6}$ m$^{-1}$s$^{-1}$)", "cmap": "RdBu_r", "norm": get_sym_norm(d2udz2_zt * 1e6)}
+]
 
-cz_spec   = om_pic/kz_pic                 # m/s (signe = sens de descente)
-T_spec    = 2*np.pi/abs(om_pic)/3600      # h
-lam_spec  = 2*np.pi/abs(kz_pic)/1000      # km
+# Tracé des pcolor
+for i, config in enumerate(plots_config):
+    ax = axs[i]
+    mesh = ax.pcolormesh(time_grid, alt_grid, config["data"], cmap=config["cmap"], norm=config["norm"], shading='auto')
+    ax.set_title(config["title"], fontsize=12, fontweight='bold')
+    ax.set_xlabel("Temps (jours)", fontsize=11)
+    ax.set_xlim(time_days[0], time_days[-1])
+    ax.set_ylim(0, Z_TOP_KM)
+    
+    # Formatage de la barre de couleur pour être lisible
+    cbar = fig.colorbar(mesh, ax=ax, orientation='horizontal', pad=0.12, aspect=15)
+    cbar.ax.tick_params(labelsize=9)
 
-print('=== c_z par SPECTRE 2D (t,z), bande 2-8 km ===')
-print(f'  pic : omega={om_pic:+.2e} rad/s | k_z={kz_pic:+.2e} rad/m')
-print(f'  c_z    = {cz_spec*100:+.2f} cm/s')
-print(f'  periode= {T_spec:.0f} h ({T_spec/24:.1f} j)')
-print(f'  lambda_z = {lam_spec:.1f} km')
-print(f'  {"DESCENTE (c_z<0)" if cz_spec<0 else "montee (c_z>0)"}')
+axs[0].set_ylabel("Altitude $z$ (km)", fontsize=11)
+plt.suptitle("Contexte dynamique (z, t) — Zoom sur la propagation des phases", fontsize=14, fontweight='bold', y=0.98)
+plt.tight_layout()
+plt.show()
 
+# --- 2. QUANTIFICATION ROBUSTE (Exemple étendu au Cisaillement) ---
+print("\n" + "="*60)
+print(" QUANTIFICATION DE LA SIGNATURE ONDULATOIRE VIA LE CISAILLEMENT")
+print("="*60)
 
+# On applique l'analyse sur le cisaillement qui est souvent plus "propre" et exempt de la tendance grande échelle de u_bar
+dudz_anom = detrend(dudz_zt[m28, :], axis=1)
 
+zkm_m28 = zkm[m28]
+lags = np.arange(-20, 20)
+matrix_corr = np.zeros((len(zkm_m28)-1, len(lags)))
 
+for i in range(len(zkm_m28)-1):
+    ref = dudz_anom[i, :]
+    target = dudz_anom[i+1, :]
+    corr = np.correlate(ref - np.mean(ref), target - np.mean(target), mode='same')
+    center = len(corr) // 2
+    matrix_corr[i, :] = corr[center + lags]
 
+mean_corr_profile = matrix_corr.mean(axis=0)
+opt_lag_idx = lags[np.argmax(mean_corr_profile)]
+dt_lag_hours = opt_lag_idx * (dt_phys / 3600.0)
 
+dz_mean_m = np.mean(np.diff(alt[m28]))
+dt_mean_s = opt_lag_idx * dt_phys
 
-
-
-
-
-
-
-
-
-
-# ============================================================
-#  PENTE DES BANDES = c_z, mesuree directement dans (t,z)
-#  On correle le champ decale de dt avec lui-meme : le lag vertical
-#  qui maximise la correlation donne la migration dz par pas de temps.
-# ============================================================
-fld = dudz_zt[m28]                        # cisaillement, bande 2-8 km
-fld = detrend(detrend(fld, axis=0), axis=1)
-fld = (fld - fld.mean()) / (fld.std() + 1e-12)
-
-nz, nt = fld.shape
-dz = np.mean(np.diff(alt[m28]))
-best = []
-for dt_lag in range(1, 6):                # decalages temporels (en pas de 6h)
-    a = fld[:, :nt-dt_lag]
-    b = fld[:, dt_lag:]
-    corr_by_shift = []
-    shifts = range(-6, 7)                  # decalages verticaux testes (en niveaux)
-    for s in shifts:
-        bb = np.roll(b, s, axis=0)
-        corr_by_shift.append(np.mean(a*bb))
-    s_best = list(shifts)[int(np.argmax(corr_by_shift))]
-    cz_lag = (s_best*dz) / (dt_lag*dt_phys)   # m/s
-    best.append(cz_lag)
-    print(f'  lag {dt_lag*dt_phys/3600:.0f}h : decalage vertical optimal = {s_best*dz:+.0f} m'
-          f'  -> c_z = {cz_lag*100:+.2f} cm/s')
-
-cz_slope = np.median(best)
-print(f'\n=== c_z par pente des bandes (correlation decalee) ===')
-print(f'  c_z median = {cz_slope*100:+.2f} cm/s'
-      f'  ({"DESCENTE" if cz_slope<0 else "montee"})')
+if dt_mean_s != 0:
+    w_phase_vertical = (dz_mean_m / dt_mean_s) * 1000.0  # mm/s
+    w_descent = -w_phase_vertical if w_phase_vertical < 0 else w_phase_vertical
+    print(f"-> Décalage temporel calculé via le cisaillement : {dt_lag_hours:+.1f} heures")
+    print(f"-> Vitesse de descente de la structure de cisaillement : {w_descent:.3f} mm/s (~{(w_descent*86.4):.1f} m/jour)")
+else:
+    print("-> Lag non résolu à cette résolution temporelle.")
