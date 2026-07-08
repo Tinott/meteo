@@ -1,77 +1,72 @@
 # ============================================================
-#  ANOMALIES DE CISAILLEMENT & COURBURE (z,t) + c_z NON-AMBIGU
+#  ANOMALIES CISAILLEMENT & COURBURE + (c_z, T, lambda_z) PAR SPECTRE 2D
+#  Une onde ~ cos(k_z z - omega t) = un pic dans le plan (k_z, omega).
+#  Convention FFT exp(-i(...)) : au pic, une DESCENTE (crete qui migre
+#  vers le bas quand t croit) correspond a signe(omega)=signe(k_z),
+#  donc c_z = omega/k_z > 0 en valeur brute -> on impose c_z<0 = descente
+#  en choisissant le pic dans le demi-plan k_z>0 et en lisant le signe de omega.
 # ============================================================
 from matplotlib.colors import TwoSlopeNorm
-import numpy as np
-import matplotlib.pyplot as plt
+from numpy.fft import fft2, fftfreq, fftshift
+import numpy as np, matplotlib.pyplot as plt
 from scipy.signal import detrend
 
-fig, axs = plt.subplots(1, 2, figsize=(13, 5.5), sharey=True)
 time_days = (np.arange(n_stat) * dt_phys) / 86400.0
 time_grid, alt_grid = np.meshgrid(time_days, zkm)
+dz = np.mean(np.diff(alt[m28]))          # m
+zkm_m28 = zkm[m28]
 
 def get_sym_norm(data, p=98):
     lim = max(np.percentile(np.abs(data), p), 1e-15)
     return TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim)
 
-# on retire la tendance temporelle a chaque niveau -> anomalies pures
-shear_anom = detrend(dudz_zt,   axis=1) * 1e3   # 10^-3 s^-1
-curv_anom  = detrend(d2udz2_zt, axis=1) * 1e6   # 10^-6 m^-1 s^-1
+def cz_spectral(field_zt):
+    """field_zt : (n_z_bande, n_t). Retourne c_z (m/s), T (h), lambda_z (km)."""
+    f = detrend(detrend(field_zt, axis=0), axis=1)
+    f = f - f.mean()
+    win = np.hanning(f.shape[0])[:,None] * np.hanning(f.shape[1])[None,:]
+    P   = fftshift(np.abs(fft2(f*win))**2)
+    kz  = fftshift(fftfreq(f.shape[0], d=dz))     * 2*np.pi   # rad/m
+    om  = fftshift(fftfreq(f.shape[1], d=dt_phys)) * 2*np.pi  # rad/s
+    KZ, OM = np.meshgrid(kz, om, indexing='ij')
+    # on ne garde qu'un demi-plan (k_z>0) pour lever l'ambiguite +/- ,
+    # le signe de omega au pic donne alors le sens de propagation
+    m = (KZ > 1e-9) & (np.abs(OM) > 1e-9)
+    Pm = np.where(m, P, 0)
+    i, j = np.unravel_index(np.argmax(Pm), Pm.shape)
+    kz_p, om_p = KZ[i,j], OM[i,j]
+    cz  = -om_p / kz_p            # -omega/k_z : convention c_z<0 = descente
+    T   = 2*np.pi/abs(om_p)/3600  # h
+    lam = 2*np.pi/abs(kz_p)/1000  # km
+    return cz, T, lam
 
-plots = [
-    {"data": shear_anom, "title": r"Anomalie cisaillement $\partial_z\bar u'$ ($10^{-3}$ s$^{-1}$)"},
-    {"data": curv_anom,  "title": r"Anomalie courbure $\partial_z^2\bar u'$ ($10^{-6}$ m$^{-1}$s$^{-1}$)"},
-]
-for ax, cfg in zip(axs, plots):
-    mesh = ax.pcolormesh(time_grid, alt_grid, cfg["data"], cmap="RdBu_r",
-                         norm=get_sym_norm(cfg["data"]), shading='auto')
+# --- champs : anomalies (tendance temporelle retiree), bande 2-8 km ---
+fields = {
+    "shear": (detrend(dudz_zt,   axis=1)*1e3, r"Anomalie cisaillement $\partial_z\bar u'$ ($10^{-3}$ s$^{-1}$)"),
+    "curv":  (detrend(d2udz2_zt, axis=1)*1e6, r"Anomalie courbure $\partial_z^2\bar u'$ ($10^{-6}$ m$^{-1}$s$^{-1}$)"),
+}
+
+fig, axs = plt.subplots(1, 2, figsize=(13, 5.5), sharey=True)
+for ax, (key, (data, title)) in zip(axs, fields.items()):
+    cz, T, lam = cz_spectral(data[m28])
+    mesh = ax.pcolormesh(time_grid, alt_grid, data, cmap="RdBu_r",
+                         norm=get_sym_norm(data), shading='auto')
     ax.axhspan(2, 8, color='k', alpha=.06)
-    ax.set_title(cfg["title"], fontsize=12, fontweight='bold')
+    # trait de pente c_z passant par le centre de la bande 2-8 km
+    z0, t0 = 5.0, time_days[len(time_days)//2]
+    dt_span = (time_days[-1]-time_days[0])/2
+    ax.plot([t0-dt_span, t0+dt_span],
+            [z0 - cz*(-dt_span*86400)/1000, z0 - cz*(dt_span*86400)/1000],
+            'k--', lw=1.5)
+    ax.set_title(f"{title}\n$c_z$={cz*100:+.2f} cm/s | $T$={T/24:.1f} j | $\\lambda_z$={lam:.1f} km",
+                 fontsize=10, fontweight='bold')
     ax.set_xlabel("Temps (jours)"); ax.set_xlim(time_days[0], time_days[-1])
     ax.set_ylim(0, Z_TOP_KM)
     fig.colorbar(mesh, ax=ax, orientation='horizontal', pad=0.12, aspect=20)
+    print(f"[{key:5s}] c_z = {cz*100:+.2f} cm/s ({cz*86400:+.1f} m/j) | "
+          f"T = {T:.0f} h ({T/24:.1f} j) | lambda_z = {lam:.1f} km | "
+          f"{'DESCENTE' if cz<0 else 'montee'}")
 axs[0].set_ylabel("Altitude $z$ (km)")
-plt.suptitle("Anomalies (z,t) — bandes penchées = propagation de phase",
+plt.suptitle("Signature ondulatoire (z,t) — un $c_z$ par champ (spectre 2D)",
              fontweight='bold', y=1.0)
 plt.tight_layout(); plt.show()
-
-# ============================================================
-#  c_z PAR PENTE DES BANDES — SIGNE PHYSIQUE EXPLICITE
-#  Convention : c_z<0 = DESCENTE. On decale le champ vers le HAUT
-#  de s niveaux (roll +s en z) et vers l'AVANT de dt_lag en temps,
-#  puis on cherche (s,dt_lag) qui maximise la correlation.
-#  Une crete qui reapparait PLUS BAS PLUS TARD -> s<0 -> c_z<0.
-# ============================================================
-fld = detrend(detrend(shear_anom[m28], axis=0), axis=1)
-fld = (fld - fld.mean()) / (fld.std() + 1e-12)
-nz, nt = fld.shape
-dz = np.mean(np.diff(alt[m28]))          # m (>0)
-
-results = []
-for dt_lag in range(1, 6):               # pas de temps vers l'avant
-    a = fld[:, :nt-dt_lag]               # instant t
-    b = fld[:, dt_lag:]                  # instant t + dt_lag
-    best_s, best_c = 0, -np.inf
-    for s in range(-6, 7):               # s = decalage vertical (niveaux)
-        # b decale de s niveaux : on teste si "a a l'altitude z"
-        # correspond a "b a l'altitude z - s*dz"
-        bb = np.roll(b, -s, axis=0)
-        c  = np.mean(a * bb)
-        if c > best_c:
-            best_c, best_s = c, s
-    # s>0 : la structure est montee de s niveaux en dt_lag  -> c_z>0
-    # s<0 : elle est descendue                              -> c_z<0
-    cz = (best_s * dz) / (dt_lag * dt_phys)      # m/s, signe physique correct
-    results.append(cz)
-    sens = "DESCENTE" if cz < 0 else "montee"
-    print(f"  lag {dt_lag*dt_phys/3600:.0f}h : "
-          f"deplacement vertical = {best_s*dz:+.0f} m "
-          f"-> c_z = {cz*100:+.2f} cm/s ({sens})")
-
-cz_med = np.median(results)
-print("\n" + "="*55)
-print(f"  c_z median (pente des bandes) = {cz_med*100:+.2f} cm/s "
-      f"= {cz_med*1000:+.3f} mm/s")
-print(f"  soit {cz_med*86400:+.1f} m/jour  "
-      f"({'DESCENTE coherente QBO' if cz_med<0 else 'MONTEE — a verifier'})")
-print("="*55)
