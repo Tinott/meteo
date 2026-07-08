@@ -1,72 +1,130 @@
 # ============================================================
-#  ANOMALIES CISAILLEMENT & COURBURE + (c_z, T, lambda_z) PAR SPECTRE 2D
-#  Une onde ~ cos(k_z z - omega t) = un pic dans le plan (k_z, omega).
-#  Convention FFT exp(-i(...)) : au pic, une DESCENTE (crete qui migre
-#  vers le bas quand t croit) correspond a signe(omega)=signe(k_z),
-#  donc c_z = omega/k_z > 0 en valeur brute -> on impose c_z<0 = descente
-#  en choisissant le pic dans le demi-plan k_z>0 et en lisant le signe de omega.
+#  SEPARATION ONDES / TURBULENCE DU FLUX DE MOMENT
+#  Le flux rho0<u'w'>(z,t) est decompose en :
+#    - partie ONDULATOIRE : energie concentree autour de la relation
+#      de dispersion omega ~ c_z * k_z (bandes coherentes descendantes)
+#    - partie TURBULENTE : le reste (bruit large bande, incoherent)
+#  On filtre dans l'espace (k_z, omega) par un masque autour du mode.
 # ============================================================
-from matplotlib.colors import TwoSlopeNorm
-from numpy.fft import fft2, fftfreq, fftshift
+from numpy.fft import fft2, ifft2, fftfreq, fftshift, ifftshift
 import numpy as np, matplotlib.pyplot as plt
 from scipy.signal import detrend
 
-time_days = (np.arange(n_stat) * dt_phys) / 86400.0
-time_grid, alt_grid = np.meshgrid(time_days, zkm)
-dz = np.mean(np.diff(alt[m28]))          # m
-zkm_m28 = zkm[m28]
+# --- champ de travail : flux resolu, bande 2-8 km ---
+band  = m28
+F_zt  = flux_zt[band]                      # (nz, nt) Pa
+nz, nt = F_zt.shape
+dz    = np.mean(np.diff(alt[band]))        # m
+zk    = zkm[band]
 
-def get_sym_norm(data, p=98):
-    lim = max(np.percentile(np.abs(data), p), 1e-15)
-    return TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim)
+# on retire la moyenne temporelle (etat stationnaire) : on separe les FLUCTUATIONS
+F_mean = F_zt.mean(axis=1, keepdims=True)  # profil moyen = transport "permanent"
+F_ano  = F_zt - F_mean
 
-def cz_spectral(field_zt):
-    """field_zt : (n_z_bande, n_t). Retourne c_z (m/s), T (h), lambda_z (km)."""
-    f = detrend(detrend(field_zt, axis=0), axis=1)
-    f = f - f.mean()
-    win = np.hanning(f.shape[0])[:,None] * np.hanning(f.shape[1])[None,:]
-    P   = fftshift(np.abs(fft2(f*win))**2)
-    kz  = fftshift(fftfreq(f.shape[0], d=dz))     * 2*np.pi   # rad/m
-    om  = fftshift(fftfreq(f.shape[1], d=dt_phys)) * 2*np.pi  # rad/s
-    KZ, OM = np.meshgrid(kz, om, indexing='ij')
-    # on ne garde qu'un demi-plan (k_z>0) pour lever l'ambiguite +/- ,
-    # le signe de omega au pic donne alors le sens de propagation
-    m = (KZ > 1e-9) & (np.abs(OM) > 1e-9)
-    Pm = np.where(m, P, 0)
-    i, j = np.unravel_index(np.argmax(Pm), Pm.shape)
-    kz_p, om_p = KZ[i,j], OM[i,j]
-    cz  = -om_p / kz_p            # -omega/k_z : convention c_z<0 = descente
-    T   = 2*np.pi/abs(om_p)/3600  # h
-    lam = 2*np.pi/abs(kz_p)/1000  # km
-    return cz, T, lam
+# --- FFT 2D des fluctuations ---
+win = np.hanning(nz)[:,None] * np.hanning(nt)[None,:]
+Fw  = F_ano * win
+G   = fft2(Fw)                             # spectre complexe
+kz  = fftfreq(nz, d=dz)      * 2*np.pi      # rad/m
+om  = fftfreq(nt, d=dt_phys) * 2*np.pi      # rad/s
+KZ, OM = np.meshgrid(kz, om, indexing='ij')
 
-# --- champs : anomalies (tendance temporelle retiree), bande 2-8 km ---
-fields = {
-    "shear": (detrend(dudz_zt,   axis=1)*1e3, r"Anomalie cisaillement $\partial_z\bar u'$ ($10^{-3}$ s$^{-1}$)"),
-    "curv":  (detrend(d2udz2_zt, axis=1)*1e6, r"Anomalie courbure $\partial_z^2\bar u'$ ($10^{-6}$ m$^{-1}$s$^{-1}$)"),
-}
+# --- relation de dispersion mesuree (pic du spectre, demi-plan kz>0) ---
+P = np.abs(G)**2
+msk_peak = (KZ > 1e-9) & (np.abs(OM) > 1e-9)
+i,j = np.unravel_index(np.argmax(np.where(msk_peak, P, 0)), P.shape)
+kz_p, om_p = KZ[i,j], OM[i,j]
+cz_p = -om_p/kz_p
+print(f'Mode dominant : c_z={cz_p*100:+.2f} cm/s | '
+      f'lambda_z={2*np.pi/abs(kz_p)/1000:.1f} km | T={2*np.pi/abs(om_p)/3600/24:.1f} j')
 
-fig, axs = plt.subplots(1, 2, figsize=(13, 5.5), sharey=True)
-for ax, (key, (data, title)) in zip(axs, fields.items()):
-    cz, T, lam = cz_spectral(data[m28])
-    mesh = ax.pcolormesh(time_grid, alt_grid, data, cmap="RdBu_r",
-                         norm=get_sym_norm(data), shading='auto')
-    ax.axhspan(2, 8, color='k', alpha=.06)
-    # trait de pente c_z passant par le centre de la bande 2-8 km
-    z0, t0 = 5.0, time_days[len(time_days)//2]
-    dt_span = (time_days[-1]-time_days[0])/2
-    ax.plot([t0-dt_span, t0+dt_span],
-            [z0 - cz*(-dt_span*86400)/1000, z0 - cz*(dt_span*86400)/1000],
-            'k--', lw=1.5)
-    ax.set_title(f"{title}\n$c_z$={cz*100:+.2f} cm/s | $T$={T/24:.1f} j | $\\lambda_z$={lam:.1f} km",
-                 fontsize=10, fontweight='bold')
-    ax.set_xlabel("Temps (jours)"); ax.set_xlim(time_days[0], time_days[-1])
-    ax.set_ylim(0, Z_TOP_KM)
-    fig.colorbar(mesh, ax=ax, orientation='horizontal', pad=0.12, aspect=20)
-    print(f"[{key:5s}] c_z = {cz*100:+.2f} cm/s ({cz*86400:+.1f} m/j) | "
-          f"T = {T:.0f} h ({T/24:.1f} j) | lambda_z = {lam:.1f} km | "
-          f"{'DESCENTE' if cz<0 else 'montee'}")
-axs[0].set_ylabel("Altitude $z$ (km)")
-plt.suptitle("Signature ondulatoire (z,t) — un $c_z$ par champ (spectre 2D)",
-             fontweight='bold', y=1.0)
-plt.tight_layout(); plt.show()
+# --- masque ONDULATOIRE : proche de la ligne omega = -c_z * kz ---
+# distance de chaque (kz,om) a la droite de dispersion, normalisee
+# tolerance : on garde ce qui est a moins de 'tol' de la droite ET a grande echelle
+line   = -cz_p * KZ                          # omega attendu pour le mode
+sigma  = 0.5 * abs(om_p)                     # largeur de bande autour de la ligne
+big    = np.abs(KZ) <= 3*abs(kz_p)           # on limite aux grandes echelles verticales
+W_mask = (np.exp(-((OM-line)**2)/(2*sigma**2)) > 0.5) & big & msk_peak
+# on symetrise (spectre d'un champ reel : conjugue en (-kz,-om))
+W_mask = W_mask | W_mask[::-1, ::-1]
+
+# --- reconstruction des deux composantes ---
+G_wave = np.where(W_mask, G, 0)
+G_turb = G - G_wave
+Fano_wave = np.real(ifft2(G_wave)) / np.where(win>1e-6, win, 1)  # de-fenetrage
+Fano_turb = np.real(ifft2(G_turb)) / np.where(win>1e-6, win, 1)
+# bords peu fiables (fenetre ~0) : on masque doucement
+edge = win < 0.05
+Fano_wave[edge] = np.nan; Fano_turb[edge] = np.nan
+
+# --- profils de flux : moyen, ondulatoire, turbulent ---
+# le flux MOYEN reste dans F_mean (transport permanent, non oscillant)
+flux_wave_prof = np.nanmean(np.abs(Fano_wave), axis=1)   # amplitude rms ondes
+flux_turb_prof = np.nanmean(np.abs(Fano_turb), axis=1)   # amplitude rms turb
+flux_perm_prof = np.abs(F_mean[:,0])                     # flux permanent |moyen|
+
+# --- fraction ondulatoire du flux FLUCTUANT, par altitude ---
+frac_wave = flux_wave_prof / (flux_wave_prof + flux_turb_prof + 1e-15)
+
+# ============================================================
+#  FIGURE
+# ============================================================
+fig, ax = plt.subplots(1, 3, figsize=(16, 5.5), sharey=True)
+
+# (A) variance expliquee : energie du champ ondes vs turb
+ax[0].plot(flux_perm_prof, zk, 'k',       lw=2.4, label='flux permanent |moyen|')
+ax[0].plot(flux_wave_prof, zk, 'tab:red', lw=1.8, label='fluctuation ONDES (rms)')
+ax[0].plot(flux_turb_prof, zk, 'tab:blue',lw=1.8, label='fluctuation TURB (rms)')
+ax[0].set_xlabel(r"$|\rho_0\langle u'w'\rangle|$ (Pa)"); ax[0].set_ylabel('z (km)')
+ax[0].set_title('(A) Amplitude du flux\npermanent / ondes / turbulence')
+ax[0].legend(fontsize=8); ax[0].set_ylim(zk.min(), zk.max())
+
+# (B) fraction ondulatoire du flux fluctuant vs z
+ax[1].plot(frac_wave*100, zk, 'tab:purple', lw=2)
+ax[1].fill_betweenx(zk, 0, frac_wave*100, alpha=.15, color='tab:purple')
+ax[1].axvline(50, color='grey', ls='--', lw=.8)
+ax[1].set_xlabel('part ONDULATOIRE du flux fluctuant (%)')
+ax[1].set_title('(B) Qui porte les fluctuations\nde flux de moment ?')
+ax[1].set_xlim(0, 100)
+
+# (C) le spectre 2D avec le masque ondulatoire superpose
+Psh = fftshift(np.log10(P + P.max()*1e-6))
+ax[2].pcolormesh(fftshift(om)*86400, fftshift(kz)*1000, Psh,
+                 cmap='magma', shading='auto')
+ax[2].contour(fftshift(om)*86400, fftshift(kz)*1000,
+              fftshift(W_mask).astype(float), levels=[0.5],
+              colors='cyan', linewidths=1.5)
+ax[2].set_xlabel(r'$\omega$ (rad/jour)'); ax[2].set_ylabel(r'$k_z$ (rad/km)')
+ax[2].set_title('(C) Spectre 2D $\\log|G|^2$\n(cyan = bande ondulatoire retenue)')
+
+fig.suptitle('SEPARATION ONDES / TURBULENCE DU FLUX DE MOMENT (bande 2-8 km)',
+             fontweight='bold', y=1.02)
+fig.tight_layout(); plt.show()
+
+# ============================================================
+#  BILAN CHIFFRE
+# ============================================================
+# fraction de la VARIANCE totale du flux fluctuant portee par les ondes
+var_wave = np.nansum(Fano_wave**2)
+var_turb = np.nansum(Fano_turb**2)
+frac_var_wave = var_wave/(var_wave+var_turb)
+
+# poids des fluctuations vs flux permanent (integre sur la bande)
+E_perm = np.trapz(flux_perm_prof**2, alt[band])
+E_fluc = np.trapz((flux_wave_prof**2+flux_turb_prof**2), alt[band])
+
+print('\n' + '='*60)
+print(' SEPARATION ONDES / TURBULENCE — bande 2-8 km')
+print('='*60)
+print(f'  Fraction ONDULATOIRE de la variance du flux fluctuant : {frac_var_wave*100:.0f}%')
+print(f'  Fraction TURBULENTE                                    : {(1-frac_var_wave)*100:.0f}%')
+print(f'  Part moyenne ondulatoire par altitude (mediane)        : {np.nanmedian(frac_wave)*100:.0f}%')
+print(f'  Poids fluctuations / flux permanent (energie)          : {E_fluc/(E_perm+1e-15):.2f}')
+print('='*60)
+if frac_var_wave > 0.3:
+    print('=> Une part NON NEGLIGEABLE du transport de moment fluctuant est')
+    print('   ondulatoire (coherente, non-locale). Une parametrisation CMT')
+    print('   purement turbulente (EDMF) MANQUE ce canal.')
+else:
+    print('=> Le transport de moment est domine par la turbulence incoherente ;')
+    print('   la contribution ondulatoire au flux reste marginale.')
