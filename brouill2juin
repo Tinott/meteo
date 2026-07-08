@@ -2,96 +2,57 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 def compute_wave_dynamics(u_4d, w_4d, rho0_1d, z_coords, t_coords):
-    """
-    Calcule le flux de Reynolds et son forçage sur l'écoulement moyen.
-    
-    Paramètres :
-    - u_4d, w_4d : Champs 4D numpy du vent zonal et vertical (temps, z, y, x)
-    - rho0_1d    : Profil de densité moyenne 1D (z,)
-    - z_coords   : Coordonnées verticales 1D (z,) en mètres
-    - t_coords   : Coordonnées temporelles 1D (temps,)
-    """
-    
-    print("1. Calcul des moyennes spatiales (u_bar, w_bar)...")
-    # Moyenne sur les axes y (2) et x (3)
-    u_bar = np.mean(u_4d, axis=(2, 3)) # Dimensions: (temps, z)
-    w_bar = np.mean(w_4d, axis=(2, 3)) # Dimensions: (temps, z)
+    print("1. Calcul des moyennes spatiales...")
+    u_bar = np.mean(u_4d, axis=(2, 3))
+    w_bar = np.mean(w_4d, axis=(2, 3))
 
-    print("2. Extraction des perturbations (u', w')...")
-    # On ajoute des dimensions vides (np.newaxis) pour permettre le broadcasting (temps, z, 1, 1)
+    print("2. Extraction des perturbations...")
     u_prime = u_4d - u_bar[:, :, np.newaxis, np.newaxis]
     w_prime = w_4d - w_bar[:, :, np.newaxis, np.newaxis]
 
-    print("3. Calcul du flux de Reynolds moyen (u'w')...")
-    # Produit des perturbations puis moyenne horizontale
-    uw_flux = np.mean(u_prime * w_prime, axis=(2, 3)) # Dimensions: (temps, z)
+    print("3. Calcul du flux de Reynolds moyen...")
+    uw_flux = np.mean(u_prime * w_prime, axis=(2, 3))
 
-    print("4. Calcul de la divergence du flux (Forçage)...")
-    # Calcul de : - (1 / rho0) * d(rho0 * uw_flux) / dz
-    
-    # Étape A : Multiplier par la densité
-    # rho0_1d est (z,), uw_flux est (temps, z). On ajuste pour le broadcasting.
+    print("4. Calcul de la divergence du flux...")
     momentum_flux = uw_flux * rho0_1d[np.newaxis, :] 
-    
-    # Étape B : Dérivée verticale
-    # np.gradient gère proprement les différences finies (y compris aux bords)
-    # L'axe 1 correspond à l'altitude z
     d_flux_dz = np.gradient(momentum_flux, z_coords, axis=1)
-    
-    # Étape C : Division par la densité et inversion du signe
     forcing = - (1.0 / rho0_1d[np.newaxis, :]) * d_flux_dz
 
-    # ---------------------------------------------------------
-    # 5. VISUALISATION (Diagrammes de Hovmöller)
-    # ---------------------------------------------------------
-    print("5. Génération de la figure...")
+    print("5. Generation de la figure...")
     fig, axes = plt.subplots(1, 3, figsize=(18, 6), sharey=True)
     
-    # Note : On transpose (.T) les matrices pour avoir (Z, Temps) au lieu de (Temps, Z)
-    
-    # Sous-figure 1 : Le vent moyen (L'ondulation)
     ax1 = axes[0]
-    c1 = ax1.contourf(t_coords, z_coords, u_bar.T, levels=20, cmap='RdBu_r')
-    ax1.set_title(r'Vent zonal moyen $\bar{u}$', fontsize=14)
-    ax1.set_ylabel('Altitude (m)', fontsize=12)
-    ax1.set_xlabel('Temps', fontsize=12)
-    fig.colorbar(c1, ax=ax1, label='m/s')
+    c1 = ax1.contourf(t_coords, z_coords, u_bar.T, levels=20, cmap="RdBu_r")
+    ax1.set_title("Vent zonal moyen", fontsize=14)
+    ax1.set_ylabel("Altitude (m)", fontsize=12)
+    ax1.set_xlabel("Temps", fontsize=12)
+    fig.colorbar(c1, ax=ax1, label="m/s")
 
-    # Sous-figure 2 : Le flux de Reynolds
     ax2 = axes[1]
-    c2 = ax2.contourf(t_coords, z_coords, uw_flux.T, levels=20, cmap='PuOr_r')
-    ax2.set_title(r'Flux de Reynolds $\overline{u\'w\'}$', fontsize=14)
-    ax2.set_xlabel('Temps', fontsize=12)
-    fig.colorbar(c2, ax=ax2, label='m²/s²')
+    c2 = ax2.contourf(t_coords, z_coords, uw_flux.T, levels=20, cmap="PuOr_r")
+    ax2.set_title("Flux de Reynolds", fontsize=14)
+    ax2.set_xlabel("Temps", fontsize=12)
+    fig.colorbar(c2, ax=ax2, label="m2/s2")
 
-    # Sous-figure 3 : Le forçage (L'impact du flux sur le vent)
     ax3 = axes[2]
-    # On centre la colormap sur zéro pour bien voir les phases d'accélération/décélération
-    c3 = ax3.contourf(t_coords, z_coords, forcing.T, levels=20, cmap='PiYG', vmin=-np.max(np.abs(forcing)), vmax=np.max(np.abs(forcing)))
-    ax3.set_title(r'Forçage de l\'écoulement $-\frac{1}{\rho_0} \frac{\partial (\rho_0 \overline{u\'w\'})}{\partial z}$', fontsize=14)
-    ax3.set_xlabel('Temps', fontsize=12)
-    fig.colorbar(c3, ax=ax3, label='m/s²')
+    c3 = ax3.contourf(t_coords, z_coords, forcing.T, levels=20, cmap="PiYG", vmin=-np.max(np.abs(forcing)), vmax=np.max(np.abs(forcing)))
+    ax3.set_title("Forcage de l ecoulement", fontsize=14)
+    ax3.set_xlabel("Temps", fontsize=12)
+    fig.colorbar(c3, ax=ax3, label="m/s2")
 
     plt.tight_layout()
     plt.show()
 
     return u_bar, uw_flux, forcing
 
-# =========================================================
-# EXEMPLE D'UTILISATION (avec des dimensions fictives)
-# =========================================================
 if __name__ == "__main__":
-    # Remplacer ces lignes par le chargement de vos données Méso-NH
     nt, nz, ny, nx = 50, 40, 100, 100
-    z_coords = np.linspace(0, 32500, nz) # 0 à 32.5 km
+    z_coords = np.linspace(0, 32500, nz)
     t_coords = np.arange(nt)
     
-    # Création d'un profil de densité (décroissance exponentielle standard)
     rho0 = 1.2 * np.exp(-z_coords / 8000) 
     
-    # Données aléatoires pour tester que le code tourne
     u_mock = np.random.randn(nt, nz, ny, nx)
     w_mock = np.random.randn(nt, nz, ny, nx)
     
-    # Appel de la fonction
     u_bar, uw_flux, forcing = compute_wave_dynamics(u_mock, w_mock, rho0, z_coords, t_coords)
