@@ -37,3 +37,66 @@ for ax, (fld, lab) in zip(axes, [
 
 plt.suptitle("Anomalies moyennes (bandes descendantes = descente de phase)", fontweight='bold')
 plt.tight_layout(); plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# §1 — Flux de Reynolds rho0<u'w'> et contrainte de surface tau_s
+flux_uw = np.zeros(n_z)
+ds_u=xr.open_dataset(path3d('ua')); ds_w=xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    u=ds_u['ua'].isel({dim_t:idx_stat,dim_z:iz}).values
+    w=ds_w['wa'].isel({dim_t:idx_stat,dim_z:iz}).values
+    up=u-u.mean(axis=(1,2),keepdims=True); wp=w-w.mean(axis=(1,2),keepdims=True)
+    flux_uw[iz]=rho0[iz]*(up*wp).mean(); del u,w,up,wp; gc.collect()
+ds_u.close(); ds_w.close()
+
+# tau_s : extremum du flux dans la couche limite (proxy, cf. tes runs precedents)
+iz_bl = np.argmax(np.abs(flux_uw[alt<2000]))
+tau_s = -flux_uw[iz_bl]
+print(f'tau_s ~ {tau_s:+.4f} kg m-1 s-2 (a z={alt[iz_bl]:.0f} m)')
+
+
+
+
+# §2 — Divergence du flux = tendance de friction sur ubar
+F_turb = -np.gradient(flux_uw, alt)/rho0
+fig,ax=plt.subplots(1,2,figsize=(12,6),sharey=True)
+ax[0].plot(flux_uw,alt,'royalblue',lw=2); ax[0].axvline(0,color='grey',lw=.5)
+ax[0].set_xlabel(r"$\rho_0\overline{u'w'}$"); ax[0].set_ylabel('z (m)')
+ax[0].set_title('Flux : max au sol, decroit vers le haut',fontweight='bold')
+ax[0].set_ylim(0,15000)
+ax[1].plot(F_turb*1e5,alt,'crimson',lw=2); ax[1].axvline(0,color='grey',lw=.5)
+ax[1].set_xlabel(r'$F_{turb}$ ($\times10^{-5}$ m/s²)')
+ax[1].set_title('Divergence : signe = depot/retrait de QdM',fontweight='bold')
+plt.tight_layout(); plt.show()
+
+
+
+# §3 — QdM cumulee injectee sous z (identite de Gauss, forme flux directe)
+QDM_cum = flux_uw[0] - flux_uw          # = integrale exacte de rho0 F_turb
+fig,ax=plt.subplots(figsize=(7,6))
+ax.plot(QDM_cum,alt,'darkgreen',lw=2)
+ax.axvline(0,color='grey',lw=.5); ax.set_ylim(0,15000)
+ax.set_xlabel(r'$\int_0^z \rho_0 F_{turb}\,dz$  (QdM cumulee)')
+ax.set_ylabel('z (m)')
+ax.set_title('QdM retiree au sol, redistribuee en altitude',fontweight='bold')
+plt.tight_layout(); plt.show()
+print(f'QdM totale injectee (sol->tropopause) = {QDM_cum[np.argmin(np.abs(alt-15000))]:+.4f}')
