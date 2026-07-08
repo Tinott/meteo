@@ -1,58 +1,82 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.signal import hilbert, detrend
+from scipy.ndimage import uniform_filter1d
+from matplotlib.colors import TwoSlopeNorm
 
-def compute_wave_dynamics(u_4d, w_4d, rho0_1d, z_coords, t_coords):
-    print("1. Calcul des moyennes spatiales...")
-    u_bar = np.mean(u_4d, axis=(2, 3))
-    w_bar = np.mean(w_4d, axis=(2, 3))
+# ============================================================
+#   ANALYSE DE LA DESCENTE DE PHASE POUR LE VENT VERTICAL W
+# ============================================================
 
-    print("2. Extraction des perturbations...")
-    u_prime = u_4d - u_bar[:, :, np.newaxis, np.newaxis]
-    w_prime = w_4d - w_bar[:, :, np.newaxis, np.newaxis]
+# 1. Extraction des anomalies de w par rapport a sa moyenne temporelle
+wprime = wbar_zt - wbar_zt.mean(axis=1, keepdims=True)
 
-    print("3. Calcul du flux de Reynolds moyen...")
-    uw_flux = np.mean(u_prime * w_prime, axis=(2, 3))
+# Lissage pour nettoyer le bruit numerique sur l'axe du temps
+wps = uniform_filter1d(wprime, size=3, axis=0, mode="nearest")
 
-    print("4. Calcul de la divergence du flux...")
-    momentum_flux = uw_flux * rho0_1d[np.newaxis, :] 
-    d_flux_dz = np.gradient(momentum_flux, z_coords, axis=1)
-    forcing = - (1.0 / rho0_1d[np.newaxis, :]) * d_flux_dz
+tt = np.arange(n_stat)
+fig, axes = plt.subplots(1, 2, figsize=(13, 5))
 
-    print("5. Generation de la figure...")
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6), sharey=True)
-    
-    ax1 = axes[0]
-    c1 = ax1.contourf(t_coords, z_coords, u_bar.T, levels=20, cmap="RdBu_r")
-    ax1.set_title("Vent zonal moyen", fontsize=14)
-    ax1.set_ylabel("Altitude (m)", fontsize=12)
-    ax1.set_xlabel("Temps", fontsize=12)
-    fig.colorbar(c1, ax=ax1, label="m/s")
+# --- GRAPHIQUE 1 : Hovmoller de w' ---
+ax = axes[0]
+ax.grid(False)
 
-    ax2 = axes[1]
-    c2 = ax2.contourf(t_coords, z_coords, uw_flux.T, levels=20, cmap="PuOr_r")
-    ax2.set_title("Flux de Reynolds", fontsize=14)
-    ax2.set_xlabel("Temps", fontsize=12)
-    fig.colorbar(c2, ax=ax2, label="m2/s2")
+# Definition des echelles de couleurs centrees sur zero
+v = np.percentile(np.abs(wps[mask_show]), 98) + 1e-9
+im = ax.pcolormesh(tt + t_stat, zkm[mask_show], wps[mask_show], cmap="RdBu_r",
+                   norm=TwoSlopeNorm(0, -v, v), shading="auto")
 
-    ax3 = axes[2]
-    c3 = ax3.contourf(t_coords, z_coords, forcing.T, levels=20, cmap="PiYG", vmin=-np.max(np.abs(forcing)), vmax=np.max(np.abs(forcing)))
-    ax3.set_title("Forcage de l ecoulement", fontsize=14)
-    ax3.set_xlabel("Temps", fontsize=12)
-    fig.colorbar(c3, ax=ax3, label="m/s2")
+ax.axhspan(2, 8, color="k", alpha=.06)
+ax.set_ylim(0, Z_TOP_KM)
+ax.set_xlabel("t")
+ax.set_ylabel("z (km)")
+ax.set_title("Hovmoller w prime (bandes descendantes)")
+fig.colorbar(im, ax=ax, pad=.02, label="m/s")
 
-    plt.tight_layout()
-    plt.show()
+# --- GRAPHIQUE 2 : Vitesse de phase verticale c_z ---
+# Analyse de Fourier locale par transformee de Hilbert sur l'axe du temps (axis=1)
+analytic = hilbert(detrend(wps, axis=1), axis=1)
+phase = np.unwrap(np.angle(analytic), axis=1)
 
-    return u_bar, uw_flux, forcing
+# Calcul des gradients de phase (temporel et vertical)
+dphi_dt = np.gradient(phase, dt_phys, axis=1)
+dphi_dz = np.gradient(phase, alt, axis=0)
 
-if __name__ == "__main__":
-    nt, nz, ny, nx = 50, 40, 100, 100
-    z_coords = np.linspace(0, 32500, nz)
-    t_coords = np.arange(nt)
-    
-    rho0 = 1.2 * np.exp(-z_coords / 8000) 
-    
-    u_mock = np.random.randn(nt, nz, ny, nx)
-    w_mock = np.random.randn(nt, nz, ny, nx)
-    
-    u_bar, uw_flux, forcing = compute_wave_dynamics(u_mock, w_mock, rho0, z_coords, t_coords)
+# Calcul de la vitesse de phase c_z = - omega / k_z
+with np.errstate(divide="ignore", invalid="ignore"):
+    cz = - dphi_dt / dphi_dz
+
+# Filtrage pour la zone cible entre 2 et 8 km d'altitude
+cz28 = cz[m28]
+cz28 = cz28[np.isfinite(cz28)]
+cz_ok = cz28[np.abs(cz28) < 1.0] # Filtre les valeurs aberrantes fortes
+
+# Calcul des statistiques (mediane, quartiles et fraction de points descendants)
+q25, q50, q75 = np.percentile(cz_ok, [25, 50, 75]) if cz_ok.size else (np.nan,)*3
+frac = np.mean(cz_ok < 0) if cz_ok.size else np.nan
+
+ax = axes[1]
+ax.hist(cz_ok * 100, bins=30, color="steelblue", alpha=.85)
+ax.axvline(q50 * 100, color="r", lw=2, label=f"mediane={q50*100:+.2f} cm/s")
+ax.axvline(0, color="k", lw=.8)
+ax.set_xlabel("c_z (cm/s)")
+ax.set_ylabel("nb (z,t) 2-8 km")
+ax.set_title(f"{frac:.0%} des points DESCENDENT")
+ax.legend(fontsize=9)
+
+fig.tight_layout()
+plt.show()
+
+# --- DIAGNOSTICS TEXTUELS (Frequence, Periode, Longueur d'onde) ---
+om = np.abs(dphi_dt[m28])
+om = om[np.isfinite(om) & (om > 0)]
+
+kz = np.abs(dphi_dz[m28])
+kz = kz[np.isfinite(kz) & (kz > 0)]
+
+T_h = 2 * np.pi / np.median(om) / 3600 if om.size else np.nan
+lam = 2 * np.pi / np.median(kz) / 1000 if kz.size else np.nan
+
+print(f"c_z (2-8 km) mediane={q50*100:+.2f} cm/s [IQR {q25*100:+.2f},{q75*100:+.2f}] | {frac:.0%} descendants")
+print(f"periode ~ {T_h:.0f} h ({T_h/24:.1f} j) | lambda_z ~ {lam:.1f} km")
+print("=> Analyse de la phase de w terminee.")
