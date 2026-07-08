@@ -1,80 +1,77 @@
- #============================================================
-#  CONTEXTE DYNAMIQUE & SIGNATURE ONDULATOIRE (CONTRASTE OPTIMISÉ)
+# ============================================================
+#  ANOMALIES DE CISAILLEMENT & COURBURE (z,t) + c_z NON-AMBIGU
 # ============================================================
 from matplotlib.colors import TwoSlopeNorm
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.signal import hilbert, detrend
+from scipy.signal import detrend
 
-# --- 1. CONFIGURATION DU GRAPHIQUE À 5 PANELS ---
-fig, axs = plt.subplots(1, 5, figsize=(21, 5.5), sharey=True)
+fig, axs = plt.subplots(1, 2, figsize=(13, 5.5), sharey=True)
 time_days = (np.arange(n_stat) * dt_phys) / 86400.0
 time_grid, alt_grid = np.meshgrid(time_days, zkm)
 
-# Fonction pour obtenir des bornes symétriques basées sur la robustesse des données
-def get_sym_norm(data, percentile=98):
-    limit = np.percentile(np.abs(data), percentile)
-    # Évite une division par zéro si les données sont nulles
-    limit = max(limit, 1e-15) 
-    return TwoSlopeNorm(vmin=-limit, vcenter=0.0, vmax=limit)
+def get_sym_norm(data, p=98):
+    lim = max(np.percentile(np.abs(data), p), 1e-15)
+    return TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim)
 
-# Configuration des variables avec ajustement automatique du contraste
-plots_config = [
-    {"data": ubar_zt, "title": r"Vent moyen $\bar{u}$ (m/s)", "cmap": "RdBu_r", "norm": get_sym_norm(ubar_zt)},
-    {"data": wbar_zt * 100, "title": r"Vitesse vert. $\bar{w}$ (cm/s)", "cmap": "RdBu_r", "norm": get_sym_norm(wbar_zt * 100, 95)}, # 95 pour éviter l'écrasement par les ondes de sol
-    {"data": flux_zt, "title": r"Flux résolu $\rho_0 \overline{u'w'}$ (Pa)", "cmap": "RdBu_r", "norm": get_sym_norm(flux_zt, 95)},
-    {"data": dudz_zt * 1e3, "title": r"Cisaillement $\partial \bar{u}/\partial z$ ($10^{-3}$ s$^{-1}$)", "cmap": "RdBu_r", "norm": get_sym_norm(dudz_zt * 1e3)},
-    {"data": d2udz2_zt * 1e6, "title": r"Courbure $\partial^2 \bar{u}/\partial z^2$ ($10^{-6}$ m$^{-1}$s$^{-1}$)", "cmap": "RdBu_r", "norm": get_sym_norm(d2udz2_zt * 1e6)}
+# on retire la tendance temporelle a chaque niveau -> anomalies pures
+shear_anom = detrend(dudz_zt,   axis=1) * 1e3   # 10^-3 s^-1
+curv_anom  = detrend(d2udz2_zt, axis=1) * 1e6   # 10^-6 m^-1 s^-1
+
+plots = [
+    {"data": shear_anom, "title": r"Anomalie cisaillement $\partial_z\bar u'$ ($10^{-3}$ s$^{-1}$)"},
+    {"data": curv_anom,  "title": r"Anomalie courbure $\partial_z^2\bar u'$ ($10^{-6}$ m$^{-1}$s$^{-1}$)"},
 ]
-
-# Tracé des pcolor
-for i, config in enumerate(plots_config):
-    ax = axs[i]
-    mesh = ax.pcolormesh(time_grid, alt_grid, config["data"], cmap=config["cmap"], norm=config["norm"], shading='auto')
-    ax.set_title(config["title"], fontsize=12, fontweight='bold')
-    ax.set_xlabel("Temps (jours)", fontsize=11)
-    ax.set_xlim(time_days[0], time_days[-1])
+for ax, cfg in zip(axs, plots):
+    mesh = ax.pcolormesh(time_grid, alt_grid, cfg["data"], cmap="RdBu_r",
+                         norm=get_sym_norm(cfg["data"]), shading='auto')
+    ax.axhspan(2, 8, color='k', alpha=.06)
+    ax.set_title(cfg["title"], fontsize=12, fontweight='bold')
+    ax.set_xlabel("Temps (jours)"); ax.set_xlim(time_days[0], time_days[-1])
     ax.set_ylim(0, Z_TOP_KM)
-    
-    # Formatage de la barre de couleur pour être lisible
-    cbar = fig.colorbar(mesh, ax=ax, orientation='horizontal', pad=0.12, aspect=15)
-    cbar.ax.tick_params(labelsize=9)
+    fig.colorbar(mesh, ax=ax, orientation='horizontal', pad=0.12, aspect=20)
+axs[0].set_ylabel("Altitude $z$ (km)")
+plt.suptitle("Anomalies (z,t) — bandes penchées = propagation de phase",
+             fontweight='bold', y=1.0)
+plt.tight_layout(); plt.show()
 
-axs[0].set_ylabel("Altitude $z$ (km)", fontsize=11)
-plt.suptitle("Contexte dynamique (z, t) — Zoom sur la propagation des phases", fontsize=14, fontweight='bold', y=0.98)
-plt.tight_layout()
-plt.show()
+# ============================================================
+#  c_z PAR PENTE DES BANDES — SIGNE PHYSIQUE EXPLICITE
+#  Convention : c_z<0 = DESCENTE. On decale le champ vers le HAUT
+#  de s niveaux (roll +s en z) et vers l'AVANT de dt_lag en temps,
+#  puis on cherche (s,dt_lag) qui maximise la correlation.
+#  Une crete qui reapparait PLUS BAS PLUS TARD -> s<0 -> c_z<0.
+# ============================================================
+fld = detrend(detrend(shear_anom[m28], axis=0), axis=1)
+fld = (fld - fld.mean()) / (fld.std() + 1e-12)
+nz, nt = fld.shape
+dz = np.mean(np.diff(alt[m28]))          # m (>0)
 
-# --- 2. QUANTIFICATION ROBUSTE (Exemple étendu au Cisaillement) ---
-print("\n" + "="*60)
-print(" QUANTIFICATION DE LA SIGNATURE ONDULATOIRE VIA LE CISAILLEMENT")
-print("="*60)
+results = []
+for dt_lag in range(1, 6):               # pas de temps vers l'avant
+    a = fld[:, :nt-dt_lag]               # instant t
+    b = fld[:, dt_lag:]                  # instant t + dt_lag
+    best_s, best_c = 0, -np.inf
+    for s in range(-6, 7):               # s = decalage vertical (niveaux)
+        # b decale de s niveaux : on teste si "a a l'altitude z"
+        # correspond a "b a l'altitude z - s*dz"
+        bb = np.roll(b, -s, axis=0)
+        c  = np.mean(a * bb)
+        if c > best_c:
+            best_c, best_s = c, s
+    # s>0 : la structure est montee de s niveaux en dt_lag  -> c_z>0
+    # s<0 : elle est descendue                              -> c_z<0
+    cz = (best_s * dz) / (dt_lag * dt_phys)      # m/s, signe physique correct
+    results.append(cz)
+    sens = "DESCENTE" if cz < 0 else "montee"
+    print(f"  lag {dt_lag*dt_phys/3600:.0f}h : "
+          f"deplacement vertical = {best_s*dz:+.0f} m "
+          f"-> c_z = {cz*100:+.2f} cm/s ({sens})")
 
-# On applique l'analyse sur le cisaillement qui est souvent plus "propre" et exempt de la tendance grande échelle de u_bar
-dudz_anom = detrend(dudz_zt[m28, :], axis=1)
-
-zkm_m28 = zkm[m28]
-lags = np.arange(-20, 20)
-matrix_corr = np.zeros((len(zkm_m28)-1, len(lags)))
-
-for i in range(len(zkm_m28)-1):
-    ref = dudz_anom[i, :]
-    target = dudz_anom[i+1, :]
-    corr = np.correlate(ref - np.mean(ref), target - np.mean(target), mode='same')
-    center = len(corr) // 2
-    matrix_corr[i, :] = corr[center + lags]
-
-mean_corr_profile = matrix_corr.mean(axis=0)
-opt_lag_idx = lags[np.argmax(mean_corr_profile)]
-dt_lag_hours = opt_lag_idx * (dt_phys / 3600.0)
-
-dz_mean_m = np.mean(np.diff(alt[m28]))
-dt_mean_s = opt_lag_idx * dt_phys
-
-if dt_mean_s != 0:
-    w_phase_vertical = (dz_mean_m / dt_mean_s) * 1000.0  # mm/s
-    w_descent = -w_phase_vertical if w_phase_vertical < 0 else w_phase_vertical
-    print(f"-> Décalage temporel calculé via le cisaillement : {dt_lag_hours:+.1f} heures")
-    print(f"-> Vitesse de descente de la structure de cisaillement : {w_descent:.3f} mm/s (~{(w_descent*86.4):.1f} m/jour)")
-else:
-    print("-> Lag non résolu à cette résolution temporelle.")
+cz_med = np.median(results)
+print("\n" + "="*55)
+print(f"  c_z median (pente des bandes) = {cz_med*100:+.2f} cm/s "
+      f"= {cz_med*1000:+.3f} mm/s")
+print(f"  soit {cz_med*86400:+.1f} m/jour  "
+      f"({'DESCENTE coherente QBO' if cz_med<0 else 'MONTEE — a verifier'})")
+print("="*55)
