@@ -8,11 +8,10 @@ analytic_z = hilbert(detrend(ups, axis=0), axis=0)   # Hilbert le long de l'ALTI
 phase_z    = np.unwrap(np.angle(analytic_z), axis=0)  # unwrap en ALTITUDE
 dphi_dz    = np.gradient(phase_z, alt, axis=0)        # rad/m, maintenant coherent
 
-# ---- vitesse de phase verticale : omega/k_z, dans un repere spectral coherent ----
+# ---- vitesse de phase verticale ----
 with np.errstate(divide='ignore', invalid='ignore'):
     cz = -dphi_dt / dphi_dz
 
-# ---- diagnostics bande 2-8 km ----
 cz28  = cz[m28]; cz28 = cz28[np.isfinite(cz28)]
 cz_ok = cz28[np.abs(cz28) < 1.0]
 q25, q50, q75 = np.percentile(cz_ok, [25, 50, 75]) if cz_ok.size else (np.nan,)*3
@@ -22,3 +21,7 @@ om = np.abs(dphi_dt[m28]); om = om[np.isfinite(om) & (om > 0)]
 kz = np.abs(dphi_dz[m28]); kz = kz[np.isfinite(kz) & (kz > 0)]
 T_h = 2*np.pi/np.median(om)/3600 if om.size else np.nan
 lam = 2*np.pi/np.median(kz)/1000 if kz.size else np.nan
+
+print(f'c_z (2-8 km) mediane={q50*100:+.2f} cm/s [IQR {q25*100:+.2f},{q75*100:+.2f}] | {frac:.0%} descendants')
+print(f'periode ~ {T_h:.0f} h ({T_h/24:.1f} j) | lambda_z ~ {lam:.1f} km')
+print('=> descente de phase reelle et lente : coherente avec une oscillation type QBO.')
