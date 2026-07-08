@@ -1,41 +1,24 @@
-# ============================================================
-#  CORRECTION DU GRAPH Ri : CONTRASTE LOGARITHMIQUE / SATURE
-# ============================================================
-from matplotlib.colors import LogNorm, BoundaryNorm
-import numpy as np
-import matplotlib.pyplot as plt
+# ---- phase temporelle (pour omega / periode / c_z au numerateur) ----
+analytic_t = hilbert(detrend(ups, axis=1), axis=1)   # Hilbert le long du TEMPS
+phase_t    = np.unwrap(np.angle(analytic_t), axis=1)  # unwrap en TEMPS
+dphi_dt    = np.gradient(phase_t, dt_phys, axis=1)    # rad/s
 
-# 1. Nettoyage des valeurs aberrantes ou infinies
-# On borne Ri entre 0 et 10 pour que les zones stables ne masquent pas le signal
-Ri_clipped = np.clip(Ri, 0.01, 10.0)
+# ---- phase verticale (pour k_z / lambda_z) ----
+analytic_z = hilbert(detrend(ups, axis=0), axis=0)   # Hilbert le long de l'ALTITUDE
+phase_z    = np.unwrap(np.angle(analytic_z), axis=0)  # unwrap en ALTITUDE
+dphi_dz    = np.gradient(phase_z, alt, axis=0)        # rad/m, maintenant coherent
 
-fig, ax = plt.subplots(figsize=(8, 5.5))
+# ---- vitesse de phase verticale : omega/k_z, dans un repere spectral coherent ----
+with np.errstate(divide='ignore', invalid='ignore'):
+    cz = -dphi_dt / dphi_dz
 
-# 2. Utilisation de paliers discrets TRES serrés autour de 0.25
-# Tout ce qui est au-dessus de 2 sera en bleu foncé, libérant l'espace pour le reste !
-levels = [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
-cmap_ri = plt.colormaps["RdYlBu"]  # Rouge (instable) -> Jaune -> Bleu (stable)
-norm_ri = BoundaryNorm(levels, ncolors=cmap_ri.N, clip=False)
+# ---- diagnostics bande 2-8 km ----
+cz28  = cz[m28]; cz28 = cz28[np.isfinite(cz28)]
+cz_ok = cz28[np.abs(cz28) < 1.0]
+q25, q50, q75 = np.percentile(cz_ok, [25, 50, 75]) if cz_ok.size else (np.nan,)*3
+frac  = np.mean(cz_ok < 0) if cz_ok.size else np.nan
 
-# Tracé avec la norme resserrée
-mesh = ax.pcolormesh(time_grid, alt_grid, Ri_clipped, cmap=cmap_ri, norm=norm_ri, shading='auto')
-
-# Esthétique et labels
-ax.set_title("Nombre de Richardson Dynamique $Ri$ (Échelle resserrée)\nZones rouges = Risque de déferlement ($Ri < 0.25$)", fontsize=11, fontweight='bold')
-ax.set_xlabel("Temps (jours)", fontsize=11)
-ax.set_ylabel("Altitude $z$ (km)", fontsize=11)
-ax.set_xlim(time_days[0], time_days[-1])
-ax.set_ylim(0, Z_TOP_KM)
-
-# Barre de couleur claire
-cbar = fig.colorbar(mesh, ax=ax, orientation='vertical', pad=0.05, extend='max')
-cbar.set_label("Valeur de $Ri$", fontsize=11)
-
-plt.tight_layout()
-plt.show()
-
-# --- RE-DIAGNOSTIC ---
-Ri_layer = Ri[m28, :]
-unstable_points = np.sum(Ri_layer < 0.25)
-pct_unstable = (unstable_points / Ri_layer.size) * 100
-print(f"Pourcentage de points instables vérifié (Ri < 0.25) : {pct_unstable:.2f} %")
+om = np.abs(dphi_dt[m28]); om = om[np.isfinite(om) & (om > 0)]
+kz = np.abs(dphi_dz[m28]); kz = kz[np.isfinite(kz) & (kz > 0)]
+T_h = 2*np.pi/np.median(om)/3600 if om.size else np.nan
+lam = 2*np.pi/np.median(kz)/1000 if kz.size else np.nan
