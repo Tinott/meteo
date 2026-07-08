@@ -1,39 +1,27 @@
 # ============================================================
-#  VERIFICATION POINT PAR POINT :  rho0<u'w'>(z)  ==  -tau_s - I_tend - I_adv
-#  membre de GAUCHE = flux de Reynolds direct
-#  membre de DROITE = reconstruction par le budget
+#  -I_tend(z)  et  -I_adv(z)  separement, puis leur somme
+#    I_tend = ∫_0^z rho0 ∂_t ubar dz'
+#    I_adv  = ∫_0^z rho0 wbar ∂_z ubar dz'
 # ============================================================
 from scipy.integrate import cumulative_trapezoid
 
-# --- GAUCHE : flux de Reynolds diagnostique ---
-flux_gauche = flux_zt.mean(axis=1) if 'flux_zt' in dir() else flux_uw
+dt_ubar = np.gradient(ubar_zt, dt_phys, axis=1)   # ∂_t ubar (z,t)
+dz_ubar = np.gradient(ubar_zt, alt,     axis=0)   # ∂_z ubar (z,t)
 
-# --- DROITE : -tau_s - I_tend - I_adv ---
-iz_bl = np.argmax(np.abs(flux_gauche[alt < 2000]))
-tau_s = -flux_gauche[iz_bl]
-dt_ubar = np.gradient(ubar_zt, dt_phys, axis=1)
-dz_ubar = np.gradient(ubar_zt, alt,     axis=0)
 I_tend = cumulative_trapezoid((rho0[:,None]*dt_ubar).mean(1), alt, initial=0)
 I_adv  = cumulative_trapezoid((rho0[:,None]*wbar_zt*dz_ubar).mean(1), alt, initial=0)
-flux_droite = -tau_s - I_tend - I_adv
+somme  = -I_tend - I_adv
 
-diff = flux_gauche - flux_droite
-
-# --- figure : les deux membres + leur difference a chaque z ---
-fig, ax = plt.subplots(1, 2, figsize=(13, 6), sharey=True)
-ax[0].plot(flux_gauche, alt, 'k',  lw=2.5, label=r"GAUCHE : $\rho_0\overline{u'w'}(z)$")
-ax[0].plot(flux_droite, alt, 'crimson', lw=1.8, ls='--',
-           label=r'DROITE : $-\tau_s-I_{tend}-I_{adv}$')
-ax[0].axvline(0, color='grey', lw=.5); ax[0].set_ylim(0, 15000)
-ax[0].set_xlabel('flux'); ax[0].set_ylabel('z (m)')
-ax[0].set_title("Les deux membres, pour tout $z$", fontweight='bold')
-ax[0].legend(fontsize=9)
-
-ax[1].plot(diff, alt, 'purple', lw=2)
-ax[1].axvline(0, color='grey', lw=.5)
-ax[1].set_xlabel('GAUCHE $-$ DROITE'); ax[1].set_title('Ecart point par point', fontweight='bold')
-plt.suptitle("Verification de l'identite a chaque altitude", fontweight='bold')
+fig, ax = plt.subplots(figsize=(7.5, 6))
+ax.plot(-I_tend, alt, 'royalblue', lw=2, label=r'$-I_{tend}=-\int_0^z\rho_0\,\partial_t\bar u\,dz$')
+ax.plot(-I_adv,  alt, 'seagreen',  lw=2, label=r'$-I_{adv}=-\int_0^z\rho_0\,\bar w\,\partial_z\bar u\,dz$')
+ax.plot(somme,   alt, 'crimson',   lw=2.5, ls='--', label=r'$-(I_{tend}+I_{adv})$')
+ax.axvline(0, color='grey', lw=.5); ax.set_ylim(0, 15000)
+ax.set_xlabel(r'QdM cumulee'); ax.set_ylabel('z (m)')
+ax.set_title(r'Les deux integrales, separement puis jointes', fontweight='bold')
+ax.legend(fontsize=9); ax.grid(True, alpha=.3)
 plt.tight_layout(); plt.show()
 
-print(f'ecart max sur tout le profil = {np.abs(diff).max():.2e}')
-print(f'ecart median                 = {np.median(np.abs(diff)):.2e}')
+print(f'|I_tend| max = {np.abs(I_tend).max():.2e}')
+print(f'|I_adv|  max = {np.abs(I_adv).max():.2e}')
+print(f'ratio adv/tend = {np.abs(I_adv).max()/max(np.abs(I_tend).max(),1e-30):.0f}x')
