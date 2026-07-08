@@ -1,75 +1,176 @@
 # ======================================================================
-#  §16 — PREUVE : advection resolue A(z)  vs  friction Reynolds F(z)
-#  Equilibre stationnaire => A ≈ -F niveau par niveau (implication, pas correl.)
-#  Advection resolue COMPLETE : -(u dx u + v dy u + w dz u), moyennee sur la fenetre
+#  §16 — PREUVE D'IMPLICATION : friction de surface  <=>  advection de u
+#  BLOC AUTONOME. A coller a la suite du notebook large300.
+#
+#  Idee : en regime quasi-stationnaire (d_t ubar ~ 0), le budget de QdM
+#  zonale moyenne impose, niveau par niveau :
+#
+#       0  ~  A(z)  +  F(z)
+#       A = -<u dx u + v dy u + w dz u>   (advection resolue COMPLETE)
+#       F = -1/rho0 d_z(rho0 <u'w'>)      (friction / divergence Reynolds)
+#
+#  => A ~ -F : ce n'est pas une correlation observee, c'est une CONTRAINTE.
+#     La friction ne peut deposer de la QdM sans que l'advection l'evacue,
+#     sinon ubar deriverait (dementi par la stationnarite).
+#
+#  Ce bloc est DEFENSIF : il verifie ce qui existe deja en memoire et ne
+#  recalcule que ce qui manque (rho0, flux_uw, advection resolue).
+#  Prerequis minimaux : path3d, dim_t, dim_z, alt, n_t, t_stat, n_z.
 # ======================================================================
-dt_sec = 6.0 * 3600.0
-adv_prof = np.zeros(n_z)     # advection resolue moyenne <-(u.grad)u>
+import numpy as np, xarray as xr, gc
+import matplotlib.pyplot as plt
 
+# ---------------------------------------------------------------- garde-fous
+_manquants = [v for v in ('path3d','dim_t','dim_z','alt','n_t','t_stat','n_z')
+              if v not in dir()]
+if _manquants:
+    raise NameError(
+        "Variables de setup manquantes : " + ", ".join(_manquants) +
+        ".\nExecute d'abord les cellules §0 (SETUP COMMUN) du notebook.")
+
+Rd, Rv = 287.05, 461.5
+EPSILON = Rd / Rv
+BLOC = 2
+dt_sec = 6.0 * 3600.0
+
+# dx, dy : resolution horizontale (reutilise si deja definie, sinon inference)
+if 'dx' not in dir() or 'dy' not in dir():
+    try:
+        _d = xr.open_dataset(path3d('ua'))
+        _xv = _d['ua'][dim_x].values if 'dim_x' in dir() else _d['ua'][_d['ua'].dims[3]].values
+        dx = float(np.mean(np.diff(_xv)))
+        dy = dx
+        _d.close(); del _d
+    except Exception:
+        dx = dy = 2000.0
+    if abs(dx) <= 1.5:               # coords = indices entiers -> vraie resolution
+        dx = dy = 2000.0
+print(f"dx={dx:.0f} m  dy={dy:.0f} m  dt={dt_sec/3600:.0f} h")
+
+# ------------------------------------------------------- rho0(z) si absent
+if 'rho0' not in dir():
+    print("rho0 absent -> calcul (Tv, niveau par niveau)...")
+    rho0_sum = np.zeros(n_z); n_rho = 0
+    ds_ta = xr.open_dataset(path3d('ta'))
+    ds_pa = xr.open_dataset(path3d('pa'))
+    ds_hus = xr.open_dataset(path3d('hus'))
+    for t0 in range(t_stat, n_t, BLOC):
+        t1 = min(t0 + BLOC, n_t); sl = {dim_t: slice(t0, t1)}
+        T = ds_ta['ta'].isel(sl).values
+        p = ds_pa['pa'].isel(sl).values
+        qv = ds_hus['hus'].isel(sl).values
+        Tv = T * (1 + qv / EPSILON) / (1 + qv)
+        rho = p / (Rd * Tv)
+        rho0_sum += rho.mean(axis=(0, 2, 3)) * (t1 - t0); n_rho += (t1 - t0)
+        del T, p, qv, Tv, rho; gc.collect()
+    ds_ta.close(); ds_pa.close(); ds_hus.close()
+    rho0 = rho0_sum / n_rho
+    print(f"  rho0 surface={rho0[0]:.3f}  ~10km={rho0[np.argmin(np.abs(alt-10000))]:.3f} kg/m3")
+
+# ------------------------------------- flux de Reynolds rho0<u'w'> si absent
+if 'flux_uw' in dir():
+    flux_reynolds = flux_uw
+elif 'flux_zt' in dir():
+    flux_reynolds = flux_zt.mean(axis=1)        # champ (z,t) -> profil moyen
+    print("flux_zt trouve -> profil moyen utilise.")
+else:
+    print("flux de Reynolds absent -> calcul rho0<u'w'> niveau par niveau...")
+    flux_reynolds = np.zeros(n_z)
+    ds_u = xr.open_dataset(path3d('ua'))
+    ds_w = xr.open_dataset(path3d('wa'))
+    for iz in range(n_z):
+        u = ds_u['ua'].isel({dim_t: slice(t_stat, None), dim_z: iz}).values
+        w = ds_w['wa'].isel({dim_t: slice(t_stat, None), dim_z: iz}).values
+        up = u - u.mean(axis=(1, 2), keepdims=True)
+        wp = w - w.mean(axis=(1, 2), keepdims=True)
+        flux_reynolds[iz] = rho0[iz] * (up * wp).mean()
+        del u, w, up, wp; gc.collect()
+        if iz % 15 == 0: print(f"  flux iz={iz}/{n_z-1}")
+    ds_u.close(); ds_w.close()
+
+# force de Reynolds F = -1/rho0 d_z(rho0 <u'w'>)
+F = -np.gradient(flux_reynolds, alt) / rho0
+
+# --------------------------------- advection resolue COMPLETE A(z), moyenne
+# A = -<u dx u + v dy u + w dz u>, moyennee sur toute la fenetre stationnaire
+print("advection resolue complete -> calcul (u,v,w) niveau par niveau...")
+adv_prof = np.zeros(n_z)
 ds_u = xr.open_dataset(path3d('ua'))
 ds_v = xr.open_dataset(path3d('va'))
 ds_w = xr.open_dataset(path3d('wa'))
-
 for iz in range(n_z):
-    iz_lo, iz_hi = max(iz-1,0), min(iz+1,n_z-1)
-    dz = alt[iz_hi]-alt[iz_lo]
-    if dz == 0: dz = alt[1]-alt[0]
+    iz_lo, iz_hi = max(iz - 1, 0), min(iz + 1, n_z - 1)
+    dz = alt[iz_hi] - alt[iz_lo]
+    if dz == 0: dz = alt[1] - alt[0]
     acc, n = 0.0, 0
-    for it in range(t_stat, n_t-1):
-        u_2d = ds_u['ua'].isel({dim_t:it, dim_z:iz}).values
-        v_2d = ds_v['va'].isel({dim_t:it, dim_z:iz}).values
-        w_2d = ds_w['wa'].isel({dim_t:it, dim_z:iz}).values
-        u_lo = ds_u['ua'].isel({dim_t:it, dim_z:iz_lo}).values
-        u_hi = ds_u['ua'].isel({dim_t:it, dim_z:iz_hi}).values
-        dudz = (u_hi-u_lo)/dz
-        adv = -(u_2d*np.gradient(u_2d,dx,axis=1)
-              + v_2d*np.gradient(u_2d,dy,axis=0)
-              + w_2d*dudz)
+    for it in range(t_stat, n_t - 1):
+        u2 = ds_u['ua'].isel({dim_t: it, dim_z: iz}).values
+        v2 = ds_v['va'].isel({dim_t: it, dim_z: iz}).values
+        w2 = ds_w['wa'].isel({dim_t: it, dim_z: iz}).values
+        u_lo = ds_u['ua'].isel({dim_t: it, dim_z: iz_lo}).values
+        u_hi = ds_u['ua'].isel({dim_t: it, dim_z: iz_hi}).values
+        dudz = (u_hi - u_lo) / dz
+        adv = -(u2 * np.gradient(u2, dx, axis=1)
+                + v2 * np.gradient(u2, dy, axis=0)
+                + w2 * dudz)
         acc += adv.mean(); n += 1
-        del u_2d,v_2d,w_2d,u_lo,u_hi,dudz,adv; gc.collect()
-    adv_prof[iz] = acc/n if n else 0.0
-    if iz % 10 == 0: print(f'  iz={iz}/{n_z-1} ({alt[iz]:.0f} m)')
+        del u2, v2, w2, u_lo, u_hi, dudz, adv; gc.collect()
+    adv_prof[iz] = acc / n if n else 0.0
+    if iz % 15 == 0: print(f"  adv iz={iz}/{n_z-1}")
+ds_u.close(); ds_v.close(); ds_w.close(); del ds_u, ds_v, ds_w; gc.collect()
 
-ds_u.close(); ds_v.close(); ds_w.close(); del ds_u,ds_v,ds_w; gc.collect()
+A = adv_prof
 
-# ---- friction de Reynolds (deja calculee au §7) ----
-F = tend_u_glob                      # -1/rho0 d_z(rho0 <u'w'>)
-A = adv_prof                         # advection resolue
-
-# ---- restriction troposphere libre (ou l'equilibre est propre) ----
+# ------------------------------------------------------------------ PREUVE
+# troposphere libre : la ou l'equilibre stationnaire est propre
+# (au-dessus, les ondes de gravite stratospheriques rompent d_t u ~ 0)
 m = (alt >= 2000) & (alt <= 12000)
 Fb, Ab = F[m], A[m]
 
-# ---- preuve #1 : pente de regression A = a*F ----
-a, b = np.polyfit(Fb, Ab, 1)
-r    = np.corrcoef(Fb, Ab)[0,1]
+a, b = np.polyfit(Fb, Ab, 1)                       # A = a*F + b, attendu a~-1
+r = np.corrcoef(Fb, Ab)[0, 1]
+NSE = 1 - np.sum((Ab - (-Fb))**2) / np.sum((Ab - Ab.mean())**2)
+resid = Ab + Fb                                    # ~ d_t u, doit etre << F
+ratio = np.sqrt(np.mean(resid**2)) / np.sqrt(np.mean(Fb**2))
 
-# ---- preuve #2 : NSE (A reconstruit -F) ----
-NSE = 1 - np.sum((Ab-(-Fb))**2)/np.sum((Ab-Ab.mean())**2)
+print("\n" + "=" * 60)
+print("  PREUVE  friction  <=>  advection  (troposphere 2-12 km)")
+print("=" * 60)
+print(f"[#1 pente ] A = {a:+.2f} * F + cste     (a ~ -1 => compensation exacte)")
+print(f"[#2 correl] r(A, F) = {r:+.2f}          (proche de -1 => co-varient a l'oppose)")
+print(f"[#3 NSE   ] NSE(A ; -F) = {NSE:+.2f}    (proche de 1 => A explique par -F)")
+print(f"[#4 residu] RMS(A+F)/RMS(F) = {ratio:.2f}  (<<1 => budget ferme, rien ne fuit)")
+concl = ("l'advection reprend TOUTE la QdM deposee par la friction"
+         if (a < -0.7 and NSE > 0.5 and ratio < 0.5)
+         else "compensation partielle -- verifier termes manquants (pression, ondes)")
+print(f"\n=> {concl}")
 
-# ---- preuve #3 : residu stationnaire << termes ----
-resid = Ab + Fb                      # doit ~ dudt ≈ 0
-ratio = np.sqrt(np.mean(resid**2))/np.sqrt(np.mean(Fb**2))
-
-print(f'\n[#1 pente ] A = {a:+.2f}*F + cste   (a≈-1 => compensation exacte)  r={r:+.2f}')
-print(f'[#2 NSE  ] NSE(A ; -F) = {NSE:+.2f}   (proche de 1 => A explique par -F)')
-print(f'[#3 resid] RMS(A+F)/RMS(F) = {ratio:.2f}   (<<1 => rien ne fuit, budget ferme)')
-
-# ---- figure ----
+# ------------------------------------------------------------------ FIGURE
 fig, ax = plt.subplots(1, 2, figsize=(13, 6))
-ax[0].plot(F*1e5, alt, 'royalblue', lw=2, label=r'Friction $F=-\frac1{\rho_0}\partial_z(\rho_0\overline{u''w''})$')
-ax[0].plot(-A*1e5, alt, 'crimson', lw=2, ls='--', label=r'$-$Advection $-A$')
-ax[0].axhspan(2000,12000,color='k',alpha=.05)
-ax[0].axvline(0,color='grey',lw=.5); ax[0].set_ylim(0,15000)
-ax[0].set_xlabel(r'Tendance ($\times10^{-5}$ m/s²)'); ax[0].set_ylabel('Altitude (m)')
-ax[0].set_title('F et $-A$ se superposent\n(=> friction ⇔ advection)', fontweight='bold')
-ax[0].legend(fontsize=9)
 
-ax[1].scatter(Fb*1e5, Ab*1e5, c=alt[m], cmap='viridis', s=25)
-xl = np.array([Fb.min(), Fb.max()])*1e5
-ax[1].plot(xl, (a*xl/1e5+b)*1e5, 'k--', lw=1.3, label=f'pente {a:+.2f}')
-ax[1].plot(xl, -xl, 'r:', lw=1, label='compensation exacte (-1)')
-ax[1].set_xlabel(r'$F$ ($\times10^{-5}$)'); ax[1].set_ylabel(r'$A$ ($\times10^{-5}$)')
-ax[1].set_title(f'NSE={NSE:+.2f}  r={r:+.2f}', fontweight='bold'); ax[1].legend(fontsize=9)
-cb = fig.colorbar(ax[1].collections[0], ax=ax[1]); cb.set_label('altitude (m)')
+ax[0].plot(F * 1e5, alt, 'royalblue', lw=2,
+           label=r"Friction $F=-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$")
+ax[0].plot(-A * 1e5, alt, 'crimson', lw=2, ls='--',
+           label=r"$-$Advection $-A=\overline{(u\!\cdot\!\nabla)u}$")
+ax[0].axhspan(2000, 12000, color='k', alpha=.05)
+ax[0].axvline(0, color='grey', lw=.5)
+ax[0].set_ylim(0, 15000)
+ax[0].set_xlabel(r'Tendance ($\times10^{-5}$ m s$^{-2}$)')
+ax[0].set_ylabel('Altitude (m)')
+ax[0].set_title("F et $-A$ se superposent\n=> friction $\\Leftrightarrow$ advection",
+                fontweight='bold')
+ax[0].legend(fontsize=9); ax[0].grid(True, alpha=.3)
+
+sc = ax[1].scatter(Fb * 1e5, Ab * 1e5, c=alt[m], cmap='viridis', s=28)
+xl = np.array([Fb.min(), Fb.max()]) * 1e5
+ax[1].plot(xl, (a * xl / 1e5 + b) * 1e5, 'k--', lw=1.3, label=f'pente {a:+.2f}')
+ax[1].plot(xl, -xl, 'r:', lw=1, label='compensation exacte ($-1$)')
+ax[1].set_xlabel(r'$F$ ($\times10^{-5}$)')
+ax[1].set_ylabel(r'$A$ ($\times10^{-5}$)')
+ax[1].set_title(f'NSE={NSE:+.2f}   r={r:+.2f}', fontweight='bold')
+ax[1].legend(fontsize=9); ax[1].grid(True, alpha=.3)
+cb = fig.colorbar(sc, ax=ax[1]); cb.set_label('altitude (m)')
+
+plt.suptitle("§16 — La friction de surface implique l'advection descendante de $\\bar u$",
+             fontweight='bold', y=1.02)
 plt.tight_layout(); plt.show()
