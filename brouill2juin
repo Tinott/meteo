@@ -1,28 +1,108 @@
-import numpy as np
-import matplotlib.pyplot as plt
+# ============================================================
+#  §7a. BUDGET DE QDM MOYENNE : fermeture + anticorrelation
+#   d_t ubar = F_turb + A_vert + R
+#     F_turb = -(1/rho0) d_z(rho0 <u'w'>)   (friction / divergence du flux)
+#     A_vert = - wbar d_z ubar               (advection verticale de ubar)
+#   #1 R petit -> budget ferme ;  #2 corr(F_turb,A_vert)<<0 (permutation)
+# ============================================================
+dt_ubar = np.gradient(ubar_zt, dt_phys, axis=1)
+F_turb  = -np.gradient(flux_zt, alt, axis=0) / rho0[:, None]
+A_vert  = -wbar_zt * dudz_zt
+R       = dt_ubar - (F_turb + A_vert)
 
-# Calcul des termes de l'équation
-# 1. Advection par le mouvement vertical moyen
-term_advection = wbar * dudz
+band = lambda a: a[m28].ravel()
+Ft, Av, Rt, Tt = band(F_turb), band(A_vert), band(R), band(dt_ubar)
+rms = lambda a: np.sqrt(np.mean(a**2))
 
-# 2. Convergence du flux turbulent (friction verticale)
-# Le flux_tot est défini comme rho0 * <u'w'>
-div_flux = np.gradient(flux_tot, alt) / rho0
-term_divergence = -div_flux
+# #1 fermeture
+close = rms(Rt) / rms(Ft + Av)
+NSE   = 1 - np.sum((Tt-(Ft+Av))**2) / np.sum((Tt-Tt.mean())**2)
+print(f"[#1 fermeture]  RMS(R)/RMS(F+A) = {close:.2f}   NSE(d_t u ; F+A) = {NSE:+.2f}")
 
-# Visualisation de la compensation
-plt.figure(figsize=(10, 6))
-plt.plot(term_advection, alt, label=r'Advection: $\bar{w} \frac{\partial \bar{u}}{\partial z}$', color='tab:blue', lw=2)
-plt.plot(term_divergence, alt, label=r'Convergence flux: $-\frac{1}{\rho_0} \frac{\partial \text{Flux}}{\partial z}$', color='tab:red', linestyle='--')
+# #2 anticorrelation, test de permutation
+r = np.corrcoef(Ft, Av)[0, 1]
+rng = np.random.default_rng(0)
+r_null = np.array([np.corrcoef(Ft, rng.permutation(Av))[0,1] for _ in range(2000)])
+p_perm = np.mean(np.abs(r_null) >= np.abs(r))
+print(f"[#2 anticorr ]  corr(F_turb,A_vert) = {r:+.2f}  "
+      f"(|r|_null(95%)={np.percentile(np.abs(r_null),95):.2f}, p={p_perm:.3f}) "
+      f"-> {'significatif' if p_perm<0.05 else 'NON significatif'}")
 
-plt.ylim(0, 5000) 
-plt.xlabel('Accélération [m/s²]')
-plt.ylabel('Altitude [m]')
-plt.title('Compensation des forces dans le bilan de $\bar{u}$')
-plt.legend()
-plt.grid(True, alpha=0.3)
-plt.show()
 
-# Quantification
-correlation = np.corrcoef(term_advection, term_divergence)[0,1]
-print(f"Corrélation entre les deux termes: {correlation:.3f}")
+
+
+
+
+
+
+
+
+
+
+
+
+# ============================================================
+#  §7b. PREUVE D'IMPLICATION — conservation integree (Gauss colonne)
+#  A chaque instant t, integre le budget de 0 a z* :
+#
+#    ∫_0^z* rho0 F_turb dz  =  [rho0<u'w'>](0) - [rho0<u'w'>](z*)   (identite exacte)
+#
+#  = QDM DEPOSEE par la friction sous z*. Cette meme quantite doit
+#  reapparaitre dans la tendance advective integree :
+#
+#    S_fric(z*,t) = ∫_0^z* rho0 F_turb dz
+#    S_adv (z*,t) = ∫_0^z* rho0 A_vert dz
+#
+#  Si S_fric = -S_adv (a la tendance de stockage pres), alors la QDM
+#  perdue au sol N'EST PAS evacuee ailleurs : elle EST le flux advectif
+#  descendant. C'est l'implication, pas une coincidence.
+# ============================================================
+from scipy.integrate import cumulative_trapezoid
+
+rF = rho0[:, None] * F_turb
+rA = rho0[:, None] * A_vert
+rS = rho0[:, None] * dt_ubar
+
+S_fric = cumulative_trapezoid(rF, alt, axis=0, initial=0)   # QDM injectee sous z (z,t)
+S_adv  = cumulative_trapezoid(rA, alt, axis=0, initial=0)
+S_sto  = cumulative_trapezoid(rS, alt, axis=0, initial=0)
+
+# verif identite de Gauss (le flux turbulent EST sa propre integrale de divergence)
+gauss = flux_zt[0][None,:] - flux_zt            # [rho0 uw](0) - [rho0 uw](z)
+err_gauss = np.max(np.abs(S_fric - gauss)) / (np.abs(gauss).max()+1e-30)
+print(f"[Gauss] max err rel(∫rho0 F_turb dz ; flux(0)-flux(z)) = {err_gauss:.1e}  (=0 => exact)")
+
+# a chaque instant : quelle fraction de la friction integree est reprise par l'advection ?
+zstar = 8000.0
+iz = np.argmin(np.abs(alt - zstar))
+sf, sa, ss = S_fric[iz], S_adv[iz], S_sto[iz]           # series temporelles a z*
+
+# regression S_adv = a * S_fric : a proche de -1 => compensation exacte
+A = np.vstack([sf, np.ones_like(sf)]).T
+a, b = np.linalg.lstsq(A, sa, rcond=None)[0]
+r_sa = np.corrcoef(sf, sa)[0,1]
+# bilan de fermeture integree : S_fric + S_adv ~ S_sto (stockage), et |S_sto|<<|S_fric|
+frac_stockage = rms(ss) / rms(sf)
+print(f"[implication] a chaque instant, sous z*={zstar/1000:.0f} km :")
+print(f"   S_adv = {a:+.2f} * S_fric + cste   |  corr = {r_sa:+.2f}")
+print(f"   (pente ~ -1 et corr ~ -1  =>  l'advection reprend TOUTE la QDM de friction)")
+print(f"   stockage residuel RMS(S_sto)/RMS(S_fric) = {frac_stockage:.2f}  (<<1 => rien ne fuit)")
+
+# ---- figure : les deux series se refletent instant par instant ----
+tt = np.arange(n_stat)
+fig, ax = plt.subplots(1, 2, figsize=(13, 4.5))
+ax[0].plot(tt, sf, 'C3', lw=1.5, label=r'$S_{\rm fric}=\int_0^{z^*}\rho_0 F_{\rm turb}\,dz$')
+ax[0].plot(tt, -sa, 'C0', lw=1.5, ls='--', label=r'$-S_{\rm adv}=-\int_0^{z^*}\rho_0 A_{\rm vert}\,dz$')
+ax[0].axhline(0, color='k', lw=.5)
+ax[0].set_xlabel('indice temporel'); ax[0].set_ylabel(r'QDM integree (kg m$^{-1}$s$^{-2}$)')
+ax[0].set_title(f"Instant par instant sous z*={zstar/1000:.0f} km\n"
+                r"friction depose $\Leftrightarrow$ advection evacue")
+ax[0].legend(fontsize=9)
+
+ax[1].scatter(sf, sa, c=tt, cmap='viridis', s=18)
+xline = np.array([sf.min(), sf.max()])
+ax[1].plot(xline, a*xline+b, 'k--', lw=1.3, label=f'pente {a:+.2f}')
+ax[1].plot(xline, -xline, 'r:', lw=1, label='compensation exacte (-1)')
+ax[1].set_xlabel(r'$S_{\rm fric}$'); ax[1].set_ylabel(r'$S_{\rm adv}$')
+ax[1].set_title(f'corr = {r_sa:+.2f}'); ax[1].legend(fontsize=9)
+plt.tight_layout(); plt.show()
