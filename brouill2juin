@@ -1,102 +1,53 @@
 # ============================================================
-#  CONTEXTE — Descente de phase : Hovmoller de ubar, wbar, vbar
+#  FERMETURE  rho0<u'w'>(z) = -tau_s - I_tend - I_adv
+#    I_tend = ∫_0^z rho0 ∂_t ubar dz'      (stockage, ~0 si stationnaire)
+#    I_adv  = ∫_0^z rho0 wbar ∂_z ubar dz' (advection : porte la transmission)
+#  Preuve que la QdM retiree au sol (-tau_s) reapparait en altitude via l'advection.
 # ============================================================
-# vbar_zt si absent (ubar_zt, wbar_zt viennent du setup ; va pas encore lu)
-if 'vbar_zt' not in dir():
-    vbar_zt = np.zeros((n_z, n_stat))
-    ds_v = xr.open_dataset(path3d('va'))
-    for iz in range(n_z):
-        v = ds_v['va'].isel({dim_t: idx_stat, dim_z: iz}).values
-        vbar_zt[iz] = v.mean(axis=(1, 2))
-        del v; gc.collect()
-    ds_v.close(); del ds_v; gc.collect()
-    print('vbar_zt calcule.')
+from scipy.integrate import cumulative_trapezoid
 
-tt = np.arange(n_stat)
+# --- profils moyens dans le temps ---
+flux_prof = flux_zt.mean(axis=1) if 'flux_zt' in dir() else flux_uw
+ubar_prof = ubar_zt.mean(axis=1)
 
-def hovmoller(ax, field_zt, label):
-    """Anomalie temporelle + lissage vertical, puis pcolormesh centre sur 0."""
-    prime = field_zt - field_zt.mean(axis=1, keepdims=True)
-    sm = uniform_filter1d(prime, size=3, axis=0, mode='nearest')
-    v = np.percentile(np.abs(sm[mask_show]), 98) + 1e-9
-    im = ax.pcolormesh(tt + t_stat, zkm[mask_show], sm[mask_show], cmap='RdBu_r',
-                       norm=TwoSlopeNorm(0, -v, v), shading='auto')
-    ax.grid(False)
-    ax.axhspan(2, 8, color='k', alpha=.06); ax.set_ylim(0, Z_TOP_KM)
-    ax.set_xlabel('t'); ax.set_ylabel('z (km)')
-    ax.set_title(label)
-    return im
+# --- contrainte de surface tau_s (extremum couche limite) ---
+iz_bl = np.argmax(np.abs(flux_prof[alt < 2000]))
+tau_s = -flux_prof[iz_bl]
 
-fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
-for ax, (fld, lab) in zip(axes, [
-        (ubar_zt, r"Hovmoller $\bar u'(z,t)$"),
-        (wbar_zt, r"Hovmoller $\bar w'(z,t)$"),
-        (vbar_zt, r"Hovmoller $\bar v'(z,t)$")]):
-    im = hovmoller(ax, fld, lab)
-    fig.colorbar(im, ax=ax, pad=.02, label='m/s')
+# --- les deux termes, champ (z,t) puis moyenne temporelle ---
+dt_ubar = np.gradient(ubar_zt, dt_phys, axis=1)   # ∂_t ubar
+dz_ubar = np.gradient(ubar_zt, alt,     axis=0)   # ∂_z ubar
 
-plt.suptitle("Anomalies moyennes (bandes descendantes = descente de phase)", fontweight='bold')
+integrand_tend = (rho0[:, None] * dt_ubar).mean(axis=1)
+integrand_adv  = (rho0[:, None] * wbar_zt * dz_ubar).mean(axis=1)
+
+# --- integrales cumulees de 0 a z ---
+I_tend = cumulative_trapezoid(integrand_tend, alt, initial=0)
+I_adv  = cumulative_trapezoid(integrand_adv,  alt, initial=0)
+
+# --- reconstruction et verification ---
+flux_reconstruit = -tau_s - I_tend - I_adv
+err = np.max(np.abs(flux_reconstruit - flux_prof)) / np.max(np.abs(flux_prof))
+
+print(f'tau_s (surface)      = {tau_s:+.4f} kg m-1 s-2')
+print(f'|I_tend| max         = {np.abs(I_tend).max():.2e}  (petit => stationnaire)')
+print(f'|I_adv|  max         = {np.abs(I_adv).max():.2e}  (porte la transmission)')
+print(f'erreur fermeture     = {err:.1%}')
+
+# --- figure : flux direct vs reconstruit, et les deux contributions ---
+fig, ax = plt.subplots(1, 2, figsize=(13, 6), sharey=True)
+ax[0].plot(flux_prof, alt, 'k', lw=2.5, label=r"$\rho_0\overline{u'w'}$ direct")
+ax[0].plot(flux_reconstruit, alt, 'crimson', lw=1.8, ls='--',
+           label=r'reconstruit $-\tau_s-I_{tend}-I_{adv}$')
+ax[0].axvline(0, color='grey', lw=.5); ax[0].set_ylim(0, 15000)
+ax[0].set_xlabel(r'flux ($\times$ kg m$^{-1}$s$^{-2}$)'); ax[0].set_ylabel('z (m)')
+ax[0].set_title('Fermeture du flux', fontweight='bold'); ax[0].legend(fontsize=9)
+
+ax[1].plot(np.full_like(alt, -tau_s), alt, 'grey', lw=1.5, label=r'$-\tau_s$ (sol)')
+ax[1].plot(-I_tend, alt, 'royalblue', lw=2, label=r'$-I_{tend}$ (stockage)')
+ax[1].plot(-I_adv,  alt, 'seagreen',  lw=2, label=r'$-I_{adv}$ (advection)')
+ax[1].axvline(0, color='grey', lw=.5)
+ax[1].set_xlabel(r'contribution'); ax[1].set_title('Decomposition', fontweight='bold')
+ax[1].legend(fontsize=9)
+plt.suptitle('QdM du sol transmise en altitude via advection', fontweight='bold')
 plt.tight_layout(); plt.show()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# §1 — Flux de Reynolds rho0<u'w'> et contrainte de surface tau_s
-flux_uw = np.zeros(n_z)
-ds_u=xr.open_dataset(path3d('ua')); ds_w=xr.open_dataset(path3d('wa'))
-for iz in range(n_z):
-    u=ds_u['ua'].isel({dim_t:idx_stat,dim_z:iz}).values
-    w=ds_w['wa'].isel({dim_t:idx_stat,dim_z:iz}).values
-    up=u-u.mean(axis=(1,2),keepdims=True); wp=w-w.mean(axis=(1,2),keepdims=True)
-    flux_uw[iz]=rho0[iz]*(up*wp).mean(); del u,w,up,wp; gc.collect()
-ds_u.close(); ds_w.close()
-
-# tau_s : extremum du flux dans la couche limite (proxy, cf. tes runs precedents)
-iz_bl = np.argmax(np.abs(flux_uw[alt<2000]))
-tau_s = -flux_uw[iz_bl]
-print(f'tau_s ~ {tau_s:+.4f} kg m-1 s-2 (a z={alt[iz_bl]:.0f} m)')
-
-
-
-
-# §2 — Divergence du flux = tendance de friction sur ubar
-F_turb = -np.gradient(flux_uw, alt)/rho0
-fig,ax=plt.subplots(1,2,figsize=(12,6),sharey=True)
-ax[0].plot(flux_uw,alt,'royalblue',lw=2); ax[0].axvline(0,color='grey',lw=.5)
-ax[0].set_xlabel(r"$\rho_0\overline{u'w'}$"); ax[0].set_ylabel('z (m)')
-ax[0].set_title('Flux : max au sol, decroit vers le haut',fontweight='bold')
-ax[0].set_ylim(0,15000)
-ax[1].plot(F_turb*1e5,alt,'crimson',lw=2); ax[1].axvline(0,color='grey',lw=.5)
-ax[1].set_xlabel(r'$F_{turb}$ ($\times10^{-5}$ m/s²)')
-ax[1].set_title('Divergence : signe = depot/retrait de QdM',fontweight='bold')
-plt.tight_layout(); plt.show()
-
-
-
-# §3 — QdM cumulee injectee sous z (identite de Gauss, forme flux directe)
-QDM_cum = flux_uw[0] - flux_uw          # = integrale exacte de rho0 F_turb
-fig,ax=plt.subplots(figsize=(7,6))
-ax.plot(QDM_cum,alt,'darkgreen',lw=2)
-ax.axvline(0,color='grey',lw=.5); ax.set_ylim(0,15000)
-ax.set_xlabel(r'$\int_0^z \rho_0 F_{turb}\,dz$  (QdM cumulee)')
-ax.set_ylabel('z (m)')
-ax.set_title('QdM retiree au sol, redistribuee en altitude',fontweight='bold')
-plt.tight_layout(); plt.show()
-print(f'QdM totale injectee (sol->tropopause) = {QDM_cum[np.argmin(np.abs(alt-15000))]:+.4f}')
