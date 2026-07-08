@@ -1,31 +1,28 @@
-# ============================================================
-#  §1. PREUVE : Bilan de la quantité de mouvement
-#  On compare l'advection verticale et la divergence du flux
-# ============================================================
+import numpy as np
+import matplotlib.pyplot as plt
 
 # Calcul des termes de l'équation
-# 1. Advection par le mouvement vertical moyen (subsidence)
-# Dans une RCE, wbar est généralement négatif (subsidence) dans les zones sèches/hors panaches
+# 1. Advection par le mouvement vertical moyen
 term_advection = wbar * dudz
 
-# 2. Convergence du flux turbulent (la "friction" verticale)
-# flux_tot = rho0 * <u'w'>, donc la divergence est d(flux_tot/rho0)/dz
-# On utilise le signe opposé pour vérifier si - (1/rho0) * d(flux)/dz équilibre l'advection
+# 2. Convergence du flux turbulent (friction verticale)
+# Le flux_tot est défini comme rho0 * <u'w'>
 div_flux = np.gradient(flux_tot, alt) / rho0
 term_divergence = -div_flux
 
-# Plot de la compensation
-plt.figure(figsize=(8, 6))
+# Visualisation de la compensation
+plt.figure(figsize=(10, 6))
 plt.plot(term_advection, alt, label=r'Advection: $\bar{w} \frac{\partial \bar{u}}{\partial z}$', color='tab:blue', lw=2)
 plt.plot(term_divergence, alt, label=r'Convergence flux: $-\frac{1}{\rho_0} \frac{\partial \text{Flux}}{\partial z}$', color='tab:red', linestyle='--')
 
-plt.ylim(0, 5000) # Focalisons sur la couche limite et basse troposphère
+plt.ylim(0, 5000) 
 plt.xlabel('Accélération [m/s²]')
 plt.ylabel('Altitude [m]')
-plt.title('Compensation des forces dans le bilan de $\\bar{u}$')
+plt.title('Compensation des forces dans le bilan de $\bar{u}$')
 plt.legend()
 plt.grid(True, alpha=0.3)
+plt.show()
 
-# Calcul de la corrélation pour quantifier la preuve
+# Quantification
 correlation = np.corrcoef(term_advection, term_divergence)[0,1]
 print(f"Corrélation entre les deux termes: {correlation:.3f}")
