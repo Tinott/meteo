@@ -25,3 +25,12 @@ plt.tight_layout(); plt.show()
 print(f'|I_tend| max = {np.abs(I_tend).max():.2e}')
 print(f'|I_adv|  max = {np.abs(I_adv).max():.2e}')
 print(f'ratio adv/tend = {np.abs(I_adv).max()/max(np.abs(I_tend).max(),1e-30):.0f}x')
+
+
+
+print("wbar_zt RMS     :", np.sqrt(np.mean(wbar_zt**2)))
+print("wbar_zt mean    :", wbar_zt.mean())
+print("dz_ubar RMS     :", np.sqrt(np.mean(dz_ubar**2)))
+integrand = (rho0[:,None]*wbar_zt*dz_ubar).mean(1)
+print("integrand RMS   :", np.sqrt(np.mean(integrand**2)))
+print("integrand [:5]  :", integrand[:5])
