@@ -1,157 +1,31 @@
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy.signal import hilbert, detrend
-from scipy.ndimage import uniform_filter1d
-from matplotlib.colors import TwoSlopeNorm
-
-def analyze_wave_and_reynolds(u_4d, w_4d, z_coords, t_coords, dt_phys):
-    """
-    Relie la descente de phase de u au flux de Reynolds de maniere directe.
-    
-    Parametres:
-    - u_4d, w_4d : Champs bruts du modele (temps, z, y, x)
-    - z_coords   : Altitude en metres (z,)
-    - t_coords   : Temps (temps,)
-    - dt_phys    : Pas de temps en secondes entre deux sorties
-    """
-    
-    # --------------------------------------------------------
-    # 1. CALCULS DES ECOULEMENTS MOYENS ET PERTURBATIONS
-    # --------------------------------------------------------
-    print("1. Calcul des moyennes et perturbations...")
-    # Moyennes horizontales (temps, z)
-    ubar = np.mean(u_4d, axis=(2, 3))
-    wbar = np.mean(w_4d, axis=(2, 3))
-    
-    # Perturbations locales
-    u_prime = u_4d - ubar[:, :, np.newaxis, np.newaxis]
-    w_prime = w_4d - wbar[:, :, np.newaxis, np.newaxis]
-    
-    # Flux de Reynolds reel (moyenne du produit des perturbations)
-    reynolds_flux_real = np.mean(u_prime * w_prime, axis=(2, 3))
-    
-    # Anomalies temporelles de u pour l'analyse de phase
-    u_anomaly = ubar - ubar.mean(axis=0, keepdims=True)
-    u_smoothed = uniform_filter1d(u_anomaly, size=3, axis=0, mode="nearest")
-
-    # --------------------------------------------------------
-    # 2. ANALYSE DE PHASE (HILBERT) ET CISAILLEMENT
-    # --------------------------------------------------------
-    print("2. Analyse de la phase descendante...")
-    # On applique Hilbert sur l'axe du temps (axis=0 dans ubar si les dimensions sont temps, z)
-    # Pour s'assurer de la coherence, on transpose temporairement en (z, temps) pour Hilbert
-    u_smooth_zt = u_smoothed.T
-    analytic = hilbert(detrend(u_smooth_zt, axis=1), axis=1)
-    phase = np.unwrap(np.angle(analytic), axis=1)
-    
-    # Gradients de la phase
-    dphi_dt = np.gradient(phase, dt_phys, axis=1)
-    dphi_dz = np.gradient(phase, z_coords, axis=0)
-    
-    # Vitesse de phase verticale (en m/s)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        cz = - dphi_dt / dphi_dz
-    
-    # Cisaillement vertical du vent moyen : d(u_bar)/dz
-    dubar_dz = np.gradient(u_smooth_zt, z_coords, axis=0)
-
-    # --------------------------------------------------------
-    # 3. PARAMETRISATION DU FLUX DE REYNOLDS (MODELE K_z)
-    # --------------------------------------------------------
-    print("3. Calcul de la parametrisation du flux...")
-    # On cherche a modeliser le flux : Flux = - Kz * du/dz
-    # On estime un coefficient de diffusion Kz moyen constant pour le rendu visuel
-    # Dans la realite, Kz depend de l'activite convective
-    reynolds_zt = reynolds_flux_real.T
-    
-    # Estimation empirique de Kz pour l'alignement des echelles
-    Kz = 50.0  # Valeur standard de diffusivite turbulente (m2/s)
-    reynolds_param = - Kz * dubar_dz
-
-    # --------------------------------------------------------
-    # 4. GRAPHIQUE TRIPLE HAUTE RESOLUTION
-    # --------------------------------------------------------
-    print("4. Generation du graphique de synthese...")
-    fig, axes = plt.subplots(1, 3, figsize=(20, 6), sharey=True)
-    z_km = z_coords / 1000.0  # Conversion en km pour l'affichage
-    
-    # Limites pour l'affichage de la troposphere (ex: 0 à 15 km)
-    z_max_plot = 15.0 
-    
-    # Panel 1 : La cause (L'onde qui descend)
-    ax1 = axes[0]
-    v1 = np.percentile(np.abs(u_smooth_zt), 98) + 1e-9
-    im1 = ax1.pcolormesh(t_coords, z_km, u_smooth_zt, cmap="RdBu_r",
-                         norm=TwoSlopeNorm(0, -v1, v1), shading="auto")
-    ax1.set_title("Onde de vent zonal (u prime)", fontsize=13, fontweight="bold")
-    ax1.set_ylabel("Altitude (km)", fontsize=12)
-    ax1.set_xlabel("Temps (indices)", fontsize=12)
-    fig.colorbar(im1, ax=ax1, label="m/s")
-    
-    # Panel 2 : Le flux de Reynolds REEL extrait de la simulation
-    ax2 = axes[1]
-    v2 = np.percentile(np.abs(reynolds_zt), 98) + 1e-9
-    im2 = ax2.pcolormesh(t_coords, z_km, reynolds_zt, cmap="PuOr_r",
-                         norm=TwoSlopeNorm(0, -v2, v2), shading="auto")
-    ax2.set_title("Flux de Reynolds REEL (u'w')", fontsize=13, fontweight="bold")
-    ax2.set_xlabel("Temps (indices)", fontsize=12)
-    fig.colorbar(im2, ax=ax2, label="m2/s2")
-    
-    # Panel 3 : Le flux PARAMETRE (Friction induite par le cisaillement de l'onde)
-    ax3 = axes[2]
-    v3 = np.percentile(np.abs(reynolds_param), 98) + 1e-9
-    im3 = ax3.pcolormesh(t_coords, z_km, reynolds_param, cmap="PuOr_r",
-                         norm=TwoSlopeNorm(0, -v3, v3), shading="auto")
-    ax3.set_title("Flux de Reynolds PARAMETRE (-Kz * du/dz)", fontsize=13, fontweight="bold")
-    ax3.set_xlabel("Temps (indices)", fontsize=12)
-    fig.colorbar(im3, ax=ax3, label="m2/s2")
-    
-    # Ajustements des axes
-    for ax in axes:
-        ax.set_ylim(0, z_max_plot)
-        ax.grid(True, alpha=0.3, linestyle="--")
-        
-    plt.tight_layout()
-    plt.show()
-    
-    # Calcul de la correlation globale entre reel et parametre pour verifier le resultat
-    valid = np.isfinite(reynolds_zt) & np.isfinite(reynolds_param)
-    corr = np.corrcoef(reynolds_zt[valid], reynolds_param[valid])[0, 1]
-    
-    print("========================================================")
-    print(f"DIAGNOSTIC DE FOU : Correlation Reel vs Parametre = {corr*100:.1f}%")
-    print("Vitesse de phase moyenne de l'onde (cz) = ", np.nanmedian(cz)*100, " cm/s")
-    print("========================================================")
-
-    return u_smooth_zt, reynolds_zt, reynolds_param
-
 # ============================================================
-# BLOC DE TEST (Avec structures ondulatoires simulees)
+#  §1. PREUVE : Bilan de la quantité de mouvement
+#  On compare l'advection verticale et la divergence du flux
 # ============================================================
-if __name__ == "__main__":
-    # Creation d'un faux jeu de donnees structure avec une phase descendante
-    nt, nz, ny, nx = 60, 50, 40, 40
-    z_coords = np.linspace(0, 20000, nz) # 0 à 20 km
-    t_coords = np.arange(nt)
-    dt_phys = 21600 # 6 heures en secondes
-    
-    # Generation d'une onde descendante mathematique pour u
-    z_mesh, t_mesh = np.meshgrid(z_coords, t_coords, indexing='ij')
-    # Onde : phase = k*z - omega*t -> les lignes de phase constante descendent si omega et k sont positifs
-    kz_test = 2 * np.pi / 6000.0   # Longueur d'onde de 6km
-    omega_test = 2 * np.pi / (15 * 86400) # Periode de 15 jours
-    wave = 5.0 * np.sin(kz_test * z_mesh + omega_test * (t_mesh * dt_phys))
-    
-    # On reconstruit des champs 4D artificiels bases sur cette onde
-    u_mock = np.zeros((nt, nz, ny, nx))
-    w_mock = np.zeros((nt, nz, ny, nx))
-    
-    for t in range(nt):
-        for z in range(nz):
-            # On injecte l'onde dans la moyenne, plus un bruit coherent qui simule la turbulence
-            u_mock[t, z, :, :] = wave[z, t] + np.random.randn(ny, nx) * 2.0
-            # w' est genere pour etre correle negativement au cisaillement vertical theorique
-            w_mock[t, z, :, :] = np.random.randn(ny, nx) * 0.5
-            
-    # Execution
-    _ = analyze_wave_and_reynolds(u_mock, w_mock, z_coords, t_coords, dt_phys)
+
+# Calcul des termes de l'équation
+# 1. Advection par le mouvement vertical moyen (subsidence)
+# Dans une RCE, wbar est généralement négatif (subsidence) dans les zones sèches/hors panaches
+term_advection = wbar * dudz
+
+# 2. Convergence du flux turbulent (la "friction" verticale)
+# flux_tot = rho0 * <u'w'>, donc la divergence est d(flux_tot/rho0)/dz
+# On utilise le signe opposé pour vérifier si - (1/rho0) * d(flux)/dz équilibre l'advection
+div_flux = np.gradient(flux_tot, alt) / rho0
+term_divergence = -div_flux
+
+# Plot de la compensation
+plt.figure(figsize=(8, 6))
+plt.plot(term_advection, alt, label=r'Advection: $\bar{w} \frac{\partial \bar{u}}{\partial z}$', color='tab:blue', lw=2)
+plt.plot(term_divergence, alt, label=r'Convergence flux: $-\frac{1}{\rho_0} \frac{\partial \text{Flux}}{\partial z}$', color='tab:red', linestyle='--')
+
+plt.ylim(0, 5000) # Focalisons sur la couche limite et basse troposphère
+plt.xlabel('Accélération [m/s²]')
+plt.ylabel('Altitude [m]')
+plt.title('Compensation des forces dans le bilan de $\\bar{u}$')
+plt.legend()
+plt.grid(True, alpha=0.3)
+
+# Calcul de la corrélation pour quantifier la preuve
+correlation = np.corrcoef(term_advection, term_divergence)[0,1]
+print(f"Corrélation entre les deux termes: {correlation:.3f}")
