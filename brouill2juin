@@ -1,130 +1,97 @@
-# ============================================================
-#  SEPARATION ONDES / TURBULENCE DU FLUX DE MOMENT
-#  Le flux rho0<u'w'>(z,t) est decompose en :
-#    - partie ONDULATOIRE : energie concentree autour de la relation
-#      de dispersion omega ~ c_z * k_z (bandes coherentes descendantes)
-#    - partie TURBULENTE : le reste (bruit large bande, incoherent)
-#  On filtre dans l'espace (k_z, omega) par un masque autour du mode.
-# ============================================================
-from numpy.fft import fft2, ifft2, fftfreq, fftshift, ifftshift
-import numpy as np, matplotlib.pyplot as plt
-from scipy.signal import detrend
+import numpy as np
+import matplotlib.pyplot as plt
 
-# --- champ de travail : flux resolu, bande 2-8 km ---
-band  = m28
-F_zt  = flux_zt[band]                      # (nz, nt) Pa
-nz, nt = F_zt.shape
-dz    = np.mean(np.diff(alt[band]))        # m
-zk    = zkm[band]
+def compute_wave_dynamics(u_4d, w_4d, rho0_1d, z_coords, t_coords):
+    """
+    Calcule le flux de Reynolds et son forçage sur l'écoulement moyen.
+    
+    Paramètres :
+    - u_4d, w_4d : Champs 4D numpy du vent zonal et vertical (temps, z, y, x)
+    - rho0_1d    : Profil de densité moyenne 1D (z,)
+    - z_coords   : Coordonnées verticales 1D (z,) en mètres
+    - t_coords   : Coordonnées temporelles 1D (temps,)
+    """
+    
+    print("1. Calcul des moyennes spatiales (u_bar, w_bar)...")
+    # Moyenne sur les axes y (2) et x (3)
+    u_bar = np.mean(u_4d, axis=(2, 3)) # Dimensions: (temps, z)
+    w_bar = np.mean(w_4d, axis=(2, 3)) # Dimensions: (temps, z)
 
-# on retire la moyenne temporelle (etat stationnaire) : on separe les FLUCTUATIONS
-F_mean = F_zt.mean(axis=1, keepdims=True)  # profil moyen = transport "permanent"
-F_ano  = F_zt - F_mean
+    print("2. Extraction des perturbations (u', w')...")
+    # On ajoute des dimensions vides (np.newaxis) pour permettre le broadcasting (temps, z, 1, 1)
+    u_prime = u_4d - u_bar[:, :, np.newaxis, np.newaxis]
+    w_prime = w_4d - w_bar[:, :, np.newaxis, np.newaxis]
 
-# --- FFT 2D des fluctuations ---
-win = np.hanning(nz)[:,None] * np.hanning(nt)[None,:]
-Fw  = F_ano * win
-G   = fft2(Fw)                             # spectre complexe
-kz  = fftfreq(nz, d=dz)      * 2*np.pi      # rad/m
-om  = fftfreq(nt, d=dt_phys) * 2*np.pi      # rad/s
-KZ, OM = np.meshgrid(kz, om, indexing='ij')
+    print("3. Calcul du flux de Reynolds moyen (u'w')...")
+    # Produit des perturbations puis moyenne horizontale
+    uw_flux = np.mean(u_prime * w_prime, axis=(2, 3)) # Dimensions: (temps, z)
 
-# --- relation de dispersion mesuree (pic du spectre, demi-plan kz>0) ---
-P = np.abs(G)**2
-msk_peak = (KZ > 1e-9) & (np.abs(OM) > 1e-9)
-i,j = np.unravel_index(np.argmax(np.where(msk_peak, P, 0)), P.shape)
-kz_p, om_p = KZ[i,j], OM[i,j]
-cz_p = -om_p/kz_p
-print(f'Mode dominant : c_z={cz_p*100:+.2f} cm/s | '
-      f'lambda_z={2*np.pi/abs(kz_p)/1000:.1f} km | T={2*np.pi/abs(om_p)/3600/24:.1f} j')
+    print("4. Calcul de la divergence du flux (Forçage)...")
+    # Calcul de : - (1 / rho0) * d(rho0 * uw_flux) / dz
+    
+    # Étape A : Multiplier par la densité
+    # rho0_1d est (z,), uw_flux est (temps, z). On ajuste pour le broadcasting.
+    momentum_flux = uw_flux * rho0_1d[np.newaxis, :] 
+    
+    # Étape B : Dérivée verticale
+    # np.gradient gère proprement les différences finies (y compris aux bords)
+    # L'axe 1 correspond à l'altitude z
+    d_flux_dz = np.gradient(momentum_flux, z_coords, axis=1)
+    
+    # Étape C : Division par la densité et inversion du signe
+    forcing = - (1.0 / rho0_1d[np.newaxis, :]) * d_flux_dz
 
-# --- masque ONDULATOIRE : proche de la ligne omega = -c_z * kz ---
-# distance de chaque (kz,om) a la droite de dispersion, normalisee
-# tolerance : on garde ce qui est a moins de 'tol' de la droite ET a grande echelle
-line   = -cz_p * KZ                          # omega attendu pour le mode
-sigma  = 0.5 * abs(om_p)                     # largeur de bande autour de la ligne
-big    = np.abs(KZ) <= 3*abs(kz_p)           # on limite aux grandes echelles verticales
-W_mask = (np.exp(-((OM-line)**2)/(2*sigma**2)) > 0.5) & big & msk_peak
-# on symetrise (spectre d'un champ reel : conjugue en (-kz,-om))
-W_mask = W_mask | W_mask[::-1, ::-1]
+    # ---------------------------------------------------------
+    # 5. VISUALISATION (Diagrammes de Hovmöller)
+    # ---------------------------------------------------------
+    print("5. Génération de la figure...")
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6), sharey=True)
+    
+    # Note : On transpose (.T) les matrices pour avoir (Z, Temps) au lieu de (Temps, Z)
+    
+    # Sous-figure 1 : Le vent moyen (L'ondulation)
+    ax1 = axes[0]
+    c1 = ax1.contourf(t_coords, z_coords, u_bar.T, levels=20, cmap='RdBu_r')
+    ax1.set_title(r'Vent zonal moyen $\bar{u}$', fontsize=14)
+    ax1.set_ylabel('Altitude (m)', fontsize=12)
+    ax1.set_xlabel('Temps', fontsize=12)
+    fig.colorbar(c1, ax=ax1, label='m/s')
 
-# --- reconstruction des deux composantes ---
-G_wave = np.where(W_mask, G, 0)
-G_turb = G - G_wave
-Fano_wave = np.real(ifft2(G_wave)) / np.where(win>1e-6, win, 1)  # de-fenetrage
-Fano_turb = np.real(ifft2(G_turb)) / np.where(win>1e-6, win, 1)
-# bords peu fiables (fenetre ~0) : on masque doucement
-edge = win < 0.05
-Fano_wave[edge] = np.nan; Fano_turb[edge] = np.nan
+    # Sous-figure 2 : Le flux de Reynolds
+    ax2 = axes[1]
+    c2 = ax2.contourf(t_coords, z_coords, uw_flux.T, levels=20, cmap='PuOr_r')
+    ax2.set_title(r'Flux de Reynolds $\overline{u\'w\'}$', fontsize=14)
+    ax2.set_xlabel('Temps', fontsize=12)
+    fig.colorbar(c2, ax=ax2, label='m²/s²')
 
-# --- profils de flux : moyen, ondulatoire, turbulent ---
-# le flux MOYEN reste dans F_mean (transport permanent, non oscillant)
-flux_wave_prof = np.nanmean(np.abs(Fano_wave), axis=1)   # amplitude rms ondes
-flux_turb_prof = np.nanmean(np.abs(Fano_turb), axis=1)   # amplitude rms turb
-flux_perm_prof = np.abs(F_mean[:,0])                     # flux permanent |moyen|
+    # Sous-figure 3 : Le forçage (L'impact du flux sur le vent)
+    ax3 = axes[2]
+    # On centre la colormap sur zéro pour bien voir les phases d'accélération/décélération
+    c3 = ax3.contourf(t_coords, z_coords, forcing.T, levels=20, cmap='PiYG', vmin=-np.max(np.abs(forcing)), vmax=np.max(np.abs(forcing)))
+    ax3.set_title(r'Forçage de l\'écoulement $-\frac{1}{\rho_0} \frac{\partial (\rho_0 \overline{u\'w\'})}{\partial z}$', fontsize=14)
+    ax3.set_xlabel('Temps', fontsize=12)
+    fig.colorbar(c3, ax=ax3, label='m/s²')
 
-# --- fraction ondulatoire du flux FLUCTUANT, par altitude ---
-frac_wave = flux_wave_prof / (flux_wave_prof + flux_turb_prof + 1e-15)
+    plt.tight_layout()
+    plt.show()
 
-# ============================================================
-#  FIGURE
-# ============================================================
-fig, ax = plt.subplots(1, 3, figsize=(16, 5.5), sharey=True)
+    return u_bar, uw_flux, forcing
 
-# (A) variance expliquee : energie du champ ondes vs turb
-ax[0].plot(flux_perm_prof, zk, 'k',       lw=2.4, label='flux permanent |moyen|')
-ax[0].plot(flux_wave_prof, zk, 'tab:red', lw=1.8, label='fluctuation ONDES (rms)')
-ax[0].plot(flux_turb_prof, zk, 'tab:blue',lw=1.8, label='fluctuation TURB (rms)')
-ax[0].set_xlabel(r"$|\rho_0\langle u'w'\rangle|$ (Pa)"); ax[0].set_ylabel('z (km)')
-ax[0].set_title('(A) Amplitude du flux\npermanent / ondes / turbulence')
-ax[0].legend(fontsize=8); ax[0].set_ylim(zk.min(), zk.max())
-
-# (B) fraction ondulatoire du flux fluctuant vs z
-ax[1].plot(frac_wave*100, zk, 'tab:purple', lw=2)
-ax[1].fill_betweenx(zk, 0, frac_wave*100, alpha=.15, color='tab:purple')
-ax[1].axvline(50, color='grey', ls='--', lw=.8)
-ax[1].set_xlabel('part ONDULATOIRE du flux fluctuant (%)')
-ax[1].set_title('(B) Qui porte les fluctuations\nde flux de moment ?')
-ax[1].set_xlim(0, 100)
-
-# (C) le spectre 2D avec le masque ondulatoire superpose
-Psh = fftshift(np.log10(P + P.max()*1e-6))
-ax[2].pcolormesh(fftshift(om)*86400, fftshift(kz)*1000, Psh,
-                 cmap='magma', shading='auto')
-ax[2].contour(fftshift(om)*86400, fftshift(kz)*1000,
-              fftshift(W_mask).astype(float), levels=[0.5],
-              colors='cyan', linewidths=1.5)
-ax[2].set_xlabel(r'$\omega$ (rad/jour)'); ax[2].set_ylabel(r'$k_z$ (rad/km)')
-ax[2].set_title('(C) Spectre 2D $\\log|G|^2$\n(cyan = bande ondulatoire retenue)')
-
-fig.suptitle('SEPARATION ONDES / TURBULENCE DU FLUX DE MOMENT (bande 2-8 km)',
-             fontweight='bold', y=1.02)
-fig.tight_layout(); plt.show()
-
-# ============================================================
-#  BILAN CHIFFRE
-# ============================================================
-# fraction de la VARIANCE totale du flux fluctuant portee par les ondes
-var_wave = np.nansum(Fano_wave**2)
-var_turb = np.nansum(Fano_turb**2)
-frac_var_wave = var_wave/(var_wave+var_turb)
-
-# poids des fluctuations vs flux permanent (integre sur la bande)
-E_perm = np.trapz(flux_perm_prof**2, alt[band])
-E_fluc = np.trapz((flux_wave_prof**2+flux_turb_prof**2), alt[band])
-
-print('\n' + '='*60)
-print(' SEPARATION ONDES / TURBULENCE — bande 2-8 km')
-print('='*60)
-print(f'  Fraction ONDULATOIRE de la variance du flux fluctuant : {frac_var_wave*100:.0f}%')
-print(f'  Fraction TURBULENTE                                    : {(1-frac_var_wave)*100:.0f}%')
-print(f'  Part moyenne ondulatoire par altitude (mediane)        : {np.nanmedian(frac_wave)*100:.0f}%')
-print(f'  Poids fluctuations / flux permanent (energie)          : {E_fluc/(E_perm+1e-15):.2f}')
-print('='*60)
-if frac_var_wave > 0.3:
-    print('=> Une part NON NEGLIGEABLE du transport de moment fluctuant est')
-    print('   ondulatoire (coherente, non-locale). Une parametrisation CMT')
-    print('   purement turbulente (EDMF) MANQUE ce canal.')
-else:
-    print('=> Le transport de moment est domine par la turbulence incoherente ;')
-    print('   la contribution ondulatoire au flux reste marginale.')
+# =========================================================
+# EXEMPLE D'UTILISATION (avec des dimensions fictives)
+# =========================================================
+if __name__ == "__main__":
+    # Remplacer ces lignes par le chargement de vos données Méso-NH
+    nt, nz, ny, nx = 50, 40, 100, 100
+    z_coords = np.linspace(0, 32500, nz) # 0 à 32.5 km
+    t_coords = np.arange(nt)
+    
+    # Création d'un profil de densité (décroissance exponentielle standard)
+    rho0 = 1.2 * np.exp(-z_coords / 8000) 
+    
+    # Données aléatoires pour tester que le code tourne
+    u_mock = np.random.randn(nt, nz, ny, nx)
+    w_mock = np.random.randn(nt, nz, ny, nx)
+    
+    # Appel de la fonction
+    u_bar, uw_flux, forcing = compute_wave_dynamics(u_mock, w_mock, rho0, z_coords, t_coords)
