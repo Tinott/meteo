@@ -1,36 +1,125 @@
 # ============================================================
-#  -I_tend(z)  et  -I_adv(z)  separement, puis leur somme
-#    I_tend = ∫_0^z rho0 ∂_t ubar dz'
-#    I_adv  = ∫_0^z rho0 wbar ∂_z ubar dz'
+#  §0bis — DÉCOMPOSITION DU BILAN DE QdM PAR RÉGION (humide Ac / sèche As)
+#  Idée (photo) : partir de   rho0 dt<u> + (1/A) ∮ ∇·(rho0 u u) ≈ 0   (z >~ 2 km)
+#  et scinder l'intégrale de domaine en deux sous-domaines :
+#
+#     rho0 dt<u> + (1/A)[ ∫_Ac ∇·(rho0 u u) + ∫_As ∇·(rho0 u u) ] ≈ 0
+#
+#  Dans CHAQUE région, on décompose le vent par rapport à SA PROPRE moyenne
+#  conditionnelle (et non la moyenne globale) :
+#       région humide :  u = u_c + u_c'      (u_c = <u>_humide)
+#       région sèche  :  u = u_s + u_s'      (u_s = <u>_seche)
+#
+#  Objectif : (1) plotter u_c, u_s vs u_global pour voir s'ils ressemblent
+#             à <u> ou pas  -> mesure du CONTRASTE INTER-RÉGIONS ;
+#             (2) isoler, dans le flux vertical de QdM, la part "grande échelle"
+#             (contraste des moyennes conditionnelles) de la part "turbulence
+#             interne" à chaque région.
+#  Tout est calculé niveau par niveau (RAM), fenêtre stationnaire idx_stat.
 # ============================================================
-from scipy.integrate import cumulative_trapezoid
+import numpy as np, matplotlib.pyplot as plt, gc, xarray as xr
 
-dt_ubar = np.gradient(ubar_zt, dt_phys, axis=1)   # ∂_t ubar (z,t)
-dz_ubar = np.gradient(ubar_zt, alt,     axis=0)   # ∂_z ubar (z,t)
+fh = mh.mean()          # fraction d'aire humide
+fs = ms.mean()          # fraction d'aire sèche
+zkm = alt/1000.0
+band2 = alt >= 2000.0   # domaine de validité du bilan (photo : z >~ 2 km)
 
-I_tend = cumulative_trapezoid((rho0[:,None]*dt_ubar).mean(1), alt, initial=0)
-I_adv  = cumulative_trapezoid((rho0[:,None]*wbar_zt*dz_ubar).mean(1), alt, initial=0)
-somme  = -I_tend - I_adv
+# --- profils conditionnels : u_c(z), u_s(z), et flux décomposé -----------
+u_glob  = np.zeros(n_z)                       # <u> global (rappel)
+u_c     = np.zeros(n_z)                       # <u>_humide
+u_s     = np.zeros(n_z)                       # <u>_seche
+w_c     = np.zeros(n_z); w_s = np.zeros(n_z)  # <w> conditionnels
 
-fig, ax = plt.subplots(figsize=(7.5, 6))
-ax.plot(-I_tend, alt, 'royalblue', lw=2, label=r'$-I_{tend}=-\int_0^z\rho_0\,\partial_t\bar u\,dz$')
-ax.plot(-I_adv,  alt, 'seagreen',  lw=2, label=r'$-I_{adv}=-\int_0^z\rho_0\,\bar w\,\partial_z\bar u\,dz$')
-ax.plot(somme,   alt, 'crimson',   lw=2.5, ls='--', label=r'$-(I_{tend}+I_{adv})$')
-ax.axvline(0, color='grey', lw=.5); ax.set_ylim(0, 15000)
-ax.set_xlabel(r'QdM cumulee'); ax.set_ylabel('z (m)')
-ax.set_title(r'Les deux integrales, separement puis jointes', fontweight='bold')
-ax.legend(fontsize=9); ax.grid(True, alpha=.3)
+flux_glob = np.zeros(n_z)                     # rho0 <u'w'>          (réf)
+flux_org  = np.zeros(n_z)                     # part CONTRASTE inter-régions (grande échelle)
+flux_int  = np.zeros(n_z)                     # part TURBULENCE interne (humide+sèche)
+flux_ch   = np.zeros(n_z); flux_cs = np.zeros(n_z)  # interne humide / interne sèche
+
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    u = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values   # (n_stat, ny, nx)
+    w = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values
+
+    # moyennes globales (sur tout le domaine + temps)
+    ub = u.mean(); wb = w.mean()
+    u_glob[iz] = ub
+
+    # moyennes CONDITIONNELLES (masques 2D appliqués sur chaque snapshot)
+    uc = u[:, mh].mean(); wc = w[:, mh].mean()   # humide
+    us = u[:, ms].mean(); ws = w[:, ms].mean()   # sèche
+    u_c[iz], w_c[iz] = uc, wc
+    u_s[iz], w_s[iz] = us, ws
+
+    # --- flux global (réf) : anomalies vs moyenne GLOBALE ---
+    up = u - ub; wp = w - wb
+    flux_glob[iz] = rho0[iz] * (up*wp).mean()
+
+    # --- décomposition "loi de la variance totale" ---
+    # flux_glob = [ fh*(uc-ub)(wc-wb) + fs*(us-ub)(ws-wb) ]        <- CONTRASTE (org)
+    #           + [ fh*<u'w'>_hum      + fs*<u'w'>_sec     ]        <- INTERNE
+    org = fh*(uc-ub)*(wc-wb) + fs*(us-ub)*(ws-wb)
+    uph = u[:, mh] - uc; wph = w[:, mh] - wc     # fluct. internes humides
+    ups = u[:, ms] - us; wps = w[:, ms] - ws     # fluct. internes sèches
+    ch  = (uph*wph).mean();  cs = (ups*wps).mean()
+    flux_ch[iz] = rho0[iz]*fh*ch
+    flux_cs[iz] = rho0[iz]*fs*cs
+    flux_org[iz] = rho0[iz]*org
+    flux_int[iz] = flux_ch[iz] + flux_cs[iz]
+
+    del u, w, up, wp, uph, wph, ups, wps; gc.collect()
+ds_u.close(); ds_w.close(); gc.collect()
+
+# --- contrôle d'identité : org + int == flux global ? -------------------
+resid = np.abs((flux_org+flux_int) - flux_glob).max()
+print(f"fraction humide fh={fh:.2f} / sèche fs={fs:.2f}")
+print(f"contrôle identité |(org+int) - global|_max = {resid:.2e}  (doit être ~0)")
+
+# part relative du contraste inter-régions dans le flux (médiane 2-18 km)
+b = band2 & (alt<=18000)
+share_org = np.nanmedian(np.abs(flux_org[b])/(np.abs(flux_glob[b])+1e-30))*100
+print(f"part médiane du CONTRASTE inter-régions dans |flux| (2-18 km) : {share_org:.0f}%")
+print(f"=> le reste (~{100-share_org:.0f}%) est de la turbulence INTERNE aux régions.")
+
+# ============================================================
+#  FIGURE 1 : u_c, u_s ressemblent-ils à <u> ?  (la question de la photo)
+# ============================================================
+fig, axes = plt.subplots(1, 2, figsize=(13, 6))
+
+ax = axes[0]
+ax.plot(u_glob[band2], zkm[band2], 'k-',  lw=2.2, label=r'$\bar u$ global')
+ax.plot(u_c[band2],    zkm[band2], 'b--', lw=2,   label=r'$\bar u_c$ (humide)')
+ax.plot(u_s[band2],    zkm[band2], 'r:',  lw=2,   label=r'$\bar u_s$ (sèche)')
+ax.axvline(0, color='grey', lw=.8)
+ax.set_xlabel(r'$\bar u$ (m/s)'); ax.set_ylabel('z (km)')
+ax.set_title('Vents conditionnels vs vent global')
+ax.legend(); ax.grid(alpha=.3)
+
+# écart des vents conditionnels au vent global (le "contraste")
+ax = axes[1]
+ax.plot((u_c-u_glob)[band2], zkm[band2], 'b--', lw=2, label=r'$\bar u_c-\bar u$')
+ax.plot((u_s-u_glob)[band2], zkm[band2], 'r:',  lw=2, label=r'$\bar u_s-\bar u$')
+ax.axvline(0, color='grey', lw=.8)
+ax.set_xlabel(r'écart au vent global (m/s)'); ax.set_ylabel('z (km)')
+ax.set_title('Contraste inter-régions du vent')
+ax.legend(); ax.grid(alpha=.3)
 plt.tight_layout(); plt.show()
 
-print(f'|I_tend| max = {np.abs(I_tend).max():.2e}')
-print(f'|I_adv|  max = {np.abs(I_adv).max():.2e}')
-print(f'ratio adv/tend = {np.abs(I_adv).max()/max(np.abs(I_tend).max(),1e-30):.0f}x')
+# ============================================================
+#  FIGURE 2 : décomposition du flux  global = contraste + interne
+# ============================================================
+fig, ax = plt.subplots(figsize=(7, 6.5))
+ax.plot(flux_glob[band2]*1e3, zkm[band2], 'k-',  lw=2.4, label='flux global')
+ax.plot(flux_org[band2] *1e3, zkm[band2], 'g--', lw=2,   label='contraste inter-régions (org)')
+ax.plot(flux_int[band2] *1e3, zkm[band2], 'm-.', lw=2,   label='turbulence interne (hum+sec)')
+ax.plot(flux_ch[band2]  *1e3, zkm[band2], 'b:',  lw=1.5, label='  interne humide')
+ax.plot(flux_cs[band2]  *1e3, zkm[band2], 'r:',  lw=1.5, label='  interne sèche')
+ax.axvline(0, color='grey', lw=.8)
+ax.set_xlabel(r"flux ($\times10^{-3}$ kg m$^{-1}$s$^{-2}$)"); ax.set_ylabel('z (km)')
+ax.set_title('Bilan de QdM : contraste inter-régions vs turbulence interne')
+ax.legend(fontsize=9); ax.grid(alpha=.3)
+plt.tight_layout(); plt.show()
 
-
-
-print("wbar_zt RMS     :", np.sqrt(np.mean(wbar_zt**2)))
-print("wbar_zt mean    :", wbar_zt.mean())
-print("dz_ubar RMS     :", np.sqrt(np.mean(dz_ubar**2)))
-integrand = (rho0[:,None]*wbar_zt*dz_ubar).mean(1)
-print("integrand RMS   :", np.sqrt(np.mean(integrand**2)))
-print("integrand [:5]  :", integrand[:5])
+print("\nLecture :")
+print(" - Si u_c et u_s collent à <u> => contraste faible => transport surtout INTERNE aux régions.")
+print(" - Si u_c et u_s divergent     => le transport a une vraie composante GRANDE ÉCHELLE")
+print("   (circulation humide/sèche organisée) qu'une paramétrisation de domaine ignore.")
