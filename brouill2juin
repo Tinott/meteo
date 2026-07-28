@@ -1,37 +1,182 @@
-# --- figures (2-18 km) -------------------------------------------------
-sm = (lambda a: uniform_filter1d(a, SMOOTH)) if SMOOTH else (lambda a: a)
-m  = bnd                      # <- fenetre 2-18 km, coherente avec le tableau
-zk = zkm
+Deux choses ressortent. D'abord le noir (
+𝜌
+0
+∂
+𝑡
+𝑢
+ˉ
+ρ
+0
+	​
 
-fig, ax = plt.subplots(1, 3, figsize=(16.5, 6))
+∂
+t
+	​
 
-for k, (lab, TE, LA, VE, DI, RE) in enumerate([
-        ('humide $A_c$', TENc, LATc, VERTc, DIVc, RESc),
-        ('seche $A_s$',  TENs, LATs, VERTs, DIVs, RESs)]):
-    a = ax[k]
-    a.plot(sm(TE.mean(1))[m], zk[m], 'k',  lw=1.6, label=r'$\rho_0\partial_t u$')
-    a.plot(sm(LA.mean(1))[m], zk[m], 'g',  lw=1.6, label='LAT (lateral)')
-    a.plot(sm(VE.mean(1))[m], zk[m], 'b',  lw=1.6, label='VERT')
-    a.plot(sm(DI.mean(1))[m], zk[m], 'purple', lw=2.6, label=r'$I$ = LAT+VERT')
-    a.plot(sm(RE.mean(1))[m], zk[m], 'crimson', lw=1.4, ls='--', label='RES')
-    a.axvline(0, color='grey', lw=.8)
-    a.set_title(f'Bilan region {lab}'); a.set_xlabel(r'kg m$^{-2}$s$^{-2}$')
-    a.set_ylabel('z (km)'); a.legend(fontsize=8)
+u
+ˉ
+) est quasi nul devant les autres termes, et le rouge pointillé (RES) se superpose au violet (
+𝐼
+I) dans les deux panneaux : le bilan se réduit à 
+𝐼
+𝑅
+≃
+R
+E
+S
+𝑅
+I
+R
+	​
 
-a = ax[2]
-a.plot(sm(DIVc.mean(1))[m], zk[m], 'b', lw=2.2, label=r'$I_c$ (humide)')
-a.plot(sm(DIVs.mean(1))[m], zk[m], 'r', lw=2.2, label=r'$I_s$ (seche)')
-a.plot(sm((DIVc+DIVs).mean(1))[m], zk[m], 'k', lw=2.2, label=r'$I_c+I_s$')
-a.plot(sm(dzPHI.mean(1))[m], zk[m], 'y--', lw=1.4, label=r'$\partial_z(\rho_0\langle wu\rangle)$')
-a.axvline(0, color='grey', lw=.8)
-a.set_title('Les deux integrales'); a.set_xlabel(r'kg m$^{-2}$s$^{-2}$')
-a.legend(fontsize=9)
+≃RES
+R
+	​
 
-for a in ax:
-    a.grid(alpha=.3); a.set_ylim(2, 18)
-    a.ticklabel_format(axis='x', style='sci', scilimits=(-2, 2), useMathText=True)
-plt.tight_layout(); plt.show()
+, ce qui valide la quasi-stationnarité et confirme que ton résidu est bien un diagnostic de sous-maille et non une tendance mal fermée. Ensuite — et c'est le résultat neuf — LAT (vert) est du même ordre que VERT (bleu) dans chaque région, avec des signes souvent opposés : vers 10–14 km dans l'humide, l'échange latéral et la convergence verticale se compensent partiellement, et c'est leur somme qui fait 
+𝐼
+𝑐
+I
+c
+	​
+
+. Le panneau 3 le dit encore mieux : 
+𝐼
+𝑐
+I
+c
+	​
+
+ et 
+𝐼
+𝑠
+I
+s
+	​
+
+ sont largement en opposition de phase sur la colonne, alors que leur somme (noir, exactement sur 
+∂
+𝑧
+(
+𝜌
+0
+⟨
+𝑤
+𝑢
+⟩
+)
+∂
+z
+	​
+
+(ρ
+0
+	​
+
+⟨wu⟩) — l'identité est vérifiée) est plus petite que les parts individuelles sur plusieurs tranches. Autrement dit, il existe une redistribution horizontale de quantité de mouvement entre colonnes humides et sèches, invisible dans le bilan de domaine parce qu'elle s'annule à la sommation. La v1 ne pouvait pas la voir : elle n'avait tout simplement pas ce terme.
 
 
 
+
+
+
+
+La circulation organisée est maintenant complète et propre : 
+𝑤
+ˉ
+𝑐
+w
+ˉ
+c
+	​
+
+ atteint 
++
+0,73
++0,73 cm/s vers 9,6 km, 
+𝑤
+ˉ
+𝑠
+w
+ˉ
+s
+	​
+
+ descend à 
+−
+0,5
+−0,5 cm/s, cellule profonde bien équilibrée en masse. Mais le contraste zonal reste minuscule — 
+∣
+𝑢
+ˉ
+𝑐
+−
+𝑢
+ˉ
+𝑠
+∣
+≲
+0,3
+∣
+u
+ˉ
+c
+	​
+
+−
+u
+ˉ
+s
+	​
+
+∣≲0,3 m/s, entièrement noyé dans les enveloppes 
+±
+1
+𝜎
+±1σ qui se recouvrent presque totalement. Comme 
+O
+R
+G
+∝
+𝑓
+𝑐
+ 
+𝛿
+𝑢
+𝑐
+ 
+𝛿
+𝑤
+𝑐
+ORG∝f
+c
+	​
+
+δu
+c
+	​
+
+δw
+c
+	​
+
+, le terme de contraste reste négligeable dans le flux vertical (panneau 5 : la turbulence interne magenta se confond avec le flux total noir), et le masque dynamique n'y change rien : la part transitoire que je pensais récupérer était donc bien réelle mais marginale, pour une raison physique claire et non par artefact de méthode. La conclusion se resserre : la circulation humide/sec est vigoureuse mais transporte peu de QdM verticalement, faute de contraste en 
+𝑢
+u ; en revanche elle en échange latéralement (image 1). Enfin le panneau 6 rappelle l'échelle réelle du problème — le pic de surface à 
+∼
+65
+×
+10
+−
+6
+∼65×10
+−6
+ écrase tout le reste d'un facteur 20, ce qui justifie a posteriori de travailler sur 2–18 km. À noter que 
+𝜎
+𝑢
+σ
+u
+	​
+
+ est comparable dans les deux régions (2–4 m/s, légèrement plus fort dans le sec en altitude) : le réservoir de fluctuations n'est pas l'apanage des colonnes convectives.
 
