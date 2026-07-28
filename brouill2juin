@@ -1,125 +1,236 @@
 # ============================================================
-#  §0bis — DÉCOMPOSITION DU BILAN DE QdM PAR RÉGION (humide Ac / sèche As)
-#  Idée (photo) : partir de   rho0 dt<u> + (1/A) ∮ ∇·(rho0 u u) ≈ 0   (z >~ 2 km)
-#  et scinder l'intégrale de domaine en deux sous-domaines :
+#  §0bis (v3) — BILAN DE QdM PAR SOUS-DOMAINE, TERME PAR TERME
 #
-#     rho0 dt<u> + (1/A)[ ∫_Ac ∇·(rho0 u u) + ∫_As ∇·(rho0 u u) ] ≈ 0
+#    rho0 dt<u> + (1/A)[ int_Ac div(rho0 u u) + int_As div(rho0 u u) ] = RES
 #
-#  Dans CHAQUE région, on décompose le vent par rapport à SA PROPRE moyenne
-#  conditionnelle (et non la moyenne globale) :
-#       région humide :  u = u_c + u_c'      (u_c = <u>_humide)
-#       région sèche  :  u = u_s + u_s'      (u_s = <u>_seche)
+#  Sur un SOUS-domaine, div n'est pas reductible a d/dz : on separe
+#     (1/A) int_AR div(rho0 u u) = LAT_R + VERT_R
+#     LAT_R  = (1/A) int_AR [ dx(rho0 u u) + dy(rho0 v u) ]   (echange lateral)
+#     VERT_R = d/dz [ (1/A) int_AR rho0 w u ]                 (flux vertical)
+#  Identite de controle : LAT_c + LAT_s = 0 (periodicite du domaine complet).
+#  RES = ce que les champs resolus ne ferment pas = -dz(flux sous-maille).
 #
-#  Objectif : (1) plotter u_c, u_s vs u_global pour voir s'ils ressemblent
-#             à <u> ou pas  -> mesure du CONTRASTE INTER-RÉGIONS ;
-#             (2) isoler, dans le flux vertical de QdM, la part "grande échelle"
-#             (contraste des moyennes conditionnelles) de la part "turbulence
-#             interne" à chaque région.
-#  Tout est calculé niveau par niveau (RAM), fenêtre stationnaire idx_stat.
+#  Masque humide DYNAMIQUE (median PRW instantanee) + moyennes
+#  conditionnelles PAR PAS DE TEMPS -> le contraste transitoire ne tombe
+#  plus dans le terme interne.
 # ============================================================
-import numpy as np, matplotlib.pyplot as plt, gc, xarray as xr
+import numpy as np, xarray as xr, gc
 
-fh = mh.mean()          # fraction d'aire humide
-fs = ms.mean()          # fraction d'aire sèche
-zkm = alt/1000.0
-band2 = alt >= 2000.0   # domaine de validité du bilan (photo : z >~ 2 km)
+# --- pas de grille horizontaux ---------------------------------------
+_ds = xr.open_dataset(path3d('ua'))
+_yv = _ds[dim_y].values.astype(float)
+dy = float(np.mean(np.diff(_yv))) if _yv.size > 1 else dx
+if abs(dy) <= 1.5: dy = dx           # coord. en km ou en indice -> on retombe sur dx
+_ds.close(); del _ds, _yv; gc.collect()
+print(f"dx={dx:.0f} m   dy={dy:.0f} m")
 
-# --- profils conditionnels : u_c(z), u_s(z), et flux décomposé -----------
-u_glob  = np.zeros(n_z)                       # <u> global (rappel)
-u_c     = np.zeros(n_z)                       # <u>_humide
-u_s     = np.zeros(n_z)                       # <u>_seche
-w_c     = np.zeros(n_z); w_s = np.zeros(n_z)  # <w> conditionnels
+# --- masque humide dynamique ------------------------------------------
+STATIC_MASK = False                  # True => reproduit le masque fige de la v1
+ds_prw = xr.open_dataset(path2d('prw'))
+prw = ds_prw['prw'].isel({dim_t: idx_stat}).values.astype(np.float32)
+ds_prw.close()
+if STATIC_MASK:
+    maskc = np.broadcast_to(mh, (n_stat,)+mh.shape).copy()
+else:
+    seuil_t = np.median(prw.reshape(n_stat, -1), axis=1).astype(np.float32)
+    maskc = prw > seuil_t[:, None, None]
+del prw; gc.collect()
 
-flux_glob = np.zeros(n_z)                     # rho0 <u'w'>          (réf)
-flux_org  = np.zeros(n_z)                     # part CONTRASTE inter-régions (grande échelle)
-flux_int  = np.zeros(n_z)                     # part TURBULENCE interne (humide+sèche)
-flux_ch   = np.zeros(n_z); flux_cs = np.zeros(n_z)  # interne humide / interne sèche
+Mc     = maskc.reshape(n_stat, -1)                    # bool (n_stat, ncell)
+Ncell  = Mc.shape[1]
+Nc     = Mc.sum(1).astype(float); Ns = Ncell - Nc
+fc_t   = Nc/Ncell; fs_t = Ns/Ncell
+churn  = float((maskc[1:] != maskc[:-1]).mean())
+del maskc; gc.collect()
+print(f"fraction humide : {fc_t.mean():.3f} (min {fc_t.min():.3f}, max {fc_t.max():.3f})")
+print(f"renouvellement du masque entre 2 pas : {churn*100:.1f} % des mailles changent de region")
 
-ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+# --- helpers ----------------------------------------------------------
+def _means(X):
+    """moyennes : globale, conditionnelle humide, conditionnelle seche"""
+    tot = X.sum(1); sc = (X*Mc).sum(1)
+    return tot/Ncell, sc/Nc, (tot-sc)/Ns
+
+def _parts(X):
+    """integrales partielles normalisees par A : (1/A)int_Ac , (1/A)int_As"""
+    tot = X.sum(1); sc = (X*Mc).sum(1)
+    return sc/Ncell, (tot-sc)/Ncell
+
+Z = lambda: np.zeros((n_z, n_stat))
+Ug, Uc, Us = Z(), Z(), Z()           # <u>, <u>_c, <u>_s
+Wg, Wc, Ws = Z(), Z(), Z()
+UWg, UWc, UWs = Z(), Z(), Z()        # <uw> totaux (pas des anomalies)
+UUc, UUs, WWc, WWs = Z(), Z(), Z(), Z()
+TENc, TENs = Z(), Z()                # (1/A) int_AR rho0 dt u
+LATc, LATs = Z(), Z()                # flux lateral a travers l'interface
+
+# --- boucle niveau par niveau ------------------------------------------
+ds_u = xr.open_dataset(path3d('ua'))
+ds_v = xr.open_dataset(path3d('va'))
+ds_w = xr.open_dataset(path3d('wa'))
 for iz in range(n_z):
-    u = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values   # (n_stat, ny, nx)
-    w = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values
+    u = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
+    v = ds_v['va'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
+    w = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
+    r = np.float32(rho0[iz])
 
-    # moyennes globales (sur tout le domaine + temps)
-    ub = u.mean(); wb = w.mean()
-    u_glob[iz] = ub
+    # ---- LAT : divergence horizontale du flux de QdM, differences centrees periodiques
+    F = u*u
+    divh = (np.roll(F,-1,axis=2) - np.roll(F,1,axis=2))/np.float32(2*dx)
+    F = v*u; del v
+    divh += (np.roll(F,-1,axis=1) - np.roll(F,1,axis=1))/np.float32(2*dy)
+    del F; gc.collect()
+    pc, ps = _parts(divh.reshape(n_stat,-1)); LATc[iz] = r*pc; LATs[iz] = r*ps
+    del divh; gc.collect()
 
-    # moyennes CONDITIONNELLES (masques 2D appliqués sur chaque snapshot)
-    uc = u[:, mh].mean(); wc = w[:, mh].mean()   # humide
-    us = u[:, ms].mean(); ws = w[:, ms].mean()   # sèche
-    u_c[iz], w_c[iz] = uc, wc
-    u_s[iz], w_s[iz] = us, ws
+    # ---- TEND : derivee temporelle ponctuelle, PUIS moyenne masquee
+    dudt = np.gradient(u, dt_phys, axis=0)
+    pc, ps = _parts(dudt.reshape(n_stat,-1)); TENc[iz] = r*pc; TENs[iz] = r*ps
+    del dudt; gc.collect()
 
-    # --- flux global (réf) : anomalies vs moyenne GLOBALE ---
-    up = u - ub; wp = w - wb
-    flux_glob[iz] = rho0[iz] * (up*wp).mean()
+    # ---- moments conditionnels (moyennes + moments d'ordre 2)
+    U = u.reshape(n_stat,-1); W = w.reshape(n_stat,-1); del u, w
+    Ug[iz], Uc[iz], Us[iz] = _means(U)
+    Wg[iz], Wc[iz], Ws[iz] = _means(W)
+    UWg[iz], UWc[iz], UWs[iz] = _means(U*W)
+    _, UUc[iz], UUs[iz] = _means(U*U)
+    _, WWc[iz], WWs[iz] = _means(W*W)
+    del U, W; gc.collect()
 
-    # --- décomposition "loi de la variance totale" ---
-    # flux_glob = [ fh*(uc-ub)(wc-wb) + fs*(us-ub)(ws-wb) ]        <- CONTRASTE (org)
-    #           + [ fh*<u'w'>_hum      + fs*<u'w'>_sec     ]        <- INTERNE
-    org = fh*(uc-ub)*(wc-wb) + fs*(us-ub)*(ws-wb)
-    uph = u[:, mh] - uc; wph = w[:, mh] - wc     # fluct. internes humides
-    ups = u[:, ms] - us; wps = w[:, ms] - ws     # fluct. internes sèches
-    ch  = (uph*wph).mean();  cs = (ups*wps).mean()
-    flux_ch[iz] = rho0[iz]*fh*ch
-    flux_cs[iz] = rho0[iz]*fs*cs
-    flux_org[iz] = rho0[iz]*org
-    flux_int[iz] = flux_ch[iz] + flux_cs[iz]
+ds_u.close(); ds_v.close(); ds_w.close(); gc.collect()
+print("termes bruts calcules.")
 
-    del u, w, up, wp, uph, wph, ups, wps; gc.collect()
-ds_u.close(); ds_w.close(); gc.collect()
-
-# --- contrôle d'identité : org + int == flux global ? -------------------
-resid = np.abs((flux_org+flux_int) - flux_glob).max()
-print(f"fraction humide fh={fh:.2f} / sèche fs={fs:.2f}")
-print(f"contrôle identité |(org+int) - global|_max = {resid:.2e}  (doit être ~0)")
-
-# part relative du contraste inter-régions dans le flux (médiane 2-18 km)
-b = band2 & (alt<=18000)
-share_org = np.nanmedian(np.abs(flux_org[b])/(np.abs(flux_glob[b])+1e-30))*100
-print(f"part médiane du CONTRASTE inter-régions dans |flux| (2-18 km) : {share_org:.0f}%")
-print(f"=> le reste (~{100-share_org:.0f}%) est de la turbulence INTERNE aux régions.")
 
 # ============================================================
-#  FIGURE 1 : u_c, u_s ressemblent-ils à <u> ?  (la question de la photo)
+#  §0bis.B — assemblage des termes, controles exacts, fermeture
 # ============================================================
-fig, axes = plt.subplots(1, 2, figsize=(13, 6))
+R = rho0[:, None]
 
-ax = axes[0]
-ax.plot(u_glob[band2], zkm[band2], 'k-',  lw=2.2, label=r'$\bar u$ global')
-ax.plot(u_c[band2],    zkm[band2], 'b--', lw=2,   label=r'$\bar u_c$ (humide)')
-ax.plot(u_s[band2],    zkm[band2], 'r:',  lw=2,   label=r'$\bar u_s$ (sèche)')
-ax.axvline(0, color='grey', lw=.8)
-ax.set_xlabel(r'$\bar u$ (m/s)'); ax.set_ylabel('z (km)')
-ax.set_title('Vents conditionnels vs vent global')
-ax.legend(); ax.grid(alpha=.3)
+# --- flux verticaux resolus, par region --------------------------------
+MFc  = R*fc_t*Uc*Ws*0 + R*fc_t*Uc*Wc      # circulation organisee humide
+MFs  = R*fs_t*Us*Ws                        #                       seche
+INTc = R*fc_t*(UWc - Uc*Wc)                # turbulence interne humide
+INTs = R*fs_t*(UWs - Us*Ws)                #                    seche
+PHI  = R*UWg                               # flux vertical total resolu
 
-# écart des vents conditionnels au vent global (le "contraste")
-ax = axes[1]
-ax.plot((u_c-u_glob)[band2], zkm[band2], 'b--', lw=2, label=r'$\bar u_c-\bar u$')
-ax.plot((u_s-u_glob)[band2], zkm[band2], 'r:',  lw=2, label=r'$\bar u_s-\bar u$')
-ax.axvline(0, color='grey', lw=.8)
-ax.set_xlabel(r'écart au vent global (m/s)'); ax.set_ylabel('z (km)')
-ax.set_title('Contraste inter-régions du vent')
-ax.legend(); ax.grid(alpha=.3)
+VERTc = np.gradient(MFc + INTc, alt, axis=0)
+VERTs = np.gradient(MFs + INTs, alt, axis=0)
+
+# --- bilan complet -----------------------------------------------------
+BUDc = TENc + LATc + VERTc
+BUDs = TENs + LATs + VERTs
+RES  = BUDc + BUDs                          # = -dz(flux sous-maille)
+
+# --- identites de controle (doivent etre au zero machine) --------------
+e1 = np.abs(LATc + LATs).max()/ (np.abs(LATc).max()+1e-30)
+e2 = np.abs((MFc+MFs+INTc+INTs) - PHI).max()/(np.abs(PHI).max()+1e-30)
+e3 = np.abs(fc_t*Uc + fs_t*Us - Ug).max()
+print(f"[ctrl] LAT_c + LAT_s = 0            : erreur relative {e1:.2e}")
+print(f"[ctrl] MF + INT = flux total resolu : erreur relative {e2:.2e}")
+print(f"[ctrl] f_c u_c + f_s u_s = u_global : erreur absolue  {e3:.2e} m/s")
+
+# --- decomposition du flux : contraste vs interne, PAR PAS DE TEMPS ----
+dUc, dWc = Uc - Ug, Wc - Wg
+dUs, dWs = Us - Ug, Ws - Wg
+ORG  = R*(fc_t*dUc*dWc + fs_t*dUs*dWs)      # contraste inter-regions
+INT  = INTc + INTs                          # turbulence interne
+FLXp = R*(UWg - Ug*Wg)                      # rho0 <u'w'> global
+print(f"[ctrl] ORG + INT = rho0<u'w'>       : erreur relative "
+      f"{np.abs(ORG+INT-FLXp).max()/(np.abs(FLXp).max()+1e-30):.2e}")
+
+# --- ce que la v1 mesurait : la part STATIONNAIRE du contraste ---------
+fcm, fsm = fc_t.mean(), fs_t.mean()
+ORG_bar  = ORG.mean(1)
+ORG_stat = rho0*(fcm*dUc.mean(1)*dWc.mean(1) + fsm*dUs.mean(1)*dWs.mean(1))
+ORG_tran = ORG_bar - ORG_stat               # contraste TRANSITOIRE (perdu en v1)
+
+b = (alt >= 2000) & (alt <= 18000)
+den = np.abs(FLXp.mean(1)[b]) + 1e-30
+print()
+print("Part du flux vertical portee par le contraste inter-regions (mediane 2-18 km) :")
+print(f"   contraste total       {np.nanmedian(np.abs(ORG_bar[b])/den)*100:6.1f} %")
+print(f"     dont stationnaire   {np.nanmedian(np.abs(ORG_stat[b])/den)*100:6.1f} %   <- ce que mesurait la v1")
+print(f"     dont transitoire    {np.nanmedian(np.abs(ORG_tran[b])/den)*100:6.1f} %   <- recupere ici")
+print(f"   turbulence interne    {np.nanmedian(np.abs(INT.mean(1)[b])/den)*100:6.1f} %")
+
+# --- amplitude du terme lateral, que la v1 ignorait totalement ---------
+sc = np.abs(VERTc + VERTs)[b].mean() + 1e-30
+print()
+print(f"Amplitude du flux lateral |LAT_c| rapportee au terme vertical : "
+      f"{np.abs(LATc)[b].mean()/sc*100:.1f} %")
+print("(LAT_c = -LAT_s : echange net de QdM entre colonne humide et colonne seche)")
+
+# --- residu = flux sous-maille, integre depuis le sommet ---------------
+RES_bar = RES.mean(1)
+seg     = 0.5*(RES_bar[1:] + RES_bar[:-1])*np.diff(alt)
+PHI_sgs = np.concatenate([np.cumsum(seg[::-1])[::-1], [0.0]])   # int_z^top RES dz
+print()
+print(f"Contrainte de surface diagnostiquee tau_s = {PHI_sgs[0]:.4f} kg m-1 s-2")
+print(f"Flux resolu au 1er niveau            = {PHI.mean(1)[0]:.4f} kg m-1 s-2")
+print("(le residu absorbe aussi les erreurs de troncature du schema : a lire comme un ordre de grandeur)")
+
+
+
+
+# ============================================================
+#  §0bis.C — vents conditionnels, anomalies, amplitudes internes
+# ============================================================
+import matplotlib.pyplot as plt
+
+su_c = np.sqrt(np.maximum(UUc - Uc**2, 0)); sw_c = np.sqrt(np.maximum(WWc - Wc**2, 0))
+su_s = np.sqrt(np.maximum(UUs - Us**2, 0)); sw_s = np.sqrt(np.maximum(WWs - Ws**2, 0))
+zk = zkm; m = alt <= 18000
+
+def mt(A): return A.mean(1)
+def st(A): return A.std(1)
+
+fig, ax = plt.subplots(2, 3, figsize=(16, 10))
+
+a = ax[0,0]
+for A, c, l in [(Ug,'k',r'$\bar u$ global'), (Uc,'b',r'$\bar u_c$ humide'), (Us,'r',r'$\bar u_s$ sec')]:
+    a.plot(mt(A)[m], zk[m], color=c, lw=2, label=l)
+    a.fill_betweenx(zk[m], (mt(A)-st(A))[m], (mt(A)+st(A))[m], color=c, alpha=.15)
+a.axvline(0, color='grey', lw=.8); a.set_xlabel('m/s'); a.set_ylabel('z (km)')
+a.set_title(r'Vent zonal conditionnel ($\pm1\sigma$ temporel)'); a.legend(fontsize=9)
+
+a = ax[0,1]
+a.plot(mt(dUc)[m], zk[m], 'b', lw=2, label=r'$\bar u_c-\bar u$')
+a.plot(mt(dUs)[m], zk[m], 'r', lw=2, label=r'$\bar u_s-\bar u$')
+a.fill_betweenx(zk[m], (mt(dUc)-st(dUc))[m], (mt(dUc)+st(dUc))[m], color='b', alpha=.15)
+a.fill_betweenx(zk[m], (mt(dUs)-st(dUs))[m], (mt(dUs)+st(dUs))[m], color='r', alpha=.15)
+a.axvline(0, color='grey', lw=.8); a.set_xlabel('m/s')
+a.set_title("Anomalie de vent inter-regions"); a.legend(fontsize=9)
+
+a = ax[0,2]
+a.plot(mt(Wc)[m]*100, zk[m], 'b', lw=2, label=r'$\bar w_c$ humide')
+a.plot(mt(Ws)[m]*100, zk[m], 'r', lw=2, label=r'$\bar w_s$ sec')
+a.plot(mt(Wg)[m]*100, zk[m], 'k--', lw=1.2, label=r'$\bar w$ global')
+a.axvline(0, color='grey', lw=.8); a.set_xlabel('cm/s')
+a.set_title('Circulation organisee humide/sec'); a.legend(fontsize=9)
+
+a = ax[1,0]
+a.plot(mt(su_c)[m], zk[m], 'b', lw=2, label=r"$\sigma_u$ humide")
+a.plot(mt(su_s)[m], zk[m], 'r', lw=2, label=r"$\sigma_u$ sec")
+a.plot(mt(sw_c)[m]*10, zk[m], 'b--', lw=1.5, label=r"$10\,\sigma_w$ humide")
+a.plot(mt(sw_s)[m]*10, zk[m], 'r--', lw=1.5, label=r"$10\,\sigma_w$ sec")
+a.set_xlabel('m/s'); a.set_ylabel('z (km)')
+a.set_title("Amplitude des anomalies INTERNES"); a.legend(fontsize=8)
+
+a = ax[1,1]
+for A, s, l in [(PHI,'k-','flux total resolu'), (ORG,'g--','contraste inter-regions'),
+                (INT,'m-.','turbulence interne'), (MFc,'b:','  organise humide'),
+                (MFs,'r:','  organise sec')]:
+    a.plot(mt(A)[m]*1e3, zk[m], s, lw=2 if len(s)<3 else 1.5, label=l)
+a.axvline(0, color='grey', lw=.8); a.set_xlabel(r'$\times10^{-3}$ kg m$^{-1}$s$^{-2}$')
+a.set_title('Decomposition du flux vertical'); a.legend(fontsize=8)
+
+a = ax[1,2]
+a.plot(mt(TENc+TENs)[m]*1e6, zk[m], 'k', lw=2, label=r'$\rho_0\partial_t\bar u$')
+a.plot(mt(LATc)[m]*1e6, zk[m], 'g', lw=2, label=r'LAT$_c$ ($=-$LAT$_s$)')
+a.plot(mt(VERTc+VERTs)[m]*1e6, zk[m], 'b', lw=2, label='VERT')
+a.plot(RES_bar[m]*1e6, zk[m], 'crimson', lw=2, label='residu = sous-maille')
+a.axvline(0, color='grey', lw=.8); a.set_xlabel(r'$\times10^{-6}$ kg m$^{-2}$s$^{-2}$')
+a.set_title('Termes du bilan de QdM'); a.legend(fontsize=8)
+
+for a in ax.ravel(): a.grid(alpha=.3); a.set_ylim(0, 18)
 plt.tight_layout(); plt.show()
-
-# ============================================================
-#  FIGURE 2 : décomposition du flux  global = contraste + interne
-# ============================================================
-fig, ax = plt.subplots(figsize=(7, 6.5))
-ax.plot(flux_glob[band2]*1e3, zkm[band2], 'k-',  lw=2.4, label='flux global')
-ax.plot(flux_org[band2] *1e3, zkm[band2], 'g--', lw=2,   label='contraste inter-régions (org)')
-ax.plot(flux_int[band2] *1e3, zkm[band2], 'm-.', lw=2,   label='turbulence interne (hum+sec)')
-ax.plot(flux_ch[band2]  *1e3, zkm[band2], 'b:',  lw=1.5, label='  interne humide')
-ax.plot(flux_cs[band2]  *1e3, zkm[band2], 'r:',  lw=1.5, label='  interne sèche')
-ax.axvline(0, color='grey', lw=.8)
-ax.set_xlabel(r"flux ($\times10^{-3}$ kg m$^{-1}$s$^{-2}$)"); ax.set_ylabel('z (km)')
-ax.set_title('Bilan de QdM : contraste inter-régions vs turbulence interne')
-ax.legend(fontsize=9); ax.grid(alpha=.3)
-plt.tight_layout(); plt.show()
-
-print("\nLecture :")
-print(" - Si u_c et u_s collent à <u> => contraste faible => transport surtout INTERNE aux régions.")
-print(" - Si u_c et u_s divergent     => le transport a une vraie composante GRANDE ÉCHELLE")
-print("   (circulation humide/sèche organisée) qu'une paramétrisation de domaine ignore.")
