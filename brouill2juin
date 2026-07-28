@@ -1,59 +1,6 @@
-# ============================================================
-#  §0bis.D — LES DEUX INTEGRALES, EXPLICITEMENT
-#
-#     I_c = (1/A) int_Ac div(rho0 u u) dA = LAT_c + VERT_c
-#     I_s = (1/A) int_As div(rho0 u u) dA = LAT_s + VERT_s
-#
-#  Bilan par region :  TEN_R + I_R = RES_R      (RES_R = -sous-maille region R)
-#  Bilan global     : (TEN_c+TEN_s) + (I_c+I_s) = RES
-#
-#  Le masque vient du PRW (colonne) => il ne depend PAS de z, donc
-#  d/dz commute avec int_A_R : VERT_R = d/dz[(1/A) int_A_R rho0 w u].
-# ============================================================
-import numpy as np, matplotlib.pyplot as plt
-from scipy.ndimage import uniform_filter1d
-
-SMOOTH = 3          # lissage vertical POUR L'AFFICHAGE seulement (0 = brut)
-
-DIVc = LATc + VERTc                 # <- integrale 1
-DIVs = LATs + VERTs                 # <- integrale 2
-RESc = TENc + DIVc                  # residu sous-maille, region humide
-RESs = TENs + DIVs                  #                     region seche
-
-# --- controle : I_c + I_s = dz(rho0<wu>) -------------------------------
-dzPHI = np.gradient(PHI, alt, axis=0)
-e4 = np.abs((DIVc+DIVs) - dzPHI).max()/(np.abs(dzPHI).max()+1e-30)
-print(f"[ctrl] I_c + I_s = dz(rho0<wu>) : erreur relative {e4:.2e}")
-print("       (ne teste que LAT_c+LAT_s=0 : les horizontales s'annulent par periodicite)")
-
-# --- tableau des amplitudes -------------------------------------------
-bnd = (alt >= 2000) & (alt <= 18000)
-def _col(a):                                    # integrale de colonne, 2-18 km
-    aa, zz = a[bnd], alt[bnd]
-    return float(np.sum(0.5*(aa[1:]+aa[:-1])*np.diff(zz)))
-def _stat(A):
-    a = A.mean(1)
-    return np.sqrt(np.mean(a[bnd]**2))*1e6, _col(a)*1e3
-
-rows = [('TEN  rho0 dt u', TENc, TENs), ('LAT  echange lateral', LATc, LATs),
-        ('VERT convergence vert.', VERTc, VERTs), ('I    = LAT+VERT', DIVc, DIVs),
-        ('RES  = TEN+I', RESc, RESs)]
-print(f"\n{'terme':24s} {'RMS_c':>9s} {'RMS_s':>9s} {'|  int_c':>10s} {'int_s':>9s}")
-print(f"{'':24s} {'(1e-6 SI)':>9s} {'(1e-6 SI)':>9s} {'| (1e-3 kg/m/s2)':>10s}")
-print('-'*66)
-for nm, Ac_, As_ in rows:
-    rc, ic = _stat(Ac_); rs, is_ = _stat(As_)
-    print(f"{nm:24s} {rc:9.3f} {rs:9.3f} | {ic:9.3f} {is_:9.3f}")
-
-print(f"\nExport lateral net humide->sec sur 2-18 km : {_col(LATc.mean(1))*1e3:+.3f} "
-      f"x1e-3 kg m-1 s-2")
-print(f"a comparer a la contrainte de surface tau_s = {PHI_sgs[0]*1e3:+.3f} x1e-3")
-print(f"=> l'echange lateral represente {abs(_col(LATc.mean(1))/(PHI_sgs[0]+1e-30))*100:.1f} % "
-      f"de tau_s en equivalent contrainte")
-
-# --- figures -----------------------------------------------------------
+# --- figures (2-18 km) -------------------------------------------------
 sm = (lambda a: uniform_filter1d(a, SMOOTH)) if SMOOTH else (lambda a: a)
-m  = alt <= 18000
+m  = bnd                      # <- fenetre 2-18 km, coherente avec le tableau
 zk = zkm
 
 fig, ax = plt.subplots(1, 3, figsize=(16.5, 6))
@@ -62,28 +9,28 @@ for k, (lab, TE, LA, VE, DI, RE) in enumerate([
         ('humide $A_c$', TENc, LATc, VERTc, DIVc, RESc),
         ('seche $A_s$',  TENs, LATs, VERTs, DIVs, RESs)]):
     a = ax[k]
-    a.plot(sm(TE.mean(1))[m]*1e6, zk[m], 'k',  lw=1.6, label=r'$\rho_0\partial_t u$')
-    a.plot(sm(LA.mean(1))[m]*1e6, zk[m], 'g',  lw=1.6, label='LAT (lateral)')
-    a.plot(sm(VE.mean(1))[m]*1e6, zk[m], 'b',  lw=1.6, label='VERT')
-    a.plot(sm(DI.mean(1))[m]*1e6, zk[m], 'purple', lw=2.6, label=r'$I$ = LAT+VERT')
-    a.plot(sm(RE.mean(1))[m]*1e6, zk[m], 'crimson', lw=1.4, ls='--', label='RES')
+    a.plot(sm(TE.mean(1))[m], zk[m], 'k',  lw=1.6, label=r'$\rho_0\partial_t u$')
+    a.plot(sm(LA.mean(1))[m], zk[m], 'g',  lw=1.6, label='LAT (lateral)')
+    a.plot(sm(VE.mean(1))[m], zk[m], 'b',  lw=1.6, label='VERT')
+    a.plot(sm(DI.mean(1))[m], zk[m], 'purple', lw=2.6, label=r'$I$ = LAT+VERT')
+    a.plot(sm(RE.mean(1))[m], zk[m], 'crimson', lw=1.4, ls='--', label='RES')
     a.axvline(0, color='grey', lw=.8)
-    a.set_title(f'Bilan region {lab}'); a.set_xlabel(r'$\times10^{-6}$ kg m$^{-2}$s$^{-2}$')
+    a.set_title(f'Bilan region {lab}'); a.set_xlabel(r'kg m$^{-2}$s$^{-2}$')
     a.set_ylabel('z (km)'); a.legend(fontsize=8)
 
 a = ax[2]
-a.plot(sm(DIVc.mean(1))[m]*1e6, zk[m], 'b', lw=2.2, label=r'$I_c$ (humide)')
-a.plot(sm(DIVs.mean(1))[m]*1e6, zk[m], 'r', lw=2.2, label=r'$I_s$ (seche)')
-a.plot(sm((DIVc+DIVs).mean(1))[m]*1e6, zk[m], 'k', lw=2.2, label=r'$I_c+I_s$')
-a.plot(sm(dzPHI.mean(1))[m]*1e6, zk[m], 'y--', lw=1.4, label=r'$\partial_z(\rho_0\langle wu\rangle)$')
+a.plot(sm(DIVc.mean(1))[m], zk[m], 'b', lw=2.2, label=r'$I_c$ (humide)')
+a.plot(sm(DIVs.mean(1))[m], zk[m], 'r', lw=2.2, label=r'$I_s$ (seche)')
+a.plot(sm((DIVc+DIVs).mean(1))[m], zk[m], 'k', lw=2.2, label=r'$I_c+I_s$')
+a.plot(sm(dzPHI.mean(1))[m], zk[m], 'y--', lw=1.4, label=r'$\partial_z(\rho_0\langle wu\rangle)$')
 a.axvline(0, color='grey', lw=.8)
-a.set_title('Les deux integrales'); a.set_xlabel(r'$\times10^{-6}$ kg m$^{-2}$s$^{-2}$')
+a.set_title('Les deux integrales'); a.set_xlabel(r'kg m$^{-2}$s$^{-2}$')
 a.legend(fontsize=9)
 
-for a in ax: a.grid(alpha=.3); a.set_ylim(0, 18)
+for a in ax:
+    a.grid(alpha=.3); a.set_ylim(2, 18)
+    a.ticklabel_format(axis='x', style='sci', scilimits=(-2, 2), useMathText=True)
 plt.tight_layout(); plt.show()
-
-
 
 
 
