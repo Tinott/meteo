@@ -1,188 +1,257 @@
 # ============================================================
-#  §1 (v3) — FERMETURE LINEAIRE TESTEE SUR LES ZONES DE FORT CISAILLEMENT
+#  §1 (v4) — FERMETURE LINEAIRE LOCALE TESTEE SUR LES ZONES DE FORT CISAILLEMENT
 #
-#  Etape 1 : critere par colonne  S(x,t) = max_{0-15km} |dz ubar_y(x,z,t)|
-#            -> seuil par quantile -> regions connexes dans le plan (x,t)
-#  Etape 2 : statistiques CONDITIONNELLES aux colonnes retenues
-#            ubar_R(z,t) et flux_R(z,t) = rho0 <u'w'>_R (anomalies internes)
-#  Etape 3 : ajustement de deux familles de fermeture, zone par zone
-#            (A) y = c1 dz ubar + c2 z Hz dz ubar + c3 z dz ubar
-#            (B) y = a rho0 ubar + b dz(rho0 ubar) + g dzz(rho0 ubar)
-#            + baseline 1 terme (dz ubar seul) pour mesurer le gain reel
+#  v4 corrige deux defauts de la v3 :
+#   (1) ridge SANS ordonnee a l'origine + y non centre -> la prediction etait
+#       de moyenne nulle par construction (NSE ~ -mean^2/var, sans contenu).
+#       Ici : y centre sur le train, intercept non penalise, colonnes
+#       constantes ecartees.
+#   (2) le critere max_z |dz u| selectionne des colonnes cisaillees, mais la
+#       MOYENNE de zone lisse tout (maxima a des z et des signes differents).
+#       Ici : l'echantillon de regression est la COLONNE (x,t), pas la moyenne
+#       de zone -> le cisaillement de la bibliotheque est celui qu'on a
+#       selectionne. Ajout d'un conditionnement local (x,z,t).
 #
-#  Protocole : 3 blocs temporels (train / val / test). alpha choisi sur VAL,
-#  score reporte sur TEST -> pas de selection sur le jeu d'evaluation.
+#  Cible : flux interne a la colonne  rho0 <(u-<u>_y)(w-<w>_y)>_y  (z,t,x)
+#  Modeles : (A) c1 dz u + c2 z Hz dz u + c3 z dz u
+#            (B) a rho0 u + b dz(rho0 u) + g dzz(rho0 u)
+#            (A+B) et baseline 1 terme (dz u seul)
+#  Protocole : blocs temporels train/val/test ; alpha sur VAL, score sur TEST.
 # ============================================================
 import numpy as np, xarray as xr, matplotlib.pyplot as plt, gc
 from scipy.ndimage import label, uniform_filter
 
-# ---------------- configuration -------------------------------------
-Z_SHEAR_MAX = 15000.0        # fenetre du critere de cisaillement
-Q_SEUIL     = 0.90           # quantile definissant "fort cisaillement"
-LISSE_XT    = 0              # lissage du champ S(x,t) avant seuillage (0 = brut)
-MIN_PIX     = 6              # taille min d'une region connexe (pixels x-t)
+# ---------------- configuration --------------------------------------
+Z_SHEAR_MAX = 15000.0        # fenetre du critere par colonne
+Q_SEUIL     = 0.90           # quantile "fort cisaillement" (colonnes)
+Q_LOCAL     = 0.90           # quantile "couche cisaillee"  (niveaux)
+LISSE_XT    = 0              # lissage de S(x,t) avant seuillage (0 = brut)
+MIN_PIX     = 6              # taille min d'une region connexe (px x-t)
 Z_LO, Z_HI  = 2000.0, 18000.0
-FRAC        = (0.50, 0.25, 0.25)     # train / val / test
-ALPHAS      = np.logspace(-4, 4, 33)
+FRAC        = (0.50, 0.25, 0.25)          # train / val / test (blocs temporels)
+ALPHAS      = np.logspace(-4, 5, 37)
+MAX_SAMP    = 200_000        # plafond d'echantillons par bloc (RAM)
+SEED        = 0
 
 zk   = alt/1000.0
 band = (alt >= Z_LO) & (alt <= Z_HI); ib = np.where(band)[0]
-Hz   = np.gradient(np.log(rho0), alt)          # d ln(rho0)/dz
+Hz   = np.gradient(np.log(rho0), alt)     # d ln(rho0)/dz
+rng  = np.random.default_rng(SEED)
 
 # ============================================================
-#  ETAPE 1 — champ de cisaillement par colonne et detection (x,t)
+#  ETAPE 1 — profils par colonne + flux interne par colonne
 # ============================================================
-u_y = np.zeros((n_z, n_stat, n_x), dtype=np.float32)
-ds_u = xr.open_dataset(path3d('ua'))
-for iz in range(n_z):
-    u_y[iz] = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.mean(axis=1)
-ds_u.close(); gc.collect()
-
-dz_uy = np.gradient(u_y, alt, axis=0)
-sel_z = alt <= Z_SHEAR_MAX
-S     = np.abs(dz_uy[sel_z]).max(axis=0)        # (n_stat, n_x)
-del dz_uy; gc.collect()
-
-S_f   = uniform_filter(S, LISSE_XT) if LISSE_XT else S
-seuil = float(np.quantile(S_f, Q_SEUIL))
-brut  = S_f > seuil
-
-lab, nlab = label(brut)                          # x NON periodique ici (cf. note)
-if MIN_PIX > 1:
-    tail = np.bincount(lab.ravel()); tail[0] = 0
-    brut = np.isin(lab, np.where(tail >= MIN_PIX)[0])
-    lab, nlab = label(brut)
-fort   = brut
-faible = ~fort
-
-print(f"seuil (q={Q_SEUIL:.2f}) = {seuil:.2e} s-1   |  "
-      f"S : med {np.median(S):.2e}  max {S.max():.2e}")
-print(f"colonnes qualifiees : {fort.mean()*100:.1f} %  "
-      f"({fort.sum()} pixels x-t) en {nlab} regions connexes >= {MIN_PIX} px")
-nx_fort = fort.sum(1)
-print(f"colonnes fortes par pas de temps : min {nx_fort.min()}  "
-      f"med {int(np.median(nx_fort))}  max {nx_fort.max()}")
-
-# ============================================================
-#  ETAPE 2 — statistiques conditionnelles aux colonnes retenues
-#  (anomalies vs moyenne CONDITIONNELLE -> flux interne a la zone)
-# ============================================================
-ZONES = {'toutes': np.ones_like(fort), 'fort cisaillement': fort,
-         'faible cisaillement': faible}
-UB   = {k: np.full((n_z, n_stat), np.nan) for k in ZONES}
-FLX  = {k: np.full((n_z, n_stat), np.nan) for k in ZONES}
+u_y      = np.zeros((n_z, n_stat, n_x), dtype=np.float32)   # <u>_y (x,t)
+flux_col = np.zeros((n_z, n_stat, n_x), dtype=np.float32)   # rho0 <u'w'>_y
+flux_dom = np.zeros((n_z, n_stat), dtype=np.float64)        # flux de domaine (ref)
 
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
 for iz in range(n_z):
     u = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
     w = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
-    for k, M in ZONES.items():
-        m = M[:, None, :]                        # (n_stat,1,n_x) -> diffuse sur y
-        cnt = M.sum(1)*n_y
-        ok  = cnt > 0
-        su  = (u*m).sum(axis=(1, 2), dtype=np.float64)
-        sw  = (w*m).sum(axis=(1, 2), dtype=np.float64)
-        ub  = np.where(ok, su/np.maximum(cnt, 1), np.nan)
-        wb  = np.where(ok, sw/np.maximum(cnt, 1), np.nan)
-        suw = (u*w*m).sum(axis=(1, 2), dtype=np.float64)
-        uw  = np.where(ok, suw/np.maximum(cnt, 1), np.nan)
-        UB[k][iz]  = ub
-        FLX[k][iz] = rho0[iz]*(uw - ub*wb)       # rho0 <u'w'> interne a la zone
-    del u, w; gc.collect()
+    uy  = u.mean(axis=1); wy = w.mean(axis=1)                # (n_stat, n_x)
+    uwy = (u*w).mean(axis=1)
+    u_y[iz]      = uy
+    flux_col[iz] = rho0[iz]*(uwy - uy*wy)                    # interne a la colonne
+    ug = u.mean(axis=(1, 2)); wg = w.mean(axis=(1, 2))
+    flux_dom[iz] = rho0[iz]*((u*w).mean(axis=(1, 2)) - ug*wg)
+    del u, w, uy, wy, uwy; gc.collect()
 ds_u.close(); ds_w.close(); gc.collect()
 
+dz_uy = np.gradient(u_y, alt, axis=0).astype(np.float32)
+
 # ============================================================
-#  ETAPE 3 — bibliotheque, diagnostic de rang, ajustement ridge
+#  ETAPE 2 — detection des zones de fort cisaillement dans (x,t)
 # ============================================================
-def build_library(ub):
-    du   = np.gradient(ub, alt)
-    ru   = rho0*ub
-    return {'dudz'       : du,
-            'zHz_dudz'   : alt*Hz*du,
-            'z_dudz'     : alt*du,
-            'rho0_u'     : ru,
-            'dz_rho0_u'  : np.gradient(ru, alt),
-            'dzz_rho0_u' : np.gradient(np.gradient(ru, alt), alt),
-            'intercept'  : np.ones_like(alt)}
+sel_z = alt <= Z_SHEAR_MAX
+S     = np.abs(dz_uy[sel_z]).max(axis=0)                     # (n_stat, n_x)
+S_f   = uniform_filter(S, LISSE_XT) if LISSE_XT else S
+seuil = float(np.quantile(S_f, Q_SEUIL))
+brut  = S_f > seuil
+
+lab, nlab = label(brut)                    # x non periodique : cf. note en fin
+if MIN_PIX > 1:
+    tail = np.bincount(lab.ravel()); tail[0] = 0
+    brut = np.isin(lab, np.where(tail >= MIN_PIX)[0])
+    lab, nlab = label(brut)
+fort, faible = brut, ~brut
+
+# conditionnement LOCAL (niveau par niveau), dans la bande d'etude
+absdz  = np.abs(dz_uy)
+s_loc  = float(np.quantile(absdz[band], Q_LOCAL))
+couche = absdz > s_loc                                        # (n_z, n_stat, n_x)
+
+print(f"seuil colonne (q={Q_SEUIL:.2f}) = {seuil:.2e} s-1  |  "
+      f"S : med {np.median(S):.2e}  max {S.max():.2e}")
+print(f"colonnes qualifiees : {fort.mean()*100:.1f} %  ({fort.sum()} px x-t) "
+      f"en {nlab} regions connexes >= {MIN_PIX} px")
+print(f"seuil local (q={Q_LOCAL:.2f})  = {s_loc:.2e} s-1  |  "
+      f"{couche[band].mean()*100:.1f} % des points (x,z,t) de la bande")
+
+# ============================================================
+#  ETAPE 3 — bibliotheque vectorisee (n_z, n_stat, n_x)
+# ============================================================
+A3 = alt[:, None, None]; H3 = Hz[:, None, None]; R3 = rho0[:, None, None]
+
+def term(name):
+    if name == 'dudz'      : return dz_uy
+    if name == 'zHz_dudz'  : return (A3*H3*dz_uy).astype(np.float32)
+    if name == 'z_dudz'    : return (A3*dz_uy).astype(np.float32)
+    ru = (R3*u_y).astype(np.float32)
+    if name == 'rho0_u'    : return ru
+    if name == 'dz_rho0_u' : return np.gradient(ru, alt, axis=0).astype(np.float32)
+    if name == 'dzz_rho0_u': return np.gradient(np.gradient(ru, alt, axis=0),
+                                                alt, axis=0).astype(np.float32)
+    raise KeyError(name)
 
 MODELES = {'A shear-3'  : ['dudz', 'zHz_dudz', 'z_dudz'],
            'B rho0u-3'  : ['rho0_u', 'dz_rho0_u', 'dzz_rho0_u'],
            'A+B mixte'  : ['dudz', 'zHz_dudz', 'z_dudz',
-                           'rho0_u', 'dz_rho0_u', 'dzz_rho0_u', 'intercept'],
+                           'rho0_u', 'dz_rho0_u', 'dzz_rho0_u'],
            'baseline dz': ['dudz']}
 
+# ---- zones : masques 3D (n_z, n_stat, n_x) restreints a la bande -----
+B3 = band[:, None, None]
+ZONES = {'toutes'            : np.broadcast_to(B3, dz_uy.shape),
+         'colonnes fortes'   : B3 & fort[None, :, :],
+         'colonnes faibles'  : B3 & faible[None, :, :],
+         'couche cisaillee'  : B3 & couche}
+
+# ---- decoupage temporel en 3 blocs -----------------------------------
+i1 = int(FRAC[0]*n_stat); i2 = int((FRAC[0]+FRAC[1])*n_stat)
+TBLOCS = {'tr': np.arange(0, i1), 'va': np.arange(i1, i2), 'te': np.arange(i2, n_stat)}
+print(f"blocs temporels : train {i1} / val {i2-i1} / test {n_stat-i2} pas")
+
+def echantillons(zone, ts):
+    """indices lineaires d'un sous-ensemble d'echantillons (z,t,x)"""
+    m = zone.copy()
+    keep_t = np.zeros(n_stat, bool); keep_t[ts] = True
+    m &= keep_t[None, :, None]
+    idx = np.flatnonzero(m.ravel())
+    if idx.size > MAX_SAMP:
+        idx = rng.choice(idx, MAX_SAMP, replace=False)
+    return idx
+
+def design(names, idx):
+    return np.column_stack([term(nm).ravel()[idx].astype(np.float64) for nm in names])
+
+# ============================================================
+#  ETAPE 4 — ridge AVEC ordonnee a l'origine, alpha choisi sur VAL
+# ============================================================
 def nse(o, p): return 1 - np.sum((o-p)**2)/np.sum((o-o.mean())**2)
 
-def blocs(tv):
-    n = len(tv); i1 = int(FRAC[0]*n); i2 = int((FRAC[0]+FRAC[1])*n)
-    return tv[:i1], tv[i1:i2], tv[i2:]
+def ridge(X, y, a):
+    mu, sd = X.mean(0), X.std(0)
+    keep = sd > 1e-12                       # colonnes constantes ecartees
+    sd = np.where(keep, sd, 1.0)
+    Z  = ((X-mu)/sd)[:, keep]
+    y0 = y.mean()                           # intercept NON penalise
+    c  = np.linalg.solve(Z.T@Z + a*np.eye(Z.shape[1]), Z.T@(y-y0))
+    return c, mu, sd, y0, keep
 
-def design(ub_zt, names, ts):
-    X = [np.column_stack([build_library(ub_zt[:, t])[nm][ib] for nm in names])
-         for t in ts]
-    return np.concatenate(X, 0)
+def rpred(X, c, mu, sd, y0, keep):
+    return ((X-mu)/sd)[:, keep] @ c + y0
 
-def ridge(Xtr, ytr, a):
-    mu, sd = Xtr.mean(0), Xtr.std(0); sd = np.where(sd < 1e-30, 1.0, sd)
-    Z = (Xtr-mu)/sd
-    c = np.linalg.solve(Z.T@Z + a*np.eye(Z.shape[1]), Z.T@ytr)
-    return c, mu, sd
+def coef_bruts(c, mu, sd, y0, keep, names):
+    """coefficients dans les unites physiques + constante"""
+    cr = np.zeros(len(names)); cr[keep] = c/sd[keep]
+    return cr, y0 - float(cr @ mu)
 
-def ajuste(ub_zt, fl_zt, names):
-    tv = np.where(np.isfinite(ub_zt[ib]).all(0) & np.isfinite(fl_zt[ib]).all(0))[0]
-    if tv.size < 12: return None
-    ttr, tva, tte = blocs(tv)
-    Xtr, Xva, Xte = (design(ub_zt, names, t) for t in (ttr, tva, tte))
-    ytr, yva, yte = (fl_zt[np.ix_(ib, t)].ravel(order='F') for t in (ttr, tva, tte))
+Y = flux_col.ravel()
+
+def ajuste(zone, names):
+    itr, iva, ite = (echantillons(zone, TBLOCS[k]) for k in ('tr', 'va', 'te'))
+    if min(itr.size, iva.size, ite.size) < 500: return None
+    Xtr, Xva, Xte = design(names, itr), design(names, iva), design(names, ite)
+    ytr, yva, yte = Y[itr].astype(np.float64), Y[iva].astype(np.float64), Y[ite].astype(np.float64)
     Zs = (Xtr - Xtr.mean(0))/(Xtr.std(0) + 1e-30)
     sv = np.linalg.svd(Zs, compute_uv=False)
-    sc = [nse(yva, ((Xva-mu)/sd)@c) for c, mu, sd in
-          (ridge(Xtr, ytr, a) for a in ALPHAS)]
-    a_b = ALPHAS[int(np.argmax(sc))]
-    c, mu, sd = ridge(Xtr, ytr, a_b)
-    return dict(alpha=a_b, coef=c, mu=mu, sd=sd, names=names,
-                nse_tr=nse(ytr, ((Xtr-mu)/sd)@c), nse_va=max(sc),
-                nse_te=nse(yte, ((Xte-mu)/sd)@c),
+    fits = [ridge(Xtr, ytr, a) for a in ALPHAS]
+    sc   = [nse(yva, rpred(Xva, *f)) for f in fits]
+    k = int(np.argmax(sc)); f = fits[k]
+    pte = rpred(Xte, *f)
+    cr, b0 = coef_bruts(*f, names)
+    return dict(alpha=ALPHAS[k], names=names, fit=f, coef_bruts=cr, const=b0,
+                nse_tr=nse(ytr, rpred(Xtr, *f)), nse_va=sc[k], nse_te=nse(yte, pte),
+                nse_cst=nse(yte, np.full_like(yte, ytr.mean())),
+                r_te=float(np.corrcoef(yte, pte)[0, 1]),
                 cond=sv[0]/max(sv[-1], 1e-30),
-                rang=int(np.sum(sv > sv[0]*1e-8)), sv=sv, nt=tv.size)
+                rang=int(np.sum(sv > sv[0]*1e-8)), sv=sv/sv[0],
+                n_tr=itr.size, ite=ite, pte=pte, yte=yte)
 
 RES = {}
-print("\n" + "="*74)
-print(f"{'zone':22s} {'modele':13s} {'NSE_tr':>8s} {'NSE_va':>8s} {'NSE_te':>8s}"
-      f" {'cond':>9s} {'rang':>5s}")
-print("="*74)
-for zn in ZONES:
-    for mn, nm in MODELES.items():
-        r = ajuste(UB[zn], FLX[zn], nm)
+print("\n" + "="*88)
+print(f"{'zone':20s} {'modele':13s} {'NSE_tr':>8s} {'NSE_va':>8s} {'NSE_te':>8s}"
+      f" {'NSE_cst':>8s} {'r_te':>6s} {'cond':>9s} {'rg':>3s}")
+print("="*88)
+for zn, zm in ZONES.items():
+    for mn, nms in MODELES.items():
+        r = ajuste(zm, nms)
         if r is None:
-            print(f"{zn:22s} {mn:13s}   pas assez de pas de temps valides"); continue
+            print(f"{zn:20s} {mn:13s}   echantillon insuffisant"); continue
         RES[(zn, mn)] = r
-        print(f"{zn:22s} {mn:13s} {r['nse_tr']:+8.3f} {r['nse_va']:+8.3f}"
-              f" {r['nse_te']:+8.3f} {r['cond']:9.1e} {r['rang']:5d}")
+        print(f"{zn:20s} {mn:13s} {r['nse_tr']:+8.3f} {r['nse_va']:+8.3f}"
+              f" {r['nse_te']:+8.3f} {r['nse_cst']:+8.3f} {r['r_te']:+6.2f}"
+              f" {r['cond']:9.1e} {r['rang']:3d}")
+    print("-"*88)
 
-r = RES.get(('fort cisaillement', 'A shear-3'))
-if r is not None:
-    print(f"\nSpectre singulier du modele A (fort cisaillement) : "
-          f"{np.array2string(r['sv']/r['sv'][0], precision=3)}")
-    print("  -> si la 3e valeur est ~0, les 3 termes n'occupent que 2 directions.")
-    b0 = RES.get(('fort cisaillement', 'baseline dz'))
-    if b0 is not None:
-        print(f"gain du modele A sur la baseline 1 terme (NSE test) : "
-              f"{r['nse_te']-b0['nse_te']:+.3f}")
+# ---- diagnostics de rang et viscosite implicite -----------------------
+for zn in ['colonnes fortes', 'couche cisaillee']:
+    r = RES.get((zn, 'A shear-3'))
+    if r is None: continue
+    print(f"\n[{zn}] spectre singulier modele A : "
+          f"{np.array2string(r['sv'], precision=4)}")
+    if r['sv'][-1] < 1e-2:
+        print("  -> 3e direction quasi nulle : c2 et c3 ne sont pas identifiables "
+              "separement (z*Hz et z quasi colineaires sur 2-18 km).")
+    bl = RES.get((zn, 'baseline dz'))
+    if bl is not None:
+        print(f"  gain de A sur la baseline 1 terme (NSE test) : "
+              f"{r['nse_te']-bl['nse_te']:+.3f}")
+        K = -bl['coef_bruts'][0]
+        print(f"  viscosite implicite de la baseline : K = {K:+.2f} kg m-1 s-1 "
+              f"({'DOWN-gradient' if K > 0 else 'CONTRE-gradient (K<0) !'})")
+
+# ============================================================
+#  ETAPE 5 — composite aligne sur l'altitude du maximum de cisaillement
+#  (montre que le conditionnement preserve bien le cisaillement)
+# ============================================================
+it_, ix_ = np.where(fort)
+sub = rng.choice(it_.size, min(it_.size, 20000), replace=False)
+it_, ix_ = it_[sub], ix_[sub]
+izs = np.where(sel_z)[0]
+izm = izs[np.argmax(np.abs(dz_uy[np.ix_(izs, )][:, it_, ix_]), axis=0)]
+
+NOFF = 20
+offs = np.arange(-NOFF, NOFF+1)
+comp_s = np.full(offs.size, np.nan); comp_f = np.full(offs.size, np.nan)
+for j, o in enumerate(offs):
+    iz = izm + o; ok = (iz >= 0) & (iz < n_z)
+    if ok.sum() < 50: continue
+    comp_s[j] = np.abs(dz_uy[iz[ok], it_[ok], ix_[ok]]).mean()
+    comp_f[j] = flux_col[iz[ok], it_[ok], ix_[ok]].mean()
+dzm = offs*float(np.median(np.diff(alt)))/1000.0
+
+sh_comp = np.nanmax(comp_s)
+sh_zone = float(np.abs(np.gradient(u_y[:, :, :].mean(axis=(1, 2)), alt))[band].max())
+print(f"\ncisaillement au coeur du composite : {sh_comp:.2e} s-1")
+print(f"cisaillement du profil moyen de domaine : {sh_zone:.2e} s-1"
+      f"   (rapport {sh_comp/max(sh_zone,1e-30):.0f}x)")
+print("=> c'est bien la moyenne d'ensemble qui detruisait le signal en v3.")
 
 # ============================================================
 #  FIGURES
 # ============================================================
 fig, ax = plt.subplots(2, 3, figsize=(17, 10))
-xkm  = np.arange(n_x)*dx/1000.0
-ext  = [0, n_stat, xkm[0], xkm[-1]]
+xkm = np.arange(n_x)*dx/1000.0
+ext = [0, n_stat, xkm[0], xkm[-1]]
 
 a = ax[0, 0]; a.grid(False)
 im = a.imshow(S_f.T, origin='lower', aspect='auto', extent=ext, cmap='viridis')
 a.contour(np.linspace(0, n_stat, n_stat), xkm, S_f.T, [seuil], colors='r', linewidths=.7)
 a.set_xlabel('t (indice fenetre)'); a.set_ylabel('x (km)')
 a.set_title(r'$\max_{0-15\,\mathrm{km}}|\partial_z\bar u|(x,t)$ + seuil')
-fig.colorbar(im, ax=a, label='intensite cisaillement')
+fig.colorbar(im, ax=a, label=r's$^{-1}$')
 
 a = ax[0, 1]; a.grid(False)
 a.imshow(fort.T, origin='lower', aspect='auto', extent=ext, cmap='gray_r')
@@ -190,40 +259,46 @@ a.set_xlabel('t (indice fenetre)'); a.set_ylabel('x (km)')
 a.set_title(f'Colonnes qualifiees ({fort.mean()*100:.0f} %, {nlab} regions)')
 
 a = ax[0, 2]
-for zn, c in zip(ZONES, ['k', 'crimson', 'steelblue']):
-    a.plot(np.nanmean(FLX[zn], 1)[band]*1e3, zk[band], color=c, lw=2, label=zn)
-a.axvline(0, color='grey', lw=.8); a.set_xlabel(r'$\times10^{-3}$ kg m$^{-1}$s$^{-2}$')
-a.set_ylabel('z (km)'); a.set_title("Flux interne par zone"); a.legend(fontsize=8)
+a.plot(comp_s*1e3, dzm, 'crimson', lw=2.2, label=r'$|\partial_z\bar u|$ composite')
+a.axhline(0, color='grey', lw=.8); a.axvline(0, color='grey', lw=.8)
+a.set_xlabel(r'$\times10^{-3}$ s$^{-1}$'); a.set_ylabel(r'$z-z_{\max}$ (km)')
+a.set_title('Composite aligne sur la couche cisaillee')
+a2 = a.twiny(); a2.plot(comp_f*1e3, dzm, 'k--', lw=1.8, label='flux interne')
+a2.set_xlabel(r'flux $\times10^{-3}$ kg m$^{-1}$s$^{-2}$'); a2.grid(False)
+a.legend(fontsize=8, loc='upper left'); a2.legend(fontsize=8, loc='lower right')
 
 a = ax[1, 0]
-for zn, c in zip(ZONES, ['k', 'crimson', 'steelblue']):
-    a.plot(np.gradient(np.nanmean(UB[zn], 1), alt)[band], zk[band], color=c, lw=2, label=zn)
-a.axvline(0, color='grey', lw=.8); a.set_xlabel(r'$\partial_z\bar u$ (s$^{-1}$)')
-a.set_ylabel('z (km)'); a.set_title('Cisaillement moyen par zone'); a.legend(fontsize=8)
+a.plot(flux_dom.mean(1)[band]*1e3, zk[band], 'k-', lw=2.4, label='flux de domaine')
+for zn, c in zip(['toutes', 'colonnes fortes', 'colonnes faibles'],
+                 ['dimgrey', 'crimson', 'steelblue']):
+    m = ZONES[zn]
+    num = (flux_col*m).sum(axis=(1, 2)); den = m.sum(axis=(1, 2))
+    a.plot(np.where(den > 0, num/np.maximum(den, 1), np.nan)[band]*1e3, zk[band],
+           color=c, lw=1.8, label=f'interne : {zn}')
+a.axvline(0, color='grey', lw=.8); a.set_xlabel(r'$\times10^{-3}$ kg m$^{-1}$s$^{-2}$')
+a.set_ylabel('z (km)'); a.set_title('Flux : domaine vs interne par zone')
+a.legend(fontsize=7); a.set_ylim(Z_LO/1000, Z_HI/1000)
 
 a = ax[1, 1]
-lab_m = [m for m in MODELES]; w = 0.25
-for i, (zn, c) in enumerate(zip(ZONES, ['k', 'crimson', 'steelblue'])):
-    v = [RES[(zn, m)]['nse_te'] if (zn, m) in RES else np.nan for m in lab_m]
-    a.bar(np.arange(len(lab_m)) + (i-1)*w, v, w, color=c, label=zn)
+lm = list(MODELES); lz = list(ZONES); w = 0.2
+for i, (zn, c) in enumerate(zip(lz, ['dimgrey', 'crimson', 'steelblue', 'darkorange'])):
+    v = [RES[(zn, m)]['nse_te'] if (zn, m) in RES else np.nan for m in lm]
+    a.bar(np.arange(len(lm)) + (i-1.5)*w, v, w, color=c, label=zn)
 a.axhline(0, color='grey', lw=.8)
-a.set_xticks(range(len(lab_m))); a.set_xticklabels(lab_m, rotation=20, fontsize=8)
-a.set_ylabel('NSE test'); a.set_title('Generalisation par zone et modele'); a.legend(fontsize=8)
-
-a = ax[1, 2]
-zn = 'fort cisaillement'
-a.plot(np.nanmean(FLX[zn], 1)[band]*1e3, zk[band], 'k-', lw=2.4, label='flux vrai')
-for mn, c in zip(['A shear-3', 'B rho0u-3', 'A+B mixte'],
-                 ['tab:orange', 'tab:green', 'tab:purple']):
-    if (zn, mn) not in RES: continue
-    rr = RES[(zn, mn)]
-    Xm = np.column_stack([build_library(np.nanmean(UB[zn], 1))[q][ib] for q in rr['names']])
-    a.plot(((Xm-rr['mu'])/rr['sd'] @ rr['coef'])*1e3, zk[band], '--', color=c, lw=1.8,
-           label=f"{mn} (NSE_te={rr['nse_te']:+.2f})")
-a.axvline(0, color='grey', lw=.8); a.set_xlabel(r'$\times10^{-3}$ kg m$^{-1}$s$^{-2}$')
-a.set_ylabel('z (km)'); a.set_title('Reconstruction, zone de fort cisaillement')
+a.set_xticks(range(len(lm))); a.set_xticklabels(lm, rotation=20, fontsize=8)
+a.set_ylabel('NSE test'); a.set_title('Generalisation par zone et modele')
 a.legend(fontsize=7)
 
+a = ax[1, 2]
+best = max((k for k in RES), key=lambda k: RES[k]['nse_te'])
+rb = RES[best]
+n_pt = min(4000, rb['yte'].size); pick = rng.choice(rb['yte'].size, n_pt, replace=False)
+a.plot(rb['yte'][pick]*1e3, rb['pte'][pick]*1e3, '.', ms=2, alpha=.25, color='steelblue')
+lim = np.percentile(np.abs(rb['yte'])*1e3, 99.5)
+a.plot([-lim, lim], [-lim, lim], 'k--', lw=1)
+a.set_xlim(-lim, lim); a.set_ylim(-lim, lim)
+a.set_xlabel(r'flux observe ($\times10^{-3}$)'); a.set_ylabel(r'flux predit ($\times10^{-3}$)')
+a.set_title(f'{best[0]} / {best[1]}\nNSE_te={rb["nse_te"]:+.3f}  r={rb["r_te"]:+.2f}')
+
 for a in ax.ravel(): a.grid(alpha=.3)
-for a in [ax[0, 2], ax[1, 0], ax[1, 2]]: a.set_ylim(Z_LO/1000, Z_HI/1000)
 plt.tight_layout(); plt.show()
