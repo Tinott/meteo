@@ -1,62 +1,242 @@
 # ============================================================
-#  §1bis — FERMETURE AU NIVEAU DE LA MAILLE (agregation intermediaire)
-#  v3 : moyenne globale -> cisaillement lisse a zero
-#  v4 : colonne individuelle -> bruit turbulent (rapport 30:1)
-#  ici : moyennes conditionnelles PAR CLASSE DE CISAILLEMENT, niveau par
-#  niveau. C'est l'echelle a laquelle une parametrisation opere.
+#  §A — PARAMETRE C DU SCHEMA GKI, MESURE SUR large300
+#  Romps (2012) : flux_GKI(C) == (1-C) * Mc * (u_up - ubar)
+#  => C_eff(z) = 1 - Phi_vrai / [ Mc (u_up - ubar) ]
+#  Balayage du seuil updraft : C doit etre ROBUSTE au seuil,
+#  sinon ce n'est pas un parametre physique.
 # ============================================================
-NBIN = 12
-res_bin = {}
-for zn, zm in ZONES.items():
-    Xs, Ys, Ns = [], [], []
-    for k, iz in enumerate(ib):
-        s = dz_uy[iz][zm[iz]]; f = flux_col[iz][zm[iz]]
-        if s.size < 200: continue
-        qs = np.quantile(s, np.linspace(0, 1, NBIN+1)); qs[-1] += 1e-12
-        d  = np.digitize(s, qs[1:-1])
-        for j in range(NBIN):
-            m = d == j
-            if m.sum() < 30: continue
-            Xs.append([s[m].mean(), alt[iz], rho0[iz]]); Ys.append(f[m].mean())
-            Ns.append(m.sum())
-    if len(Ys) < 30: continue
-    Xs = np.array(Xs); Ys = np.array(Ys); Ns = np.array(Ns)
-    du, zz, rr = Xs[:, 0], Xs[:, 1], Xs[:, 2]
-    D = {'A shear-3': np.column_stack([du, zz*np.interp(zz, alt, Hz)*du, zz*du]),
-         'baseline dz': du[:, None]}
-    for mn, M in D.items():
-        M1 = np.column_stack([M, np.ones(len(Ys))])
-        w  = np.sqrt(Ns)                                  # pondere par l'effectif
-        c, *_ = np.linalg.lstsq(M1*w[:, None], Ys*w, rcond=None)
-        p = M1 @ c
-        res_bin[(zn, mn)] = (nse(Ys, p), float(np.corrcoef(Ys, p)[0, 1]), c)
-        print(f"{zn:18s} {mn:12s} NSE={nse(Ys,p):+.3f}  r={np.corrcoef(Ys,p)[0,1]:+.2f}"
-              f"  K_implicite={-c[0]:+.1f} kg m-1 s-1")
+import numpy as np, xarray as xr, gc, matplotlib.pyplot as plt
 
-# --- la relation flux <-> cisaillement, en moyenne conditionnelle ------
-fig, ax = plt.subplots(1, 2, figsize=(12, 5))
-for zn, c in zip(['toutes', 'couche cisaillee'], ['dimgrey', 'darkorange']):
-    zm = ZONES[zn]; sv, fv = [], []
-    for iz in ib:
-        s = dz_uy[iz][zm[iz]]; f = flux_col[iz][zm[iz]]
-        if s.size < 200: continue
-        qs = np.quantile(s, np.linspace(0, 1, NBIN+1)); qs[-1] += 1e-12
-        d = np.digitize(s, qs[1:-1])
-        for j in range(NBIN):
-            m = d == j
-            if m.sum() >= 30: sv.append(s[m].mean()); fv.append(f[m].mean())
-    ax[0].plot(np.array(sv)*1e3, np.array(fv)*1e3, '.', ms=4, alpha=.5, color=c, label=zn)
-ax[0].axhline(0, color='grey', lw=.8); ax[0].axvline(0, color='grey', lw=.8)
-ax[0].set_xlabel(r'$\partial_z\bar u$ moyen de classe ($\times10^{-3}$ s$^{-1}$)')
-ax[0].set_ylabel(r'flux moyen de classe ($\times10^{-3}$)')
-ax[0].set_title('Fermeture au niveau de la maille'); ax[0].legend(fontsize=8)
+SEUILS = [0.0, 0.25, 0.5, 1.0, 2.0]          # m/s, seuil w des updrafts
+band   = (alt >= 2000) & (alt <= 15000)
 
-lm = ['A shear-3', 'baseline dz']
-for i, (zn, c) in enumerate(zip(ZONES, ['dimgrey', 'crimson', 'steelblue', 'darkorange'])):
-    v = [res_bin[(zn, m)][0] if (zn, m) in res_bin else np.nan for m in lm]
-    ax[1].bar(np.arange(len(lm)) + (i-1.5)*0.2, v, 0.2, color=c, label=zn)
-ax[1].axhline(0, color='grey', lw=.8); ax[1].set_xticks(range(len(lm)))
-ax[1].set_xticklabels(lm, fontsize=8); ax[1].set_ylabel('NSE (donnees agregees)')
-ax[1].set_title('Skill apres agregation'); ax[1].legend(fontsize=7)
-for a in ax: a.grid(alpha=.3)
+sig = {s: np.zeros(n_z) for s in SEUILS}
+wup = {s: np.zeros(n_z) for s in SEUILS}
+uup = {s: np.zeros(n_z) for s in SEUILS}
+ubar_p, wbar_p, Phi = np.zeros(n_z), np.zeros(n_z), np.zeros(n_z)
+
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    u = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
+    w = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
+    ub, wb = float(u.mean()), float(w.mean())
+    ubar_p[iz], wbar_p[iz] = ub, wb
+    Phi[iz] = rho0[iz]*(float((u*w).mean()) - ub*wb)
+    for s in SEUILS:
+        m = w > s
+        n = int(m.sum())
+        if n < 100: sig[s][iz] = np.nan; continue
+        sig[s][iz] = n/u.size
+        wup[s][iz] = float(w[m].mean()); uup[s][iz] = float(u[m].mean())
+    del u, w; gc.collect()
+ds_u.close(); ds_w.close()
+
+fig, ax = plt.subplots(1, 3, figsize=(16, 5.5))
+print(f"{'seuil w':>8s} {'C median':>9s} {'C p25-p75':>16s} {'sigma@6km':>10s}")
+for s in SEUILS:
+    Mc    = rho0*sig[s]*(wup[s] - wbar_p)             # flux de masse convectif
+    Phi_ZD = Mc*(uup[s] - ubar_p)                      # forme zero-drag (SL76)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        C = 1.0 - Phi/np.where(np.abs(Phi_ZD) < 1e-12, np.nan, Phi_ZD)
+    b = band & np.isfinite(C)
+    q = np.nanpercentile(C[b], [25, 50, 75])
+    i6 = np.argmin(np.abs(alt-6000))
+    print(f"{s:8.2f} {q[1]:+9.3f} {q[0]:+7.3f} {q[2]:+7.3f} {sig[s][i6]*100:9.2f}%")
+    ax[0].plot(Mc[band], alt[band]/1e3, label=f'w>{s}')
+    ax[1].plot((uup[s]-ubar_p)[band], alt[band]/1e3, label=f'w>{s}')
+    ax[2].plot(C[b], alt[b]/1e3, label=f'w>{s}')
+
+ax[0].set_xlabel(r'$M_c$ (kg m$^{-2}$s$^{-1}$)'); ax[0].set_title('Flux de masse convectif')
+ax[1].set_xlabel(r'$u_{up}-\bar u$ (m/s)');       ax[1].set_title('Contraste de vent')
+ax[2].axvline(0.4, color='k', ls=':', lw=1, label='CAM5.1')
+ax[2].axvline(0.7, color='k', ls='--', lw=1, label='GKI97')
+ax[2].set_xlim(-2, 2); ax[2].set_xlabel(r'$C_{\rm eff}$'); ax[2].set_title('Parametre GKI mesure')
+for a in ax: a.set_ylabel('z (km)'); a.grid(alpha=.3); a.legend(fontsize=7)
 plt.tight_layout(); plt.show()
+
+
+
+
+
+# ============================================================
+#  §B — OPERATEUR DE REPONSE DE LA QdM + MODES PROPRES
+#   B1  DMD sur ubar(z,t)      -> periode, c_z, temps d'amortissement
+#   B2  noyau K(z,z') contraint (Sylvester) -> flux' = K * shear'
+#   B3  M = -(1/rho0) d/dz [ K d/dz ]  -> modes propres, comparaison a B1
+#  Norme d'energie : poids sqrt(rho0*dz) (les modes sont alors des
+#  structures de QdM, pas de vitesse).
+# ============================================================
+import numpy as np, matplotlib.pyplot as plt
+from scipy.linalg import solve_sylvester
+
+band = (alt >= 2000) & (alt <= 18000); ib = np.where(band)[0]
+zb, rb = alt[ib], rho0[ib]; nb = ib.size
+dzb = np.gradient(zb)
+wgt = np.sqrt(rb*dzb); Wm = np.diag(wgt); Wi = np.diag(1/wgt)
+
+U = ubar_zt[ib] - ubar_zt[ib].mean(1, keepdims=True)
+Uw = Wm @ U
+
+# ---------- B1 : DMD ---------------------------------------------------
+R_DMD = 12
+X1, X2 = Uw[:, :-1], Uw[:, 1:]
+Q, S, Vt = np.linalg.svd(X1, full_matrices=False)
+r = min(R_DMD, int(np.sum(S > S[0]*1e-10)))
+Qr, Sr, Vr = Q[:, :r], S[:r], Vt[:r].T
+Atil = Qr.T @ X2 @ Vr @ np.diag(1/Sr)
+mu, Wv = np.linalg.eig(Atil)
+lam = np.log(mu.astype(complex))/dt_phys
+Modes = Wi @ (X2 @ Vr @ np.diag(1/Sr) @ Wv)
+
+def carac(phi, lm):
+    om = float(np.imag(lm))
+    if abs(om) < 1e-12: return np.nan, np.nan
+    T = 2*np.pi/abs(om)/86400.0
+    th = np.unwrap(np.angle(phi))
+    a  = np.abs(phi); k = a > 0.25*a.max()
+    if k.sum() < 5: return T, np.nan
+    m = np.polyfit(zb[k], th[k], 1)[0]
+    return T, (-om/m*100 if abs(m) > 1e-9 else np.nan)   # cm/s
+
+print("Modes DMD dominants (energie de QdM) :")
+print(f"{'#':>2s} {'T (j)':>8s} {'c_z (cm/s)':>11s} {'tau (j)':>9s} {'poids':>7s}")
+amp = np.linalg.norm(Modes, axis=0)*np.abs(Qr.T @ Uw[:, 0] @ np.ones(1) if False else 1)
+ordre = np.argsort(-np.abs(np.imag(lam)) * 0 - amp)      # tri par amplitude
+for j in ordre[:8]:
+    T, cz = carac(Modes[:, j], lam[j])
+    tau = -1/np.real(lam[j])/86400 if np.real(lam[j]) < 0 else np.inf
+    print(f"{j:2d} {T:8.2f} {cz:11.3f} {tau:9.2f} {amp[j]/amp.max():7.3f}")
+
+# ---------- B2 : noyau contraint --------------------------------------
+S_zt = np.gradient(ubar_zt, alt, axis=0)[ib]
+Sa = S_zt - S_zt.mean(1, keepdims=True)
+Fa = flux_zt[ib] - flux_zt[ib].mean(1, keepdims=True)
+
+L = np.zeros((nb, nb))                                    # laplacien 1D
+for i in range(1, nb-1): L[i, i-1:i+2] = [1, -2, 1]
+L[0, :2] = [-1, 1]; L[-1, -2:] = [1, -1]
+LtL = L.T @ L
+sc  = np.trace(Sa @ Sa.T)/nb
+
+def kernel(lr, lc):
+    A = lr*sc*LtL
+    B = Sa @ Sa.T + lc*sc*LtL
+    return solve_sylvester(A + 1e-12*np.eye(nb), B, Fa @ Sa.T)
+
+def nse(o, p): return 1 - np.sum((o-p)**2)/np.sum((o-o.mean())**2)
+tsp = int(0.7*Sa.shape[1])
+grille = [(a, a) for a in np.logspace(-4, 1, 12)]
+sco = []
+for lr, lc in grille:
+    Kt = solve_sylvester(lr*sc*LtL + 1e-12*np.eye(nb),
+                         Sa[:, :tsp] @ Sa[:, :tsp].T + lc*sc*LtL,
+                         Fa[:, :tsp] @ Sa[:, :tsp].T)
+    sco.append(nse(Fa[:, tsp:].ravel(), (Kt @ Sa[:, tsp:]).ravel()))
+jb = int(np.argmax(sco)); lr, lc = grille[jb]
+K = kernel(lr, lc)
+print(f"\nnoyau : lambda*={lr:.2e}  NSE test={sco[jb]:+.3f}  "
+      f"NSE in-sample={nse(Fa.ravel(), (K@Sa).ravel()):+.3f}")
+
+# ---------- B3 : operateur de tendance et ses modes --------------------
+D = np.zeros((nb, nb))                                    # d/dz centre
+for i in range(1, nb-1): D[i, i-1] , D[i, i+1] = -1/(zb[i+1]-zb[i-1]), 1/(zb[i+1]-zb[i-1])
+D[0, :2] = [-1/(zb[1]-zb[0]), 1/(zb[1]-zb[0])]
+D[-1, -2:] = [-1/(zb[-1]-zb[-2]), 1/(zb[-1]-zb[-2])]
+M = -np.diag(1/rb) @ D @ K @ D                            # d_t u = M u
+ev, evec = np.linalg.eig(M)
+osc = np.argsort(-np.abs(np.imag(ev)) * (np.real(ev) < 0))
+print("\nModes propres de l'operateur K (a comparer au DMD) :")
+for j in osc[:5]:
+    if abs(np.imag(ev[j])) < 1e-12: continue
+    T, cz = carac(evec[:, j], ev[j])
+    tau = -1/np.real(ev[j])/86400 if np.real(ev[j]) < 0 else np.inf
+    print(f"   T={T:6.2f} j   c_z={cz:+7.3f} cm/s   tau={tau:7.2f} j")
+
+# ---------- figures ---------------------------------------------------
+fig, ax = plt.subplots(1, 4, figsize=(19, 5))
+ax[0].plot(np.real(lam)*86400, np.imag(lam)*86400, 'o', color='crimson', label='DMD')
+ax[0].plot(np.real(ev)*86400, np.imag(ev)*86400, 'x', color='steelblue', label='noyau K')
+ax[0].axvline(0, color='k', lw=.8); ax[0].set_xlabel(r'Re$\lambda$ (j$^{-1}$)')
+ax[0].set_ylabel(r'Im$\lambda$ (j$^{-1}$)'); ax[0].set_title('Spectre'); ax[0].legend(fontsize=8)
+
+j = ordre[0]
+ax[1].plot(np.real(Modes[:, j]), zb/1e3, 'crimson', label='Re')
+ax[1].plot(np.imag(Modes[:, j]), zb/1e3, 'crimson', ls='--', label='Im')
+T, cz = carac(Modes[:, j], lam[j])
+ax[1].set_title(f'Mode DMD 1 : T={T:.1f} j, $c_z$={cz:+.2f} cm/s'); ax[1].legend(fontsize=8)
+
+im = ax[2].pcolormesh(zb/1e3, zb/1e3, K, cmap='RdBu_r', shading='auto',
+                      vmin=-np.percentile(np.abs(K), 98), vmax=np.percentile(np.abs(K), 98))
+ax[2].plot(zb/1e3, zb/1e3, 'k--', lw=.7); ax[2].grid(False)
+ax[2].set_xlabel(r"$z'$ (km)"); ax[2].set_ylabel('z (km)'); ax[2].set_title(r"$K(z,z')$ lisse")
+fig.colorbar(im, ax=ax[2])
+
+rec = np.real(np.outer(Modes[:, j], np.exp(lam[j]*np.arange(Sa.shape[1])*dt_phys)))
+im = ax[3].pcolormesh(np.arange(Sa.shape[1]), zb/1e3, rec, cmap='RdBu_r', shading='auto')
+ax[3].grid(False); ax[3].set_xlabel('t'); ax[3].set_ylabel('z (km)')
+ax[3].set_title('Hovmoller du mode dominant'); fig.colorbar(im, ax=ax[3])
+for a in ax[:2]: a.grid(alpha=.3); a.set_ylabel('z (km)')
+plt.tight_layout(); plt.show()
+
+
+
+
+
+# ============================================================
+#  §C — CO-SPECTRE (k,omega) ET SPECTRE EN VITESSE DE PHASE
+#  Shaw & Lane (2013) : separer transport par ondes / par convection.
+#  Test du filtrage aux niveaux critiques : le flux porte par la
+#  vitesse de phase c doit DISPARAITRE la ou ubar(z) -> c.
+#  /!\ dt=6h => alias total au-dela de |c| correspondant a T<12h.
+#      Valide pour la bande lente/grande echelle uniquement.
+# ============================================================
+import numpy as np, xarray as xr, gc, matplotlib.pyplot as plt
+
+u_y = np.zeros((n_z, n_stat, n_x), dtype=np.float32)
+w_y = np.zeros((n_z, n_stat, n_x), dtype=np.float32)
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    u_y[iz] = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.mean(1)
+    w_y[iz] = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values.mean(1)
+ds_u.close(); ds_w.close(); gc.collect()
+
+om = 2*np.pi*np.fft.fftfreq(n_stat, dt_phys)
+kx = 2*np.pi*np.fft.fftfreq(n_x, dx)
+KK, OM = np.meshgrid(kx, om)
+ok = np.abs(KK) > 1e-12
+cph = np.zeros_like(KK); cph[ok] = OM[ok]/KK[ok]
+
+CBINS = np.linspace(-25, 25, 61); cc = 0.5*(CBINS[1:]+CBINS[:-1])
+idxc = np.digitize(cph.ravel(), CBINS) - 1
+Fc = np.zeros((n_z, cc.size))
+for iz in range(n_z):
+    A = u_y[iz] - u_y[iz].mean(); B = w_y[iz] - w_y[iz].mean()
+    CS = rho0[iz]*np.real(np.conj(np.fft.fft2(A))*np.fft.fft2(B))/(n_stat*n_x)**2
+    v = CS.ravel(); v[~ok.ravel()] = 0.0
+    Fc[iz] = np.bincount(np.clip(idxc, 0, cc.size-1), weights=v, minlength=cc.size)
+
+flux_y = np.array([rho0[iz]*np.mean((u_y[iz]-u_y[iz].mean())*(w_y[iz]-w_y[iz].mean()))
+                   for iz in range(n_z)])
+print(f"[ctrl] Parseval : {np.abs(Fc.sum(1)-flux_y).max()/np.abs(flux_y).max():.2e}")
+print(f"part grande echelle (y-moyennee) du flux total, mediane 2-18 km : "
+      f"{np.nanmedian(np.abs(flux_y[band])/np.abs(flux_zt[band].mean(1))):.2f}")
+
+b = (alt >= 2000) & (alt <= 18000)
+fig, ax = plt.subplots(1, 2, figsize=(13, 5.5))
+v = np.percentile(np.abs(Fc[b]), 99)
+im = ax[0].pcolormesh(cc, alt[b]/1e3, Fc[b], cmap='RdBu_r', vmin=-v, vmax=v, shading='auto')
+ax[0].plot(ubar_zt[b].mean(1), alt[b]/1e3, 'k-', lw=2.4, label=r'$\bar u(z)$')
+ax[0].grid(False); ax[0].set_xlabel('c (m/s)'); ax[0].set_ylabel('z (km)')
+ax[0].set_title(r'Flux de QdM par vitesse de phase $F(c,z)$'); ax[0].legend(fontsize=9)
+fig.colorbar(im, ax=ax[0])
+
+for c0 in [-12, -6, -3, 3, 6, 12]:
+    j = np.argmin(np.abs(cc-c0))
+    ax[1].plot(Fc[b, j]/(np.abs(Fc[b, j]).max()+1e-30), alt[b]/1e3, label=f'c={c0:+d}')
+ax[1].axvline(0, color='grey', lw=.8); ax[1].set_xlabel('flux normalise')
+ax[1].set_title('Attenuation par bande de phase'); ax[1].legend(fontsize=7); ax[1].grid(alpha=.3)
+plt.tight_layout(); plt.show()
+
+
+
+
