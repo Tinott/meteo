@@ -1,79 +1,27 @@
-Deux choses ressortent. D'abord le noir (
-𝜌
-0
-∂
-𝑡
-𝑢
-ˉ
-ρ
-0
-	​
+### §0bis.D — Lecture : l'échange latéral, terme manquant de la v1
 
-∂
-t
-	​
+Les deux intégrales du bilan sont ici calculées explicitement,
+$I_R=\mathrm{LAT}_R+\mathrm{VERT}_R$, et non plus projetées sur le seul flux
+vertical.
 
-u
-ˉ
-) est quasi nul devant les autres termes, et le rouge pointillé (RES) se superpose au violet (
-𝐼
-I) dans les deux panneaux : le bilan se réduit à 
-𝐼
-𝑅
-≃
-R
-E
-S
-𝑅
-I
-R
-	​
+**Le bilan se ferme sur la sous-maille.** $\rho_0\partial_t\bar u$ est quasi nul
+devant les autres termes et $\mathrm{RES}_R$ se superpose à $I_R$ dans les deux
+régions : le régime est bien quasi-stationnaire et le résidu s'interprète comme
+$-\partial_z$(flux sous-maille), non comme une erreur de fermeture. L'identité
+$I_c+I_s=\partial_z(\rho_0\langle wu\rangle)$ est vérifiée au zéro machine
+(courbe jaune sur la noire), ce qui valide la périodicité et le pas $\Delta y$.
 
-≃RES
-R
-	​
+**Résultat central : $\mathrm{LAT}$ est du même ordre que $\mathrm{VERT}$.** Dans
+chaque région, l'échange latéral et la convergence verticale sont comparables en
+amplitude et souvent de signes opposés — entre 10 et 14 km dans l'humide, ils se
+compensent partiellement, et c'est leur somme qui constitue $I_c$. Corollaire :
+$I_c$ et $I_s$ sont largement **en opposition de phase**, si bien que leur somme
+est plus petite que chacune des parts sur plusieurs tranches d'altitude.
 
-, ce qui valide la quasi-stationnarité et confirme que ton résidu est bien un diagnostic de sous-maille et non une tendance mal fermée. Ensuite — et c'est le résultat neuf — LAT (vert) est du même ordre que VERT (bleu) dans chaque région, avec des signes souvent opposés : vers 10–14 km dans l'humide, l'échange latéral et la convergence verticale se compensent partiellement, et c'est leur somme qui fait 
-𝐼
-𝑐
-I
-c
-	​
-
-. Le panneau 3 le dit encore mieux : 
-𝐼
-𝑐
-I
-c
-	​
-
- et 
-𝐼
-𝑠
-I
-s
-	​
-
- sont largement en opposition de phase sur la colonne, alors que leur somme (noir, exactement sur 
-∂
-𝑧
-(
-𝜌
-0
-⟨
-𝑤
-𝑢
-⟩
-)
-∂
-z
-	​
-
-(ρ
-0
-	​
-
-⟨wu⟩) — l'identité est vérifiée) est plus petite que les parts individuelles sur plusieurs tranches. Autrement dit, il existe une redistribution horizontale de quantité de mouvement entre colonnes humides et sèches, invisible dans le bilan de domaine parce qu'elle s'annule à la sommation. La v1 ne pouvait pas la voir : elle n'avait tout simplement pas ce terme.
+> Il existe donc une **redistribution horizontale de quantité de mouvement entre
+> colonnes humides et sèches, structurellement invisible dans un bilan de
+> domaine** : elle s'annule exactement à la sommation
+> ($\mathrm{LAT}_c=-\mathrm{LAT}_s$). C'est le terme que la v1 ne calculait pas.
 
 
 
@@ -81,102 +29,43 @@ z
 
 
 
-La circulation organisée est maintenant complète et propre : 
-𝑤
-ˉ
-𝑐
-w
-ˉ
-c
-	​
 
- atteint 
-+
-0,73
-+0,73 cm/s vers 9,6 km, 
-𝑤
-ˉ
-𝑠
-w
-ˉ
-s
-	​
+### §0bis.C — Lecture : une circulation vigoureuse, mais sans contraste de vent
 
- descend à 
-−
-0,5
-−0,5 cm/s, cellule profonde bien équilibrée en masse. Mais le contraste zonal reste minuscule — 
-∣
-𝑢
-ˉ
-𝑐
-−
-𝑢
-ˉ
-𝑠
-∣
-≲
-0,3
-∣
-u
-ˉ
-c
-	​
+Le masque dynamique et les moyennes conditionnelles par pas de temps donnent
+une image nette de l'organisation humide/sec.
 
-−
-u
-ˉ
-s
-	​
+**La circulation organisée est bien réelle et profonde.** $\bar w_c$ atteint
+$+0{,}73$ cm/s vers 9,6 km, $\bar w_s$ descend à $-0{,}5$ cm/s : cellule
+convective d'échelle du domaine, équilibrée en masse
+($f_c\bar w_c+f_s\bar w_s\simeq0$), ascendance dans les colonnes humides et
+subsidence compensatrice dans les sèches.
 
-∣≲0,3 m/s, entièrement noyé dans les enveloppes 
-±
-1
-𝜎
-±1σ qui se recouvrent presque totalement. Comme 
-O
-R
-G
-∝
-𝑓
-𝑐
- 
-𝛿
-𝑢
-𝑐
- 
-𝛿
-𝑤
-𝑐
-ORG∝f
-c
-	​
+**Mais le contraste zonal est négligeable.** $|\bar u_c-\bar u_s|\lesssim0{,}3$
+m/s sur toute la colonne, très en deçà des enveloppes $\pm1\sigma$ temporelles,
+qui se recouvrent presque intégralement. Comme le terme de contraste s'écrit
+$\mathrm{ORG}=\rho_0\big[f_c\,\delta\bar u_c\,\delta\bar w_c
++f_s\,\delta\bar u_s\,\delta\bar w_s\big]$, il reste faible **non pas parce que
+la circulation est faible, mais parce que l'air ascendant humide possède presque
+le même vent zonal que la moyenne de domaine**. Le panneau de décomposition le
+confirme : la turbulence interne se superpose au flux total.
 
-δu
-c
-	​
+> **Ce test invalide l'objection méthodologique de la v1.** Le masque figé et les
+> moyennes globales faisaient effectivement basculer tout contraste transitoire
+> dans le terme interne. Avec un masque instantané et des moyennes par pas de
+> temps, cette part est récupérée — et elle reste marginale. La faiblesse du
+> contraste est donc un **résultat physique**, pas un artefact de traitement.
 
-δw
-c
-	​
+Enfin, $\sigma_u$ est comparable dans les deux régions (2–4 m/s, légèrement plus
+fort dans le sec en haute troposphère) : le réservoir de fluctuations n'est pas
+l'apanage des colonnes convectives. Le pic de surface du bilan
+($\sim65\times10^{-6}$ kg m$^{-2}$s$^{-2}$) écrase le reste d'un facteur 20, ce
+qui justifie de restreindre l'analyse à la fenêtre 2–18 km.
 
-, le terme de contraste reste négligeable dans le flux vertical (panneau 5 : la turbulence interne magenta se confond avec le flux total noir), et le masque dynamique n'y change rien : la part transitoire que je pensais récupérer était donc bien réelle mais marginale, pour une raison physique claire et non par artefact de méthode. La conclusion se resserre : la circulation humide/sec est vigoureuse mais transporte peu de QdM verticalement, faute de contraste en 
-𝑢
-u ; en revanche elle en échange latéralement (image 1). Enfin le panneau 6 rappelle l'échelle réelle du problème — le pic de surface à 
-∼
-65
-×
-10
-−
-6
-∼65×10
-−6
- écrase tout le reste d'un facteur 20, ce qui justifie a posteriori de travailler sur 2–18 km. À noter que 
-𝜎
-𝑢
-σ
-u
-	​
 
- est comparable dans les deux régions (2–4 m/s, légèrement plus fort dans le sec en altitude) : le réservoir de fluctuations n'est pas l'apanage des colonnes convectives.
-
+**Synthèse des deux sections.** La circulation humide/sec transporte peu de
+quantité de mouvement *verticalement*, faute de contraste en $\bar u$ (§0bis.C),
+mais elle en **échange latéralement** de façon non négligeable (§0bis.D). Une
+paramétrisation qui traite chaque colonne indépendamment ignore ce chemin de
+communication. La suite du notebook (§1–§2) teste si ce transport se laisse
+décrire par une fermeture locale, puis non locale, en verticale.
