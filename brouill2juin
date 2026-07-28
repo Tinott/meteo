@@ -1,224 +1,87 @@
 # ============================================================
-#  §0bis (v3.1) — BILAN DE QdM PAR SOUS-DOMAINE, TERME PAR TERME
+#  §0bis.D — LES DEUX INTEGRALES, EXPLICITEMENT
 #
-#    rho0 dt<u> + (1/A)[ int_Ac div(rho0 u u) + int_As div(rho0 u u) ] = RES
+#     I_c = (1/A) int_Ac div(rho0 u u) dA = LAT_c + VERT_c
+#     I_s = (1/A) int_As div(rho0 u u) dA = LAT_s + VERT_s
 #
-#  Sur un SOUS-domaine, div n'est pas reductible a d/dz :
-#     (1/A) int_AR div(rho0 u u) = LAT_R + VERT_R
-#     LAT_R  = (1/A) int_AR [ dx(rho0 u u) + dy(rho0 v u) ]   (echange lateral)
-#     VERT_R = d/dz [ (1/A) int_AR rho0 w u ]                 (flux vertical)
-#  Controle : LAT_c + LAT_s = 0 (periodicite du domaine complet).
-#  RES = ce que les champs resolus ne ferment pas = -dz(flux sous-maille).
+#  Bilan par region :  TEN_R + I_R = RES_R      (RES_R = -sous-maille region R)
+#  Bilan global     : (TEN_c+TEN_s) + (I_c+I_s) = RES
 #
-#  v3.1 : - appariement temporel 2D/3D (prw plus frequent que les sorties 3D)
-#         - reparation des pas de temps ou une region est VIDE (source des NaN)
-#         - sommes en float64 (les controles d'identite l'exigent)
+#  Le masque vient du PRW (colonne) => il ne depend PAS de z, donc
+#  d/dz commute avec int_A_R : VERT_R = d/dz[(1/A) int_A_R rho0 w u].
 # ============================================================
-import numpy as np, xarray as xr, gc
+import numpy as np, matplotlib.pyplot as plt
+from scipy.ndimage import uniform_filter1d
 
-# --- pas de grille horizontaux ----------------------------------------
-_ds = xr.open_dataset(path3d('ua'))
-_yv = _ds[dim_y].values.astype(float)
-dy = float(np.mean(np.diff(_yv))) if _yv.size > 1 else dx
-if abs(dy) <= 1.5: dy = dx           # coord. en km ou en indice -> on retombe sur dx
-_ds.close(); del _ds, _yv; gc.collect()
-print(f"dx={dx:.0f} m   dy={dy:.0f} m")
+SMOOTH = 3          # lissage vertical POUR L'AFFICHAGE seulement (0 = brut)
 
-# --- masque humide dynamique, aligne sur les instants 3D ---------------
-MASK_MODE = 'fixed_thresh'   # 'static' | 'fixed_thresh' | 'median_t'
-PRW_Q     = 0.50             # quantile du seuil fixe (0.50 = mediane)
-F_MIN     = 0.02             # fraction d'aire minimale toleree par region
+DIVc = LATc + VERTc                 # <- integrale 1
+DIVs = LATs + VERTs                 # <- integrale 2
+RESc = TENc + DIVc                  # residu sous-maille, region humide
+RESs = TENs + DIVs                  #                     region seche
 
-ds_prw = xr.open_dataset(path2d('prw'))
-da_prw = ds_prw['prw']
-tdim2 = next((d for d in da_prw.dims if da_prw.sizes[d] not in (n_y, n_x)), da_prw.dims[0])
-n_t2  = da_prw.sizes[tdim2]
+# --- controle : I_c + I_s = dz(rho0<wu>) -------------------------------
+dzPHI = np.gradient(PHI, alt, axis=0)
+e4 = np.abs((DIVc+DIVs) - dzPHI).max()/(np.abs(dzPHI).max()+1e-30)
+print(f"[ctrl] I_c + I_s = dz(rho0<wu>) : erreur relative {e4:.2e}")
+print("       (ne teste que LAT_c+LAT_s=0 : les horizontales s'annulent par periodicite)")
 
-idx3 = np.arange(n_t)[idx_stat]
-if n_t2 == n_t:
-    idx2 = idx3
-else:
-    _d = xr.open_dataset(path3d('ua'))
-    t3 = _d[dim_t].values if dim_t in _d.coords else None
-    _d.close()
-    t2 = da_prw[tdim2].values if tdim2 in da_prw.coords else None
-    def _num(a):
-        return (a.astype('datetime64[s]').astype(np.float64)
-                if np.issubdtype(a.dtype, np.datetime64) else a.astype(np.float64))
-    if t3 is not None and t2 is not None and t3.size == n_t and t2.size == n_t2:
-        a3, a2 = _num(t3), _num(t2)
-        idx2 = np.abs(a2[None, :] - a3[:, None]).argmin(1)[idx_stat]
-        print(f"appariement par coordonnee : ecart max {np.abs(a2[idx2]-a3[idx3]).max():.0f}")
-    else:
-        assert n_t2 % n_t == 0, f"pas de correspondance simple : {n_t2} pas 2D / {n_t} pas 3D"
-        r = n_t2 // n_t
-        idx2 = ((np.arange(n_t) + 1)*r - 1)[idx_stat]
-        print(f"appariement par pas constant : 1 snapshot 2D sur {r}")
+# --- tableau des amplitudes -------------------------------------------
+bnd = (alt >= 2000) & (alt <= 18000)
+def _col(a):                                    # integrale de colonne, 2-18 km
+    aa, zz = a[bnd], alt[bnd]
+    return float(np.sum(0.5*(aa[1:]+aa[:-1])*np.diff(zz)))
+def _stat(A):
+    a = A.mean(1)
+    return np.sqrt(np.mean(a[bnd]**2))*1e6, _col(a)*1e3
 
-prw = da_prw.isel({tdim2: idx2}).values.astype(np.float32)   # (n_stat, ny, nx)
-ds_prw.close(); del da_prw
-assert prw.shape[0] == n_stat, f"{prw.shape[0]} != n_stat={n_stat}"
+rows = [('TEN  rho0 dt u', TENc, TENs), ('LAT  echange lateral', LATc, LATs),
+        ('VERT convergence vert.', VERTc, VERTs), ('I    = LAT+VERT', DIVc, DIVs),
+        ('RES  = TEN+I', RESc, RESs)]
+print(f"\n{'terme':24s} {'RMS_c':>9s} {'RMS_s':>9s} {'|  int_c':>10s} {'int_s':>9s}")
+print(f"{'':24s} {'(1e-6 SI)':>9s} {'(1e-6 SI)':>9s} {'| (1e-3 kg/m/s2)':>10s}")
+print('-'*66)
+for nm, Ac_, As_ in rows:
+    rc, ic = _stat(Ac_); rs, is_ = _stat(As_)
+    print(f"{nm:24s} {rc:9.3f} {rs:9.3f} | {ic:9.3f} {is_:9.3f}")
 
-if MASK_MODE == 'static':
-    maskc = np.broadcast_to(mh, (n_stat,) + mh.shape).copy()
-elif MASK_MODE == 'median_t':
-    maskc = prw > np.median(prw.reshape(n_stat, -1), axis=1).astype(np.float32)[:, None, None]
-else:
-    seuil = np.float32(np.quantile(prw, PRW_Q))
-    maskc = prw > seuil
-    print(f"seuil PRW fixe (q={PRW_Q:.2f}) = {float(seuil):.2f} kg/m2")
+print(f"\nExport lateral net humide->sec sur 2-18 km : {_col(LATc.mean(1))*1e3:+.3f} "
+      f"x1e-3 kg m-1 s-2")
+print(f"a comparer a la contrainte de surface tau_s = {PHI_sgs[0]*1e3:+.3f} x1e-3")
+print(f"=> l'echange lateral represente {abs(_col(LATc.mean(1))/(PHI_sgs[0]+1e-30))*100:.1f} % "
+      f"de tau_s en equivalent contrainte")
 
-# --- REPARATION des pas de temps degeneres (une region vide => NaN) ----
-frac = maskc.reshape(n_stat, -1).mean(1)
-bad  = np.where((frac < F_MIN) | (frac > 1.0 - F_MIN))[0]
-if bad.size:
-    print(f"/!\\ {bad.size} pas de temps degeneres (fraction humide hors [{F_MIN},{1-F_MIN}])")
-    print(f"    -> seuil recalcule localement a la mediane de l'instant : t={bad[:10]}...")
-    for t in bad:
-        maskc[t] = prw[t] > np.float32(np.median(prw[t]))
-    frac = maskc.reshape(n_stat, -1).mean(1)
-del prw; gc.collect()
+# --- figures -----------------------------------------------------------
+sm = (lambda a: uniform_filter1d(a, SMOOTH)) if SMOOTH else (lambda a: a)
+m  = alt <= 18000
+zk = zkm
 
-Mc     = maskc.reshape(n_stat, -1)
-Ncell  = Mc.shape[1]
-Nc     = Mc.sum(1).astype(np.float64); Ns = Ncell - Nc
-assert Nc.min() > 0 and Ns.min() > 0, "region encore vide apres reparation"
-fc_t   = Nc/Ncell; fs_t = Ns/Ncell
-churn  = float((maskc[1:] != maskc[:-1]).mean())
-del maskc; gc.collect()
-print(f"fraction humide : moy {fc_t.mean():.3f}  min {fc_t.min():.3f}  max {fc_t.max():.3f}")
-print(f"renouvellement du masque entre 2 pas : {churn*100:.1f} % des mailles changent de region")
+fig, ax = plt.subplots(1, 3, figsize=(16.5, 6))
 
-# --- helpers (sommes en float64 : les controles d'identite en dependent)
-def _means(X):
-    """moyennes : globale, conditionnelle humide, conditionnelle seche"""
-    tot = X.sum(1, dtype=np.float64); sc = (X*Mc).sum(1, dtype=np.float64)
-    return tot/Ncell, sc/Nc, (tot-sc)/Ns
+for k, (lab, TE, LA, VE, DI, RE) in enumerate([
+        ('humide $A_c$', TENc, LATc, VERTc, DIVc, RESc),
+        ('seche $A_s$',  TENs, LATs, VERTs, DIVs, RESs)]):
+    a = ax[k]
+    a.plot(sm(TE.mean(1))[m]*1e6, zk[m], 'k',  lw=1.6, label=r'$\rho_0\partial_t u$')
+    a.plot(sm(LA.mean(1))[m]*1e6, zk[m], 'g',  lw=1.6, label='LAT (lateral)')
+    a.plot(sm(VE.mean(1))[m]*1e6, zk[m], 'b',  lw=1.6, label='VERT')
+    a.plot(sm(DI.mean(1))[m]*1e6, zk[m], 'purple', lw=2.6, label=r'$I$ = LAT+VERT')
+    a.plot(sm(RE.mean(1))[m]*1e6, zk[m], 'crimson', lw=1.4, ls='--', label='RES')
+    a.axvline(0, color='grey', lw=.8)
+    a.set_title(f'Bilan region {lab}'); a.set_xlabel(r'$\times10^{-6}$ kg m$^{-2}$s$^{-2}$')
+    a.set_ylabel('z (km)'); a.legend(fontsize=8)
 
-def _parts(X):
-    """integrales partielles normalisees par A : (1/A)int_Ac , (1/A)int_As"""
-    tot = X.sum(1, dtype=np.float64); sc = (X*Mc).sum(1, dtype=np.float64)
-    return sc/Ncell, (tot-sc)/Ncell
+a = ax[2]
+a.plot(sm(DIVc.mean(1))[m]*1e6, zk[m], 'b', lw=2.2, label=r'$I_c$ (humide)')
+a.plot(sm(DIVs.mean(1))[m]*1e6, zk[m], 'r', lw=2.2, label=r'$I_s$ (seche)')
+a.plot(sm((DIVc+DIVs).mean(1))[m]*1e6, zk[m], 'k', lw=2.2, label=r'$I_c+I_s$')
+a.plot(sm(dzPHI.mean(1))[m]*1e6, zk[m], 'y--', lw=1.4, label=r'$\partial_z(\rho_0\langle wu\rangle)$')
+a.axvline(0, color='grey', lw=.8)
+a.set_title('Les deux integrales'); a.set_xlabel(r'$\times10^{-6}$ kg m$^{-2}$s$^{-2}$')
+a.legend(fontsize=9)
 
-Z = lambda: np.zeros((n_z, n_stat))
-Ug, Uc, Us = Z(), Z(), Z()           # <u>, <u>_c, <u>_s
-Wg, Wc, Ws = Z(), Z(), Z()
-UWg, UWc, UWs = Z(), Z(), Z()        # <uw> totaux (pas des anomalies)
-UUc, UUs, WWc, WWs = Z(), Z(), Z(), Z()
-TENc, TENs = Z(), Z()                # (1/A) int_AR rho0 dt u
-LATc, LATs = Z(), Z()                # flux lateral a travers l'interface
-
-# --- boucle niveau par niveau -----------------------------------------
-ds_u = xr.open_dataset(path3d('ua'))
-ds_v = xr.open_dataset(path3d('va'))
-ds_w = xr.open_dataset(path3d('wa'))
-for iz in range(n_z):
-    u = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
-    v = ds_v['va'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
-    w = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
-    r = np.float32(rho0[iz])
-
-    # ---- LAT : divergence horizontale, differences centrees periodiques
-    F = u*u
-    divh = (np.roll(F,-1,axis=2) - np.roll(F,1,axis=2))/np.float32(2*dx)
-    F = v*u; del v
-    divh += (np.roll(F,-1,axis=1) - np.roll(F,1,axis=1))/np.float32(2*dy)
-    del F; gc.collect()
-    pc, ps = _parts(divh.reshape(n_stat,-1)); LATc[iz] = r*pc; LATs[iz] = r*ps
-    del divh; gc.collect()
-
-    # ---- TEND : derivee temporelle ponctuelle, PUIS moyenne masquee
-    dudt = np.gradient(u, dt_phys, axis=0)
-    pc, ps = _parts(dudt.reshape(n_stat,-1)); TENc[iz] = r*pc; TENs[iz] = r*ps
-    del dudt; gc.collect()
-
-    # ---- moments conditionnels
-    U = u.reshape(n_stat,-1); W = w.reshape(n_stat,-1); del u, w
-    Ug[iz], Uc[iz], Us[iz] = _means(U)
-    Wg[iz], Wc[iz], Ws[iz] = _means(W)
-    UWg[iz], UWc[iz], UWs[iz] = _means(U*W)
-    _, UUc[iz], UUs[iz] = _means(U*U)
-    _, WWc[iz], WWs[iz] = _means(W*W)
-    del U, W; gc.collect()
-
-ds_u.close(); ds_v.close(); ds_w.close(); gc.collect()
-
-_nan = {k: int(np.isnan(v).sum()) for k, v in
-        dict(Uc=Uc, Us=Us, Wc=Wc, Ws=Ws, UWc=UWc, UWs=UWs, LATc=LATc, TENc=TENc).items()}
-print("NaN residuels :", _nan if any(_nan.values()) else "aucun")
-print("termes bruts calcules.")
-
-
-
-
-
-# ============================================================
-#  §0bis.B — assemblage des termes, controles exacts, fermeture
-# ============================================================
-R = rho0[:, None]
-
-# --- flux verticaux resolus, par region --------------------------------
-MFc  = R*fc_t*Uc*Wc                        # circulation organisee humide
-MFs  = R*fs_t*Us*Ws                        #                       seche
-INTc = R*fc_t*(UWc - Uc*Wc)                # turbulence interne humide
-INTs = R*fs_t*(UWs - Us*Ws)                #                    seche
-PHI  = R*UWg                               # flux vertical total resolu
-
-VERTc = np.gradient(MFc + INTc, alt, axis=0)
-VERTs = np.gradient(MFs + INTs, alt, axis=0)
-
-# --- bilan complet -----------------------------------------------------
-BUDc = TENc + LATc + VERTc
-BUDs = TENs + LATs + VERTs
-RES  = BUDc + BUDs                          # = -dz(flux sous-maille)
-
-# --- identites de controle (doivent etre au zero machine) --------------
-e1 = np.abs(LATc + LATs).max()/(np.abs(LATc).max() + 1e-30)
-e2 = np.abs((MFc+MFs+INTc+INTs) - PHI).max()/(np.abs(PHI).max() + 1e-30)
-e3 = np.abs(fc_t*Uc + fs_t*Us - Ug).max()
-print(f"[ctrl] LAT_c + LAT_s = 0            : erreur relative {e1:.2e}")
-print(f"[ctrl] MF + INT = flux total resolu : erreur relative {e2:.2e}")
-print(f"[ctrl] f_c u_c + f_s u_s = u_global : erreur absolue  {e3:.2e} m/s")
-
-# --- decomposition du flux : contraste vs interne, PAR PAS DE TEMPS ----
-dUc, dWc = Uc - Ug, Wc - Wg
-dUs, dWs = Us - Ug, Ws - Wg
-ORG  = R*(fc_t*dUc*dWc + fs_t*dUs*dWs)      # contraste inter-regions
-INT  = INTc + INTs                          # turbulence interne
-FLXp = R*(UWg - Ug*Wg)                      # rho0 <u'w'> global
-print(f"[ctrl] ORG + INT = rho0<u'w'>       : erreur relative "
-      f"{np.abs(ORG+INT-FLXp).max()/(np.abs(FLXp).max()+1e-30):.2e}")
-
-# --- ce que la v1 mesurait : la part STATIONNAIRE du contraste ---------
-fcm, fsm = fc_t.mean(), fs_t.mean()
-ORG_bar  = ORG.mean(1)
-ORG_stat = rho0*(fcm*dUc.mean(1)*dWc.mean(1) + fsm*dUs.mean(1)*dWs.mean(1))
-ORG_tran = ORG_bar - ORG_stat               # contraste TRANSITOIRE (perdu en v1)
-
-b   = (alt >= 2000) & (alt <= 18000)
-den = np.abs(FLXp.mean(1)[b]) + 1e-30
-print()
-print("Part du flux vertical portee par le contraste inter-regions (mediane 2-18 km) :")
-print(f"   contraste total       {np.nanmedian(np.abs(ORG_bar[b])/den)*100:6.1f} %")
-print(f"     dont stationnaire   {np.nanmedian(np.abs(ORG_stat[b])/den)*100:6.1f} %   <- v1")
-print(f"     dont transitoire    {np.nanmedian(np.abs(ORG_tran[b])/den)*100:6.1f} %   <- recupere ici")
-print(f"   turbulence interne    {np.nanmedian(np.abs(INT.mean(1)[b])/den)*100:6.1f} %")
-
-# --- amplitude du terme lateral, que la v1 ignorait totalement ---------
-sc_ = np.abs(VERTc + VERTs)[b].mean() + 1e-30
-print()
-print(f"Amplitude du flux lateral |LAT_c| rapportee au terme vertical : "
-      f"{np.abs(LATc)[b].mean()/sc_*100:.1f} %")
-print("(LAT_c = -LAT_s : echange net de QdM entre colonne humide et colonne seche)")
-
-# --- residu = flux sous-maille, integre depuis le sommet ---------------
-RES_bar = RES.mean(1)
-seg     = 0.5*(RES_bar[1:] + RES_bar[:-1])*np.diff(alt)
-PHI_sgs = np.concatenate([np.cumsum(seg[::-1])[::-1], [0.0]])
-print()
-print(f"Contrainte de surface diagnostiquee tau_s = {PHI_sgs[0]:.4f} kg m-1 s-2")
-print(f"Flux resolu au 1er niveau            = {PHI.mean(1)[0]:.4f} kg m-1 s-2")
-print("(le residu absorbe aussi les erreurs de troncature du schema : ordre de grandeur)")
+for a in ax: a.grid(alpha=.3); a.set_ylim(0, 18)
+plt.tight_layout(); plt.show()
 
 
 
