@@ -1,17 +1,15 @@
----------------------------------------------------------------------------
-TypeError                                 Traceback (most recent call last)
-Cell In[12], line 8
-      5 W_SEUIL = 0.3     # m/s, seuil de coherence verticale (cf. reserve methodologique ci-dessus)
-      6 MIN_RUN = 2        # nb minimal de niveaux pour qu'un segment compte
-----> 8 Btilde, zb, rb, nb = accumulate_transilient(ib, np.arange(n_stat), W_SEUIL=W_SEUIL, MIN_RUN=MIN_RUN)
-     10 dz_b = np.gradient(zb)
-     11 norm = n_stat * n_y * n_x * dx * dy * np.outer(dz_b, dz_b)
+# ---- normalise idx_stat en tableau d'indices, qu'il soit slice/liste/array ----
+if isinstance(idx_stat, slice):
+    _start = idx_stat.start if idx_stat.start is not None else 0
+    _step  = idx_stat.step if idx_stat.step is not None else 1
+    if idx_stat.stop is None:
+        raise ValueError(
+            "idx_stat est un slice sans 'stop' defini (ex: slice(10, None)) -- "
+            "impossible de le convertir automatiquement en tableau. "
+            "Remplace-le par slice(10, 110) ou par un tableau explicite avant de continuer."
+        )
+    idx_stat = np.arange(_start, idx_stat.stop, _step)
+else:
+    idx_stat = np.asarray(idx_stat)
 
-Cell In[11], line 76
-     74 ds_u = xr.open_dataset(path3d('ua'))
-     75 ds_w = xr.open_dataset(path3d('wa'))
----> 76 t_global = idx_stat[idx_time]
-     78 for n, it in enumerate(t_global):
-     79     u = ds_u['ua'].isel({dim_t: it, dim_z: ib}).values.astype(np.float32)
-
-TypeError: 'slice' object is not subscriptable
+print(f"idx_stat normalise en tableau : {idx_stat.size} indices, de {idx_stat.min()} a {idx_stat.max()}")
