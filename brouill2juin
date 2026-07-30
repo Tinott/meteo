@@ -270,3 +270,78 @@ ax[3].set_xlim(-2, 2); ax[3].set_xlabel(r'$C_{\rm local}(z)$')
 ax[3].set_title('Effet de pression residuel'); ax[3].legend(fontsize=8)
 for a in ax: a.grid(alpha=.3)
 plt.tight_layout(); plt.show()
+
+
+
+
+
+
+
+
+# ============================================================
+#  §E — NOYAU D'ENTRAINEMENT CAUSAL POUR Du(z) = uc - ubar
+#  Derive de l'ODE de dilution du_c/dz = -eps(z)[u_c - ubar(z)],
+#  eps(z) DEJA diagnostique via eps-delta = dz(Mc)/Mc (section 6.1).
+#  ZERO parametre libre nouveau -- test a parametre ajuste = 0.
+# ============================================================
+import numpy as np, matplotlib.pyplot as plt
+
+band = (alt >= 2000) & (alt <= 18000); ib = np.where(band)[0]
+zb = alt[ib]; nb = ib.size
+
+# --- recuperer/reconstruire Mc et Du diagnostiques (region humide) -----
+# Mc_diag, Du_diag doivent deja exister depuis §6.1/6.2 ; sinon les
+# recalculer ici avec le meme seuil qu'utilise dans la synthese.
+Mc_diag = Mc_humide[ib]          # <- adapter au nom de variable reel
+Du_diag = Du_humide[ib]          # <- u_c - u_e ou u_c - ubar, adapter au nom reel
+ubar    = ubar_zt[ib].mean(1)
+
+# --- entrainement net, seule la partie ENTRANTE dilue l'updraft --------
+net = np.gradient(Mc_diag, zb) / np.maximum(Mc_diag, 1e-30)   # eps - delta
+eps_diln = np.clip(net, 0, None)                               # approx : detr. n'appauvrit pas
+
+# --- noyau causal K(z,z') = exp(-int_{z'}^{z} eps dz'') ----------------
+cum_eps = np.concatenate([[0], np.cumsum(0.5*(eps_diln[1:]+eps_diln[:-1])*np.diff(zb))])
+K = np.zeros((nb, nb))
+for i in range(nb):
+    for j in range(i+1):                       # causal : z' <= z uniquement
+        K[i, j] = np.exp(-(cum_eps[i] - cum_eps[j]))
+
+# --- prediction de Du par convolution causale ---------------------------
+dubar_dz = np.gradient(ubar, zb)
+Du_pred = np.array([-np.trapz(K[i, :i+1]*dubar_dz[:i+1], zb[:i+1]) for i in range(nb)])
+
+nse = 1 - np.sum((Du_diag-Du_pred)**2)/np.sum((Du_diag-Du_diag.mean())**2)
+r   = np.corrcoef(Du_diag, Du_pred)[0, 1]
+print(f"NSE (zero parametre ajuste) : {nse:+.3f}   correlation r={r:+.3f}")
+
+# --- flux predit vs flux vrai -------------------------------------------
+Phi_pred = Mc_diag * Du_pred
+Phi_true = flux_zt[ib].mean(1)      # <- adapter au nom reel du flux de Reynolds diagnostique
+nse_phi = 1 - np.sum((Phi_true-Phi_pred)**2)/np.sum((Phi_true-Phi_true.mean())**2)
+print(f"NSE sur le flux de Reynolds directement : {nse_phi:+.3f}")
+
+# --- residu = mesure locale de l'effet de pression (C effectif) --------
+with np.errstate(invalid='ignore', divide='ignore'):
+    C_local = 1.0 - Du_diag / np.where(np.abs(Du_pred) < 1e-6, np.nan, Du_pred)
+
+fig, ax = plt.subplots(1, 4, figsize=(19, 5.5))
+ax[0].plot(eps_diln*1e3, zb/1e3, 'darkorange', lw=2)
+ax[0].set_xlabel(r'$\varepsilon_{diln}$ ($\times10^{-3}$ m$^{-1}$)'); ax[0].set_title('Entrainement (deja mesure)')
+
+im = ax[1].pcolormesh(zb/1e3, zb/1e3, K, cmap='viridis', shading='auto')
+ax[1].plot(zb/1e3, zb/1e3, 'r--', lw=.7)
+ax[1].set_xlabel("z' (km, origine)"); ax[1].set_ylabel('z (km)')
+ax[1].set_title('Noyau causal K(z,z prime)'); fig.colorbar(im, ax=ax[1])
+
+ax[2].plot(Du_diag, zb/1e3, 'k-', lw=2.4, label='diagnostique')
+ax[2].plot(Du_pred, zb/1e3, 'r--', lw=2, label=f'predit (NSE={nse:+.2f})')
+ax[2].axvline(0, color='grey', lw=.8); ax[2].set_xlabel('m/s')
+ax[2].set_title(r'$\Delta u(z)$'); ax[2].legend(fontsize=9)
+
+ax[3].plot(C_local, zb/1e3, 'purple', lw=2)
+ax[3].axvline(0, color='k', ls=':', lw=1, label='C=0 (dilution pure)')
+ax[3].set_xlim(-2, 2); ax[3].set_xlabel(r'$C_{\rm local}(z)$')
+ax[3].set_title('Effet de pression residuel'); ax[3].legend(fontsize=8)
+for a in ax: a.grid(alpha=.3)
+plt.tight_layout(); plt.show()
