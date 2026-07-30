@@ -1,10 +1,17 @@
-# ---- dy manquant : derive depuis la coordonnee dim_y de 'ua' -----------
-_ds = xr.open_dataset(path3d('ua'))
-_yv = _ds[dim_y].values.astype(float)
-dy = float(np.mean(np.diff(_yv))) if _yv.size > 1 else dx
-if abs(dy) <= 1.5:
-    dy = dx      # coordonnee en km ou en indice -> on retombe sur dx (suppose grille reguliere)
-_ds.close(); del _ds, _yv
-gc.collect()
+---------------------------------------------------------------------------
+TypeError                                 Traceback (most recent call last)
+Cell In[12], line 8
+      5 W_SEUIL = 0.3     # m/s, seuil de coherence verticale (cf. reserve methodologique ci-dessus)
+      6 MIN_RUN = 2        # nb minimal de niveaux pour qu'un segment compte
+----> 8 Btilde, zb, rb, nb = accumulate_transilient(ib, np.arange(n_stat), W_SEUIL=W_SEUIL, MIN_RUN=MIN_RUN)
+     10 dz_b = np.gradient(zb)
+     11 norm = n_stat * n_y * n_x * dx * dy * np.outer(dz_b, dz_b)
 
-print(f"dy derive = {dy:.0f} m")
+Cell In[11], line 76
+     74 ds_u = xr.open_dataset(path3d('ua'))
+     75 ds_w = xr.open_dataset(path3d('wa'))
+---> 76 t_global = idx_stat[idx_time]
+     78 for n, it in enumerate(t_global):
+     79     u = ds_u['ua'].isel({dim_t: it, dim_z: ib}).values.astype(np.float32)
+
+TypeError: 'slice' object is not subscriptable
