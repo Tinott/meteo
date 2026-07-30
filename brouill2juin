@@ -1,14 +1,12 @@
----------------------------------------------------------------------------
-ValueError                                Traceback (most recent call last)
-Cell In[14], line 6
-      4     _step  = idx_stat.step if idx_stat.step is not None else 1
-      5     if idx_stat.stop is None:
-----> 6         raise ValueError(
-      7             "idx_stat est un slice sans 'stop' defini (ex: slice(10, None)) -- "
-      8             "impossible de le convertir automatiquement en tableau. "
-      9             "Remplace-le par slice(10, 110) ou par un tableau explicite avant de continuer."
-     10         )
-     11     idx_stat = np.arange(_start, idx_stat.stop, _step)
-     12 else:
+# ---- normalise idx_stat en tableau d'indices, quel que soit son type -----
+if isinstance(idx_stat, slice):
+    _ds_tmp = xr.open_dataset(path3d('ua'))
+    _n_t_total = _ds_tmp.sizes[dim_t]
+    _ds_tmp.close()
+    idx_stat = np.arange(*idx_stat.indices(_n_t_total))
+else:
+    idx_stat = np.asarray(idx_stat)
 
-ValueError: idx_stat est un slice sans 'stop' defini (ex: slice(10, None)) -- impossible de le convertir automatiquement en tableau. Remplace-le par slice(10, 110) ou par un tableau explicite avant de co
+n_stat = idx_stat.size   # recalcule pour rester coherent avec le idx_stat normalise
+
+print(f"idx_stat normalise en tableau : {idx_stat.size} indices, de {idx_stat.min()} a {idx_stat.max()}")
