@@ -1,14 +1,231 @@
-# --- decomposition du flux : contraste vs interne, PAR PAS DE TEMPS ----
-dUc, dWc = Uc - Ug, Wc - Wg
-dUs, dWs = Us - Ug, Ws - Wg
-ORG  = R*(fc_t*dUc*dWc + fs_t*dUs*dWs)      # contraste inter-regions
-INT  = INTc + INTs                          # turbulence interne
-FLXp = R*(UWg - Ug*Wg)                      # rho0 <u'w'> global
-print(f"[ctrl] ORG + INT = rho0<u'w'>       : erreur relative "
-      f"{np.abs(ORG+INT-FLXp).max()/(np.abs(FLXp).max()+1e-30):.2e}")
+# ============================================================
+#  §TKE — FERMETURE D'EQUILIBRE LOCAL POUR T2 (Mellor-Yamada simplifie)
+#
+#  Derivation :
+#    dt e = P - B - eps ,  P = c_mu l sqrt(e) S^2 ,  B = (c_mu/Pr_t) l sqrt(e) N^2
+#           eps = c_eps e^(3/2) / l
+#    equilibre (dt e = 0) :
+#       e = (c_mu/c_eps) * l(z)^2 * [ S^2 - N^2/Pr_t ]     <- etage 1 (C = c_mu/c_eps)
+#    fermeture deployable :
+#       K = c_mu * l(z) * sqrt(e)  ,  T2_pred = -rho0 * K * dz_u  <- etage 2 (c_mu seul)
+#
+#  Tronc commun identique aux autres notebooks : lecture niveau-par-niveau,
+#  rho0 via temperature virtuelle, fenetre stationnaire idx_stat.
+# ============================================================
+import numpy as np, xarray as xr, gc
+import matplotlib.pyplot as plt
+from scipy.optimize import minimize
 
-# --- ce que la v1 mesurait : la part STATIONNAIRE du contraste ---------
-fcm, fsm = fc_t.mean(), fs_t.mean()
-ORG_bar  = ORG.mean(1)
-ORG_stat = rho0*(fcm*dUc.mean(1)*dWc.mean(1) + fsm*dUs.mean(1)*dWs.mean(1))
-ORG_tran = ORG_bar - ORG_stat               # contraste TRANSITOIRE (perdu en v1)
+# --- constantes physiques -----------------------------------------------
+G, RD, CP, P0 = 9.81, 287.05, 1004.0, 100000.0
+KAPPA = 0.4          # constante de Von Karman
+PR_T  = 1.0          # nombre de Prandtl turbulent (fixe, hypothese simple)
+
+# --- pas de grille horizontaux (identique au tronc commun habituel) -----
+_ds = xr.open_dataset(path3d('ua'))
+_yv = _ds[dim_y].values.astype(float)
+dy = float(np.mean(np.diff(_yv))) if _yv.size > 1 else dx
+if abs(dy) <= 1.5: dy = dx
+_ds.close(); del _ds, _yv; gc.collect()
+
+Z_LO, Z_HI = 2000.0, 18000.0
+band = (alt >= Z_LO) & (alt <= Z_HI); ib = np.where(band)[0]
+zb = alt[ib]; nb = ib.size
+
+# ============================================================
+#  ETAPE 1 — profils grande echelle par niveau : ubar(z,t), theta_v_bar(z,t)
+#             + variance horizontale (proxy e_LES) niveau par niveau
+# ============================================================
+Ubar   = np.zeros((nb, n_stat))          # <u>_(y,x) (z,t)
+ThVbar = np.zeros((nb, n_stat))          # <theta_v>_(y,x) (z,t)
+E_LES  = np.zeros((nb, n_stat))          # 0.5*(var_u+var_v+var_w), spatial (z,t)
+
+ds_u = xr.open_dataset(path3d('ua')); ds_v = xr.open_dataset(path3d('va'))
+ds_w = xr.open_dataset(path3d('wa')); ds_t = xr.open_dataset(path3d('ta'))
+ds_p = xr.open_dataset(path3d('pa')); ds_q = xr.open_dataset(path3d('hus'))
+
+for j, iz in enumerate(ib):
+    u = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
+    v = ds_v['va'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
+    w = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
+    t = ds_t['ta'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
+    p = ds_p['pa'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
+    q = ds_q['hus'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
+
+    theta  = t * (P0/p)**(RD/CP)
+    thetav = theta * (1.0 + 0.608*q)                 # temperature potentielle virtuelle
+
+    Ubar[j]   = u.mean(axis=(1, 2))
+    ThVbar[j] = thetav.mean(axis=(1, 2))
+
+    varu = u.var(axis=(1, 2)); varv = v.var(axis=(1, 2)); varw = w.var(axis=(1, 2))
+    E_LES[j] = 0.5*(varu + varv + varw)
+
+    del u, v, w, t, p, q, theta, thetav, varu, varv, varw; gc.collect()
+
+ds_u.close(); ds_v.close(); ds_w.close(); ds_t.close(); ds_p.close(); ds_q.close(); gc.collect()
+
+print(f"e_LES : min {E_LES.min():.3f}  med {np.median(E_LES):.3f}  max {E_LES.max():.3f} m2/s2")
+
+# ============================================================
+#  ETAPE 2 — cisaillement resolu S^2 et frequence de Brunt-Vaisala N^2
+#            (uniquement des quantites GRANDE ECHELLE, deployables en GCM)
+# ============================================================
+dz_u  = np.gradient(Ubar, zb, axis=0)                     # (nb, n_stat)
+S2    = dz_u**2
+
+dz_thv = np.gradient(ThVbar, zb, axis=0)
+N2 = (G/ThVbar) * dz_thv                                   # N^2(z,t)
+
+print(f"S^2  : med {np.median(S2):.2e}  max {S2.max():.2e}  s-2")
+print(f"N^2  : med {np.median(N2):.2e}  (>0 stable, <0 instable)")
+
+# ============================================================
+#  ETAPE 3 — longueur de melange l(z), profil de Blackadar
+#            l(z) = kappa*z / (1 + kappa*z/l_inf)   -- UN SEUL parametre libre l_inf
+# ============================================================
+def l_blackadar(z, l_inf):
+    return KAPPA*z / (1.0 + KAPPA*z/l_inf)
+
+# ============================================================
+#  ETAPE 4 — ETAGE 1 : ajustement de la forme fonctionnelle d'equilibre
+#            e_pred = C * l(z)^2 * (S^2 - N^2/Pr_t) ,  C = c_mu/c_eps
+#            (clip a 0 : cisaillement instable au sens de la fermeture
+#             produit un membre negatif hors du domaine de validite)
+# ============================================================
+def e_pred_stage1(params, S2, N2, zb):
+    C, l_inf = params
+    l = l_blackadar(zb, l_inf)[:, None]
+    rhs = S2 - N2/PR_T
+    return np.maximum(C * l**2 * rhs, 0.0)
+
+def nse(o, p):
+    return 1 - np.sum((o-p)**2)/np.sum((o-o.mean())**2)
+
+def cost_stage1(params):
+    ep = e_pred_stage1(params, S2, N2, zb)
+    return np.mean((ep - E_LES)**2)
+
+# point de depart raisonnable : l_inf ~ 100-300m (couche limite convective), C ~ O(1)
+x0 = [1.0, 200.0]
+res1 = minimize(cost_stage1, x0, method='Nelder-Mead',
+                 options=dict(xatol=1e-4, fatol=1e-8, maxiter=2000))
+C_fit, linf_fit = res1.x
+E_pred = e_pred_stage1(res1.x, S2, N2, zb)
+
+print(f"\n[etage 1] C=c_mu/c_eps = {C_fit:.3f}   l_inf = {linf_fit:.1f} m")
+print(f"[etage 1] NSE global e_pred vs e_LES : {nse(E_LES.ravel(), E_pred.ravel()):+.3f}")
+
+nse_z = np.array([nse(E_LES[j], E_pred[j]) for j in range(nb)])
+print(f"[etage 1] NSE par niveau : med {np.median(nse_z):+.3f}  "
+      f"min {nse_z.min():+.3f}  max {nse_z.max():+.3f}")
+
+# ============================================================
+#  ETAPE 5 — cible reelle : T2 (flux turbulent interne) et K diagnostique
+#            T2 = rho0 <u'w'> - part organisee (ici : covariance horizontale
+#            totale a chaque niveau, cf. reserve methodologique en fin)
+# ============================================================
+T2 = np.zeros((nb, n_stat))
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for j, iz in enumerate(ib):
+    u = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
+    w = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
+    uw = (u*w).mean(axis=(1, 2))
+    T2[j] = rho0[iz] * (uw - Ubar[j]*w.mean(axis=(1, 2)))
+    del u, w, uw; gc.collect()
+ds_u.close(); ds_w.close(); gc.collect()
+
+# --- diffusivite diagnostiquee directement depuis les donnees -----------
+eps_safe = 1e-8
+K_diag = -T2 / (rho0[ib, None]*dz_u + np.sign(dz_u)*eps_safe)
+K_diag = np.where(np.abs(dz_u) > 1e-6, K_diag, np.nan)
+
+# ============================================================
+#  ETAPE 6 — ETAGE 2 : extraction de c_mu, K = c_mu * l(z) * sqrt(e_LES)
+#            regression sur K_diag (pas sur T2 directement, plus stable
+#            numeriquement pres des zones a faible cisaillement)
+# ============================================================
+l_z = l_blackadar(zb, linf_fit)[:, None]
+X = (l_z * np.sqrt(np.maximum(E_LES, 0.0))).ravel()
+Y = K_diag.ravel()
+ok = np.isfinite(X) & np.isfinite(Y) & (X > 1e-6)
+
+c_mu_fit = float(np.sum(X[ok]*Y[ok]) / np.sum(X[ok]**2))   # regression a 1 param, sans intercept
+
+K_pred = c_mu_fit * l_z * np.sqrt(np.maximum(E_LES, 0.0))
+T2_pred = -rho0[ib, None] * K_pred * dz_u
+
+print(f"\n[etage 2] c_mu = {c_mu_fit:.4f}")
+print(f"[etage 2] NSE global T2_pred vs T2 (flux)     : {nse(T2.ravel(), T2_pred.ravel()):+.3f}")
+
+nse_z_flux = np.array([nse(T2[j], T2_pred[j]) for j in range(nb)])
+print(f"[etage 2] NSE par niveau (flux) : med {np.median(nse_z_flux):+.3f}  "
+      f"min {nse_z_flux.min():+.3f}  max {nse_z_flux.max():+.3f}")
+
+# --- baseline de comparaison : K constant (pas de dependance a e_LES) ---
+K_const = float(np.sum(K_diag[ok_mask].ravel() if False else K_diag[np.isfinite(K_diag)]) /
+                 np.isfinite(K_diag).sum())
+T2_baseline = -rho0[ib, None]*K_const*dz_u
+print(f"[baseline K=cst={K_const:.2f}] NSE flux : "
+      f"{nse(T2.ravel(), T2_baseline.ravel()):+.3f}   (a battre)")
+
+# ============================================================
+#  FIGURES
+# ============================================================
+zk = zb/1000.0
+fig, ax = plt.subplots(2, 3, figsize=(16, 9))
+
+a = ax[0,0]
+a.plot(np.nanmean(E_LES,1), zk, 'k', lw=2, label='e_LES')
+a.plot(np.nanmean(E_pred,1), zk, 'r--', lw=2, label='e_pred (equilibre)')
+a.set_xlabel('e (m2/s2)'); a.set_ylabel('z (km)'); a.set_title('TKE : LES vs equilibre local')
+a.legend(); a.grid(alpha=.3)
+
+a = ax[0,1]
+a.plot(l_blackadar(zb, linf_fit), zk, 'b', lw=2)
+a.set_xlabel('l(z) (m)'); a.set_title(f'Longueur de melange (l_inf={linf_fit:.0f}m)')
+a.grid(alpha=.3)
+
+a = ax[0,2]
+a.plot(nse_z, zk, 'purple', lw=1.8, label='NSE(e), par niveau')
+a.plot(nse_z_flux, zk, 'darkorange', lw=1.8, label='NSE(T2), par niveau')
+a.axvline(0, color='grey', lw=.8); a.set_xlabel('NSE'); a.set_title('Qualite par niveau')
+a.legend(); a.grid(alpha=.3)
+
+a = ax[1,0]
+a.plot(np.nanmean(T2,1)*1e3, zk, 'k', lw=2.2, label='T2 (vrai)')
+a.plot(np.nanmean(T2_pred,1)*1e3, zk, 'r--', lw=2, label='T2_pred (K=c_mu*l*sqrt(e_LES))')
+a.plot(np.nanmean(T2_baseline,1)*1e3, zk, 'grey', lw=1.4, ls=':', label='baseline K=cst')
+a.axvline(0, color='grey', lw=.8)
+a.set_xlabel(r'flux $\times10^{-3}$ kg m$^{-1}$s$^{-2}$'); a.set_title('Fermeture finale : flux')
+a.legend(fontsize=8); a.grid(alpha=.3)
+
+a = ax[1,1]
+Kd = np.nanmean(K_diag, 1); Kp = np.nanmean(K_pred, 1)
+a.plot(Kd, zk, 'k', lw=2, label='K diagnostique')
+a.plot(Kp, zk, 'r--', lw=2, label='K = c_mu l sqrt(e_LES)')
+a.set_xlabel('K (m2/s)'); a.set_title('Diffusivite turbulente'); a.legend(); a.grid(alpha=.3)
+
+a = ax[1,2]
+n_pt = min(4000, T2.size); idxp = np.random.default_rng(0).choice(T2.size, n_pt, replace=False)
+a.plot(T2.ravel()[idxp]*1e3, T2_pred.ravel()[idxp]*1e3, '.', ms=2, alpha=.25, color='steelblue')
+lim = np.nanpercentile(np.abs(T2)*1e3, 99)
+a.plot([-lim,lim],[-lim,lim],'k--',lw=1)
+a.set_xlim(-lim,lim); a.set_ylim(-lim,lim)
+a.set_xlabel('T2 observe'); a.set_ylabel('T2 predit')
+a.set_title(f'NSE_te={nse(T2.ravel(),T2_pred.ravel()):+.3f}')
+a.grid(alpha=.3)
+
+for a in ax.ravel(): pass
+plt.tight_layout(); plt.show()
+
+print("\nLecture honnête :")
+print("- e_LES est la variance spatiale RESOLUE a la maille LES (1km) ; l'hypothese")
+print("  est qu'elle joue le role de la TKE sous-maille d'un GCM a grille plus grossiere.")
+print("  Si la resolution GCM cible est tres differente, l(z) et c_mu devront etre")
+print("  recalibres, pas juste reutilises tels quels.")
+print("- T2 ici est le flux de covariance horizontale total au niveau (proche de la")
+print("  definition domaine de ton rapport), pas le T2 conditionnel up/down/env exact")
+print("  de tes sections 6.3/8 -- a rapprocher si besoin en reprenant ta decomposition.")
+print("- Pr_t=1 est fixe arbitrairement ; le faire varier (ou dependre de Ri) est la")
+print("  prochaine piste si le NSE etage 2 reste faible en zone stable (N^2>0 fort).")
