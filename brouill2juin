@@ -1,16 +1,24 @@
 # ============================================================
-#  §TKE — FERMETURE D'EQUILIBRE LOCAL POUR T2 (Mellor-Yamada simplifie)
+#  §TKE (v2) — FERMETURE D'EQUILIBRE LOCAL POUR T2, A L'ECHELLE MAILLE GCM
+#
+#  Correction du v1 : le domaine complet (2000km) lisse le cisaillement a
+#  quasi-zero par moyenne horizontale -> S2 et dz_u domaine-moyen inutilisables
+#  (meme piege que v3->v4 en S1). On travaille desormais par PATCH de taille
+#  ~ maille GCM (PATCH_KM), qui garde un cisaillement et un flux non-nuls.
 #
 #  Derivation :
-#    dt e = P - B - eps ,  P = c_mu l sqrt(e) S^2 ,  B = (c_mu/Pr_t) l sqrt(e) N^2
+#    dt e = P - B - eps ,  P = c_mu l sqrt(e) S2 ,  B = (c_mu/Pr_t) l sqrt(e) N2
 #           eps = c_eps e^(3/2) / l
-#    equilibre (dt e = 0) :
-#       e = (c_mu/c_eps) * l(z)^2 * [ S^2 - N^2/Pr_t ]     <- etage 1 (C = c_mu/c_eps)
-#    fermeture deployable :
-#       K = c_mu * l(z) * sqrt(e)  ,  T2_pred = -rho0 * K * dz_u  <- etage 2 (c_mu seul)
+#    equilibre (dt e = 0), etage 1 (C = c_mu/c_eps) :
+#       e = C * l(z)^2 * [ S2 - N2/Pr_t ]
+#    fermeture deployable, etage 2 (c_mu seul) :
+#       K = c_mu * l(z) * sqrt(e)  ,  T2_pred = -rho0 * K * dz_u_patch
 #
-#  Tronc commun identique aux autres notebooks : lecture niveau-par-niveau,
-#  rho0 via temperature virtuelle, fenetre stationnaire idx_stat.
+#  S2 = <(dz_u)^2>_patch : moyenne du carre du cisaillement PONCTUEL,
+#       jamais nulle meme si le patch contient panaches + environnement.
+#  dz_u_patch = dz(<u>_patch) : cisaillement du PROFIL MOYEN DU PATCH,
+#       signe, utilise pour la fermeture flux finale (c'est la quantite
+#       qu'un GCM voit reellement a sa propre resolution).
 # ============================================================
 import numpy as np, xarray as xr, gc
 import matplotlib.pyplot as plt
@@ -18,10 +26,10 @@ from scipy.optimize import minimize
 
 # --- constantes physiques -----------------------------------------------
 G, RD, CP, P0 = 9.81, 287.05, 1004.0, 100000.0
-KAPPA = 0.4          # constante de Von Karman
-PR_T  = 1.0          # nombre de Prandtl turbulent (fixe, hypothese simple)
+KAPPA = 0.4
+PR_T  = 1.0
 
-# --- pas de grille horizontaux (identique au tronc commun habituel) -----
+# --- pas de grille horizontaux (tronc commun) ----------------------------
 _ds = xr.open_dataset(path3d('ua'))
 _yv = _ds[dim_y].values.astype(float)
 dy = float(np.mean(np.diff(_yv))) if _yv.size > 1 else dx
@@ -32,20 +40,49 @@ Z_LO, Z_HI = 2000.0, 18000.0
 band = (alt >= Z_LO) & (alt <= Z_HI); ib = np.where(band)[0]
 zb = alt[ib]; nb = ib.size
 
+# --- decoupage en patches (echelle GCM) ----------------------------------
+PATCH_KM = 200.0                          # taille de maille GCM typique
+n_per_patch = max(int(round(PATCH_KM*1000/dx)), 1)
+n_patch = n_x // n_per_patch
+print(f"decoupage : {n_patch} patches de {n_per_patch} points "
+      f"({n_per_patch*dx/1000:.0f} km) sur n_x={n_x}")
+
+def to_patches(field_yx):
+    """(..., ny, nx) -> (..., n_patch), moyenne sur y ET sur le patch en x"""
+    f = field_yx[..., :n_patch*n_per_patch].reshape(*field_yx.shape[:-2], n_y,
+                                                       n_patch, n_per_patch)
+    return f.mean(axis=(-3, -1))          # moyenne sur y (axe -3) et sur le patch (axe -1)
+
 # ============================================================
-#  ETAPE 1 — profils grande echelle par niveau : ubar(z,t), theta_v_bar(z,t)
-#             + variance horizontale (proxy e_LES) niveau par niveau
+#  ETAPE 1 — profils PAR PATCH : U_patch(z,t,patch), thetav_patch(z,t,patch),
+#            e_patch (variance interne au patch), S2_patch = <(dz_u)^2>
 # ============================================================
-Ubar   = np.zeros((nb, n_stat))          # <u>_(y,x) (z,t)
-ThVbar = np.zeros((nb, n_stat))          # <theta_v>_(y,x) (z,t)
-E_LES  = np.zeros((nb, n_stat))          # 0.5*(var_u+var_v+var_w), spatial (z,t)
+Upatch    = np.zeros((nb, n_stat, n_patch))
+ThVpatch  = np.zeros((nb, n_stat, n_patch))
+E_LES     = np.zeros((nb, n_stat, n_patch))
+S2        = np.zeros((nb, n_stat, n_patch))
 
 ds_u = xr.open_dataset(path3d('ua')); ds_v = xr.open_dataset(path3d('va'))
 ds_w = xr.open_dataset(path3d('wa')); ds_t = xr.open_dataset(path3d('ta'))
 ds_p = xr.open_dataset(path3d('pa')); ds_q = xr.open_dataset(path3d('hus'))
 
+# bande elargie d'un niveau de chaque cote pour la difference centree en z
+ib_ext = np.unique(np.clip(np.concatenate([ib-1, ib, ib+1]), 0, n_z-1))
+pos_in_ext = {iz: k for k, iz in enumerate(ib_ext)}
+
+u_ext = np.zeros((ib_ext.size, n_stat, n_y, n_x), dtype=np.float32)
+for k, iz in enumerate(ib_ext):
+    u_ext[k] = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
+
 for j, iz in enumerate(ib):
-    u = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
+    k = pos_in_ext[iz]
+    k_lo = pos_in_ext.get(iz-1, k); k_hi = pos_in_ext.get(iz+1, k)
+    z_lo = alt[ib_ext[k_lo]]; z_hi = alt[ib_ext[k_hi]]
+    dz_local = max(z_hi - z_lo, 1e-6)
+
+    dudz_pt = (u_ext[k_hi] - u_ext[k_lo]) / dz_local        # (n_stat, ny, nx) pointuel
+    S2[j] = to_patches(dudz_pt**2)                            # moyenne du carre, PAR PATCH
+
     v = ds_v['va'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
     w = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
     t = ds_t['ta'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
@@ -53,49 +90,50 @@ for j, iz in enumerate(ib):
     q = ds_q['hus'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
 
     theta  = t * (P0/p)**(RD/CP)
-    thetav = theta * (1.0 + 0.608*q)                 # temperature potentielle virtuelle
+    thetav = theta * (1.0 + 0.608*q)
 
-    Ubar[j]   = u.mean(axis=(1, 2))
-    ThVbar[j] = thetav.mean(axis=(1, 2))
+    Upatch[j]   = to_patches(u_ext[k])
+    ThVpatch[j] = to_patches(thetav)
 
-    varu = u.var(axis=(1, 2)); varv = v.var(axis=(1, 2)); varw = w.var(axis=(1, 2))
-    E_LES[j] = 0.5*(varu + varv + varw)
+    # variance INTERNE au patch (panaches vs environnement DANS le patch)
+    u_p = u_ext[k].reshape(n_stat, n_y, n_patch, n_per_patch)
+    v_p = v.reshape(n_stat, n_y, n_patch, n_per_patch)
+    w_p = w.reshape(n_stat, n_y, n_patch, n_per_patch)
+    E_LES[j] = 0.5*(u_p.var(axis=(1, 3)) + v_p.var(axis=(1, 3)) + w_p.var(axis=(1, 3)))
 
-    del u, v, w, t, p, q, theta, thetav, varu, varv, varw; gc.collect()
+    del v, w, t, p, q, theta, thetav, dudz_pt, u_p, v_p, w_p; gc.collect()
 
+del u_ext; gc.collect()
 ds_u.close(); ds_v.close(); ds_w.close(); ds_t.close(); ds_p.close(); ds_q.close(); gc.collect()
 
 print(f"e_LES : min {E_LES.min():.3f}  med {np.median(E_LES):.3f}  max {E_LES.max():.3f} m2/s2")
+print(f"S2 (pointwise, par patch) : min {S2.min():.2e}  med {np.median(S2):.2e}  "
+      f"max {S2.max():.2e} s-2")
 
 # ============================================================
-#  ETAPE 2 — cisaillement resolu S^2 et frequence de Brunt-Vaisala N^2
-#            (uniquement des quantites GRANDE ECHELLE, deployables en GCM)
+#  ETAPE 2 — cisaillement SIGNE du profil moyen de patch (pour la fermeture
+#            flux finale) + N2 (grande echelle par definition)
 # ============================================================
-dz_u  = np.gradient(Ubar, zb, axis=0)                     # (nb, n_stat)
-S2    = dz_u**2
+dz_u  = np.gradient(Upatch, zb, axis=0)          # (nb, n_stat, n_patch), SIGNE
+dz_thv = np.gradient(ThVpatch, zb, axis=0)
+N2 = (G/ThVpatch) * dz_thv
 
-dz_thv = np.gradient(ThVbar, zb, axis=0)
-N2 = (G/ThVbar) * dz_thv                                   # N^2(z,t)
-
-print(f"S^2  : med {np.median(S2):.2e}  max {S2.max():.2e}  s-2")
+print(f"dz_u (patch, signe) : med|.| {np.median(np.abs(dz_u)):.2e} s-1")
 print(f"N^2  : med {np.median(N2):.2e}  (>0 stable, <0 instable)")
 
 # ============================================================
 #  ETAPE 3 — longueur de melange l(z), profil de Blackadar
-#            l(z) = kappa*z / (1 + kappa*z/l_inf)   -- UN SEUL parametre libre l_inf
 # ============================================================
 def l_blackadar(z, l_inf):
     return KAPPA*z / (1.0 + KAPPA*z/l_inf)
 
 # ============================================================
-#  ETAPE 4 — ETAGE 1 : ajustement de la forme fonctionnelle d'equilibre
-#            e_pred = C * l(z)^2 * (S^2 - N^2/Pr_t) ,  C = c_mu/c_eps
-#            (clip a 0 : cisaillement instable au sens de la fermeture
-#             produit un membre negatif hors du domaine de validite)
+#  ETAPE 4 — ETAGE 1 : forme fonctionnelle d'equilibre
+#            e_pred = C * l(z)^2 * (S2 - N2/Pr_t)
 # ============================================================
 def e_pred_stage1(params, S2, N2, zb):
     C, l_inf = params
-    l = l_blackadar(zb, l_inf)[:, None]
+    l = l_blackadar(zb, l_inf)[:, None, None]
     rhs = S2 - N2/PR_T
     return np.maximum(C * l**2 * rhs, 0.0)
 
@@ -106,7 +144,6 @@ def cost_stage1(params):
     ep = e_pred_stage1(params, S2, N2, zb)
     return np.mean((ep - E_LES)**2)
 
-# point de depart raisonnable : l_inf ~ 100-300m (couche limite convective), C ~ O(1)
 x0 = [1.0, 200.0]
 res1 = minimize(cost_stage1, x0, method='Nelder-Mead',
                  options=dict(xatol=1e-4, fatol=1e-8, maxiter=2000))
@@ -116,56 +153,54 @@ E_pred = e_pred_stage1(res1.x, S2, N2, zb)
 print(f"\n[etage 1] C=c_mu/c_eps = {C_fit:.3f}   l_inf = {linf_fit:.1f} m")
 print(f"[etage 1] NSE global e_pred vs e_LES : {nse(E_LES.ravel(), E_pred.ravel()):+.3f}")
 
-nse_z = np.array([nse(E_LES[j], E_pred[j]) for j in range(nb)])
+nse_z = np.array([nse(E_LES[j].ravel(), E_pred[j].ravel()) for j in range(nb)])
 print(f"[etage 1] NSE par niveau : med {np.median(nse_z):+.3f}  "
       f"min {nse_z.min():+.3f}  max {nse_z.max():+.3f}")
 
 # ============================================================
-#  ETAPE 5 — cible reelle : T2 (flux turbulent interne) et K diagnostique
-#            T2 = rho0 <u'w'> - part organisee (ici : covariance horizontale
-#            totale a chaque niveau, cf. reserve methodologique en fin)
+#  ETAPE 5 — cible reelle T2 PAR PATCH (covariance interne au patch)
 # ============================================================
-T2 = np.zeros((nb, n_stat))
+T2 = np.zeros((nb, n_stat, n_patch))
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
 for j, iz in enumerate(ib):
     u = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
     w = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values.astype(np.float32)
-    uw = (u*w).mean(axis=(1, 2))
-    T2[j] = rho0[iz] * (uw - Ubar[j]*w.mean(axis=(1, 2)))
-    del u, w, uw; gc.collect()
+    u_p = u.reshape(n_stat, n_y, n_patch, n_per_patch)
+    w_p = w.reshape(n_stat, n_y, n_patch, n_per_patch)
+    uw_p = (u_p*w_p).mean(axis=(1, 3))
+    u_mean_p = u_p.mean(axis=(1, 3)); w_mean_p = w_p.mean(axis=(1, 3))
+    T2[j] = rho0[iz] * (uw_p - u_mean_p*w_mean_p)
+    del u, w, u_p, w_p, uw_p, u_mean_p, w_mean_p; gc.collect()
 ds_u.close(); ds_w.close(); gc.collect()
 
-# --- diffusivite diagnostiquee directement depuis les donnees -----------
+# --- diffusivite diagnostiquee : utilise le cisaillement SIGNE du patch --
 eps_safe = 1e-8
-K_diag = -T2 / (rho0[ib, None]*dz_u + np.sign(dz_u)*eps_safe)
+K_diag = -T2 / (rho0[ib, None, None]*dz_u + np.sign(dz_u)*eps_safe)
 K_diag = np.where(np.abs(dz_u) > 1e-6, K_diag, np.nan)
 
 # ============================================================
-#  ETAPE 6 — ETAGE 2 : extraction de c_mu, K = c_mu * l(z) * sqrt(e_LES)
-#            regression sur K_diag (pas sur T2 directement, plus stable
-#            numeriquement pres des zones a faible cisaillement)
+#  ETAPE 6 — ETAGE 2 : c_mu, K = c_mu * l(z) * sqrt(e_LES)
 # ============================================================
-l_z = l_blackadar(zb, linf_fit)[:, None]
+l_z = l_blackadar(zb, linf_fit)[:, None, None]
 X = (l_z * np.sqrt(np.maximum(E_LES, 0.0))).ravel()
 Y = K_diag.ravel()
 ok = np.isfinite(X) & np.isfinite(Y) & (X > 1e-6)
 
-c_mu_fit = float(np.sum(X[ok]*Y[ok]) / np.sum(X[ok]**2))   # regression a 1 param, sans intercept
+c_mu_fit = float(np.sum(X[ok]*Y[ok]) / np.sum(X[ok]**2))
 
 K_pred = c_mu_fit * l_z * np.sqrt(np.maximum(E_LES, 0.0))
-T2_pred = -rho0[ib, None] * K_pred * dz_u
+T2_pred = -rho0[ib, None, None] * K_pred * dz_u
 
 print(f"\n[etage 2] c_mu = {c_mu_fit:.4f}")
-print(f"[etage 2] NSE global T2_pred vs T2 (flux)     : {nse(T2.ravel(), T2_pred.ravel()):+.3f}")
+print(f"[etage 2] NSE global T2_pred vs T2 (flux) : {nse(T2.ravel(), T2_pred.ravel()):+.3f}")
 
-nse_z_flux = np.array([nse(T2[j], T2_pred[j]) for j in range(nb)])
+nse_z_flux = np.array([nse(T2[j].ravel(), T2_pred[j].ravel()) for j in range(nb)])
 print(f"[etage 2] NSE par niveau (flux) : med {np.median(nse_z_flux):+.3f}  "
       f"min {nse_z_flux.min():+.3f}  max {nse_z_flux.max():+.3f}")
 
-# --- baseline de comparaison : K constant (pas de dependance a e_LES) ---
-K_const = float(np.sum(K_diag[ok_mask].ravel() if False else K_diag[np.isfinite(K_diag)]) /
-                 np.isfinite(K_diag).sum())
-T2_baseline = -rho0[ib, None]*K_const*dz_u
+# --- baseline K constant --------------------------------------------------
+K_const = float(np.nanmean(K_diag))
+T2_baseline = -rho0[ib, None, None]*K_const*dz_u
 print(f"[baseline K=cst={K_const:.2f}] NSE flux : "
       f"{nse(T2.ravel(), T2_baseline.ravel()):+.3f}   (a battre)")
 
@@ -176,8 +211,8 @@ zk = zb/1000.0
 fig, ax = plt.subplots(2, 3, figsize=(16, 9))
 
 a = ax[0,0]
-a.plot(np.nanmean(E_LES,1), zk, 'k', lw=2, label='e_LES')
-a.plot(np.nanmean(E_pred,1), zk, 'r--', lw=2, label='e_pred (equilibre)')
+a.plot(np.nanmean(E_LES,(1,2)), zk, 'k', lw=2, label='e_LES')
+a.plot(np.nanmean(E_pred,(1,2)), zk, 'r--', lw=2, label='e_pred (equilibre)')
 a.set_xlabel('e (m2/s2)'); a.set_ylabel('z (km)'); a.set_title('TKE : LES vs equilibre local')
 a.legend(); a.grid(alpha=.3)
 
@@ -193,15 +228,15 @@ a.axvline(0, color='grey', lw=.8); a.set_xlabel('NSE'); a.set_title('Qualite par
 a.legend(); a.grid(alpha=.3)
 
 a = ax[1,0]
-a.plot(np.nanmean(T2,1)*1e3, zk, 'k', lw=2.2, label='T2 (vrai)')
-a.plot(np.nanmean(T2_pred,1)*1e3, zk, 'r--', lw=2, label='T2_pred (K=c_mu*l*sqrt(e_LES))')
-a.plot(np.nanmean(T2_baseline,1)*1e3, zk, 'grey', lw=1.4, ls=':', label='baseline K=cst')
+a.plot(np.nanmean(T2,(1,2))*1e3, zk, 'k', lw=2.2, label='T2 (vrai)')
+a.plot(np.nanmean(T2_pred,(1,2))*1e3, zk, 'r--', lw=2, label='T2_pred (K=c_mu*l*sqrt(e_LES))')
+a.plot(np.nanmean(T2_baseline,(1,2))*1e3, zk, 'grey', lw=1.4, ls=':', label='baseline K=cst')
 a.axvline(0, color='grey', lw=.8)
 a.set_xlabel(r'flux $\times10^{-3}$ kg m$^{-1}$s$^{-2}$'); a.set_title('Fermeture finale : flux')
 a.legend(fontsize=8); a.grid(alpha=.3)
 
 a = ax[1,1]
-Kd = np.nanmean(K_diag, 1); Kp = np.nanmean(K_pred, 1)
+Kd = np.nanmean(K_diag,(1,2)); Kp = np.nanmean(K_pred,(1,2))
 a.plot(Kd, zk, 'k', lw=2, label='K diagnostique')
 a.plot(Kp, zk, 'r--', lw=2, label='K = c_mu l sqrt(e_LES)')
 a.set_xlabel('K (m2/s)'); a.set_title('Diffusivite turbulente'); a.legend(); a.grid(alpha=.3)
@@ -216,16 +251,12 @@ a.set_xlabel('T2 observe'); a.set_ylabel('T2 predit')
 a.set_title(f'NSE_te={nse(T2.ravel(),T2_pred.ravel()):+.3f}')
 a.grid(alpha=.3)
 
-for a in ax.ravel(): pass
 plt.tight_layout(); plt.show()
 
 print("\nLecture honnête :")
-print("- e_LES est la variance spatiale RESOLUE a la maille LES (1km) ; l'hypothese")
-print("  est qu'elle joue le role de la TKE sous-maille d'un GCM a grille plus grossiere.")
-print("  Si la resolution GCM cible est tres differente, l(z) et c_mu devront etre")
-print("  recalibres, pas juste reutilises tels quels.")
-print("- T2 ici est le flux de covariance horizontale total au niveau (proche de la")
-print("  definition domaine de ton rapport), pas le T2 conditionnel up/down/env exact")
-print("  de tes sections 6.3/8 -- a rapprocher si besoin en reprenant ta decomposition.")
-print("- Pr_t=1 est fixe arbitrairement ; le faire varier (ou dependre de Ri) est la")
-print("  prochaine piste si le NSE etage 2 reste faible en zone stable (N^2>0 fort).")
+print("- Travail PAR PATCH (~200km, echelle GCM) plutot que domaine entier :")
+print("  evite le lissage du cisaillement/flux a quasi-zero par moyenne sur 2000km.")
+print("- Si le NSE reste mauvais malgre le patching, tester PATCH_KM plus petit")
+print("  (maille GCM haute-resolution, ~50-100km) avant de conclure a l'echec de")
+print("  l'hypothese d'equilibre local elle-meme.")
+print("- Pr_t=1 fixe arbitrairement ; le faire dependre de Ri est la prochaine piste.")
