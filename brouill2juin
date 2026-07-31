@@ -1,51 +1,14 @@
-# AVANT (faux) :
-# norm = n_stat * n_y * n_x * dx * dy * np.outer(dz_b, dz_b)
+# --- decomposition du flux : contraste vs interne, PAR PAS DE TEMPS ----
+dUc, dWc = Uc - Ug, Wc - Wg
+dUs, dWs = Us - Ug, Ws - Wg
+ORG  = R*(fc_t*dUc*dWc + fs_t*dUs*dWs)      # contraste inter-regions
+INT  = INTc + INTs                          # turbulence interne
+FLXp = R*(UWg - Ug*Wg)                      # rho0 <u'w'> global
+print(f"[ctrl] ORG + INT = rho0<u'w'>       : erreur relative "
+      f"{np.abs(ORG+INT-FLXp).max()/(np.abs(FLXp).max()+1e-30):.2e}")
 
-# APRES :
-norm = n_stat * n_y * n_x * np.outer(dz_b, dz_b)   # dx*dy en trop retire
-Btilde_norm = Btilde / np.maximum(norm, 1e-30)
-
-
-
-
-
-# ============================================================
-#  §E (corrige) -- eps(z) = alpha/z (forme canonique), alpha
-#  ajuste sur TRAIN, teste sur TEST -- un seul parametre, honnete
-# ============================================================
-from scipy.optimize import minimize_scalar
-
-def predict_Du(alpha, zb_, ubar_, z0):
-    eps = alpha / np.maximum(zb_, 100.0)              # eps(z)=alpha/z, forme canonique
-    cum_eps = np.concatenate([[0.0], np.cumsum(0.5*(eps[1:]+eps[:-1])*np.diff(zb_))])
-    dubar_dz = np.gradient(ubar_, zb_)
-    Du_p = np.zeros_like(zb_)
-    for i in range(len(zb_)):
-        K_i = np.exp(-(cum_eps[i] - cum_eps[:i+1]))
-        Du_p[i] = -np.trapz(K_i * dubar_dz[:i+1], zb_[:i+1])
-    return Du_p
-
-# split spatial (bas/haut de colonne), pas temporel : on a un seul profil moyen
-mid = nb_e // 2
-train, test = slice(0, mid), slice(mid, nb_e)
-
-def cout(alpha):
-    Dp = predict_Du(alpha, zb_e, ubar_e, zb_e[0])
-    return np.sum((Du_diag[train] - Dp[train])**2)
-
-res = minimize_scalar(cout, bounds=(0.01, 5.0), method='bounded')
-alpha_opt = res.x
-Du_pred2 = predict_Du(alpha_opt, zb_e, ubar_e, zb_e[0])
-
-nse_train = 1 - np.sum((Du_diag[train]-Du_pred2[train])**2)/np.sum((Du_diag[train]-Du_diag[train].mean())**2)
-nse_test  = 1 - np.sum((Du_diag[test] -Du_pred2[test])**2)/np.sum((Du_diag[test] -Du_diag[test].mean())**2)
-print(f"alpha ajuste = {alpha_opt:.3f}  (litterature ~0.2)")
-print(f"NSE train (bas de colonne)  : {nse_train:+.3f}")
-print(f"NSE test  (haut de colonne) : {nse_test:+.3f}   <- le vrai chiffre a rapporter")
-
-fig, ax = plt.subplots(figsize=(5,6))
-ax.plot(Du_diag, zb_e/1e3, 'k-', lw=2.4, label='diagnostique')
-ax.plot(Du_pred2, zb_e/1e3, 'r--', lw=2, label=f'predit (alpha={alpha_opt:.2f})')
-ax.axhline(zb_e[mid]/1e3, color='grey', ls=':', lw=1, label='separation train/test')
-ax.axvline(0, color='grey', lw=.8); ax.set_xlabel('m/s'); ax.set_ylabel('z (km)')
-ax.legend(fontsize=9); plt.tight_layout(); plt.show()
+# --- ce que la v1 mesurait : la part STATIONNAIRE du contraste ---------
+fcm, fsm = fc_t.mean(), fs_t.mean()
+ORG_bar  = ORG.mean(1)
+ORG_stat = rho0*(fcm*dUc.mean(1)*dWc.mean(1) + fsm*dUs.mean(1)*dWs.mean(1))
+ORG_tran = ORG_bar - ORG_stat               # contraste TRANSITOIRE (perdu en v1)
