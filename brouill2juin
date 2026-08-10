@@ -1,15 +1,11 @@
 # ============================================================
-#  TRANSILIENT QdM — B_qdm[dest,orig] = rho0*u*w SIGNE transporte par
-#  des segments verticaux coherents (meme decoupage que la version masse,
-#  mais on garde la quantite de mouvement reelle, pas |flux de masse|)
+#  TRANSILIENT QdM (brut, SANS normalisation) — B_qdm[dest,orig] = somme
+#  brute de rho0*u*w signe transporte par des segments verticaux coherents
+#  sur tous les instants et toutes les colonnes.
+#  ATTENTION : cette matrice n'est PAS une densite physique comparable
+#  d'une config a l'autre (depend de n_stat, n_y, n_x, Δz) -- cf. discussion.
 # ============================================================
 def build_transilient_qdm(S, U, W, rho_col, min_run=2):
-    """
-    S : (nz,ny,nx) signe de w seuille (+1/-1/0), un seul pas de temps
-    U : (nz,ny,nx) vent horizontal u, meme instant
-    W : (nz,ny,nx) vitesse verticale w, meme instant
-    rho_col : (nz,) rho0 sur la grille reduite
-    """
     nz, ny, nx = S.shape
     nonzero = S != 0
     start = np.zeros_like(nonzero)
@@ -31,7 +27,7 @@ def build_transilient_qdm(S, U, W, rho_col, min_run=2):
             continue
         sid = seg_id[k][valid]
         y_v, x_v = yy[valid], xx[valid]
-        val = rho_col[k] * U[k][valid] * W[k][valid]     # <-- SIGNE, plus de abs()
+        val = rho_col[k] * U[k][valid] * W[k][valid]     # signe, quantite de mouvement
         np.add.at(flux_sum, (sid, y_v, x_v), val)
         np.add.at(count,    (sid, y_v, x_v), 1)
         np.minimum.at(zmin, (sid, y_v, x_v), k)
@@ -75,127 +71,15 @@ Z_LO, Z_HI = 2000.0, 18000.0
 band = (alt >= Z_LO) & (alt <= Z_HI); ib = np.where(band)[0]
 W_SEUIL, MIN_RUN = 0.3, 2
 
-Bqdm, zb, rb, nb = accumulate_transilient_qdm(ib, np.arange(n_stat), W_SEUIL=W_SEUIL, MIN_RUN=MIN_RUN)
+b_qdm, zb, rb, nb = accumulate_transilient_qdm(ib, np.arange(n_stat), W_SEUIL=W_SEUIL, MIN_RUN=MIN_RUN)
 
-dz_b = np.gradient(zb)
-norm = n_stat * n_y * n_x * np.outer(dz_b, dz_b)
-b_qdm = Bqdm / np.maximum(norm, 1e-30)
-
-print(f"b_qdm : min {b_qdm.min():.2e}  max {b_qdm.max():.2e}  "
-      f"(pas de contrainte de signe attendue, contrairement a la version masse)")
+print(f"b_qdm (brut) : min {b_qdm.min():.3e}  max {b_qdm.max():.3e}")
 
 fig, ax = plt.subplots(figsize=(6, 5.5))
 vmax = np.percentile(np.abs(b_qdm), 98)
 im = ax.pcolormesh(zb/1e3, zb/1e3, b_qdm, cmap='RdBu_r', vmin=-vmax, vmax=vmax, shading='auto')
 ax.plot(zb/1e3, zb/1e3, 'k--', lw=.7)
 ax.set_xlabel("z' (km, origine)"); ax.set_ylabel('z (km, destination)')
-ax.set_title(r"Transilient QdM totale $\rho_0 u w$ (signee)")
-fig.colorbar(im, ax=ax)
+ax.set_title(r"Transilient QdM totale $\rho_0 u w$ (brut, non normalise)")
+fig.colorbar(im, ax=ax, label='somme brute (kg m$^{-1}$ s$^{-2}$)')
 plt.tight_layout(); plt.show()
-
-
-
-
-
-
-
-
-
-# ============================================================
-#  TRANSILIENT T2 — B_T2[dest,orig] = rho0*u'*w transporte par les memes
-#  segments coherents, avec u' = u - <u>(z,t) : anomalie turbulente
-#  locale (proxy operationnel de T2, PAS la decomposition up/down/env
-#  exacte du rapport -- cf. reserve en fin de bloc)
-# ============================================================
-def build_transilient_T2(S, Uprime, W, rho_col, min_run=2):
-    """
-    Uprime : (nz,ny,nx) anomalie u - <u>(z,t), deja calculee par l'appelant
-    """
-    nz, ny, nx = S.shape
-    nonzero = S != 0
-    start = np.zeros_like(nonzero)
-    start[0] = nonzero[0]
-    start[1:] = nonzero[1:] & (S[1:] != S[:-1])
-    seg_id = np.cumsum(start, axis=0) - 1
-    seg_id = np.where(nonzero, seg_id, -1)
-
-    flux_sum = np.zeros((nz, ny, nx))
-    count    = np.zeros((nz, ny, nx), dtype=np.int32)
-    zmin     = np.full((nz, ny, nx), nz, dtype=np.int32)
-    zmax     = np.full((nz, ny, nx), -1, dtype=np.int32)
-    sign_of  = np.zeros((nz, ny, nx))
-    yy, xx = np.meshgrid(np.arange(ny), np.arange(nx), indexing='ij')
-
-    for k in range(nz):
-        valid = nonzero[k]
-        if not valid.any():
-            continue
-        sid = seg_id[k][valid]
-        y_v, x_v = yy[valid], xx[valid]
-        val = rho_col[k] * Uprime[k][valid] * W[k][valid]   # <-- u' au lieu de u
-        np.add.at(flux_sum, (sid, y_v, x_v), val)
-        np.add.at(count,    (sid, y_v, x_v), 1)
-        np.minimum.at(zmin, (sid, y_v, x_v), k)
-        np.maximum.at(zmax, (sid, y_v, x_v), k)
-        sign_of[sid, y_v, x_v] = S[k][valid]
-
-    ok = count >= min_run
-    B = np.zeros((nz, nz))
-    if not ok.any():
-        return B
-    s_idx  = sign_of[ok]; zlo = zmin[ok]; zhi = zmax[ok]
-    meanfl = flux_sum[ok] / np.maximum(count[ok], 1)
-    dest = np.where(s_idx > 0, zhi, zlo)
-    orig = np.where(s_idx > 0, zlo, zhi)
-    np.add.at(B, (dest, orig), meanfl)
-    return B
-
-
-def accumulate_transilient_T2(ib, idx_time, W_SEUIL=0.3, MIN_RUN=2, verbose=True):
-    zb = alt[ib]; rb = rho0[ib]; nb = ib.size
-    B = np.zeros((nb, nb))
-    ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
-    t_global = idx_stat[idx_time]
-    for n, it in enumerate(t_global):
-        u = ds_u['ua'].isel({dim_t: it, dim_z: ib}).values.astype(np.float32)
-        w = ds_w['wa'].isel({dim_t: it, dim_z: ib}).values.astype(np.float32)
-        ubar_t = u.mean(axis=(1, 2), keepdims=True)     # <u>(z) a cet instant
-        uprime = u - ubar_t
-        S = np.sign(w); S[np.abs(w) < W_SEUIL] = 0
-        B += build_transilient_T2(S, uprime, w, rb, min_run=MIN_RUN)
-        del u, w, uprime, ubar_t, S
-        if n % 20 == 0:
-            gc.collect()
-            if verbose: print(f"  t={n}/{len(t_global)}")
-    ds_u.close(); ds_w.close(); gc.collect()
-    return B, zb, rb, nb
-
-
-# ============================================================
-#  EXECUTION
-# ============================================================
-BT2, zb2, rb2, nb2 = accumulate_transilient_T2(ib, np.arange(n_stat), W_SEUIL=W_SEUIL, MIN_RUN=MIN_RUN)
-
-norm2 = n_stat * n_y * n_x * np.outer(dz_b, dz_b)
-b_T2 = BT2 / np.maximum(norm2, 1e-30)
-
-print(f"b_T2 : min {b_T2.min():.2e}  max {b_T2.max():.2e}")
-
-fig, ax = plt.subplots(figsize=(6, 5.5))
-vmax2 = np.percentile(np.abs(b_T2), 98)
-im = ax.pcolormesh(zb2/1e3, zb2/1e3, b_T2, cmap='RdBu_r', vmin=-vmax2, vmax=vmax2, shading='auto')
-ax.plot(zb2/1e3, zb2/1e3, 'k--', lw=.7)
-ax.set_xlabel("z' (km, origine)"); ax.set_ylabel('z (km, destination)')
-ax.set_title(r"Transilient T2 $\rho_0 u' w$ (fluctuation locale)")
-fig.colorbar(im, ax=ax)
-plt.tight_layout(); plt.show()
-
-print("\nReserve methodologique :")
-print("- u' est ici l'anomalie au niveau z et a l'instant t (u - <u>_domaine(z,t)),")
-print("  PAS la decomposition up/down/env de ton rapport (§6.3). C'est un proxy :")
-print("  la part du transport par segments coherents qui vient de la fluctuation")
-print("  locale plutot que du vent moyen, pas le T2 exact (residu apres soustraction")
-print("  du contraste coeur/environnement).")
-print("- Pour te rapprocher de la vraie definition T2, il faudrait soustraire la")
-print("  moyenne CONDITIONNELLE au segment (up ou down), pas la moyenne domaine :")
-print("  u'' = u - <u>_up(z,t) si le segment est ascendant, u - <u>_down(z,t) sinon.")
