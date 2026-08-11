@@ -1,33 +1,43 @@
 # ============================================================
-#  Nettoyage k(z) + test de significativite du fit advectif, par niveau
+#  Version robuste : p_z avec gestion explicite des cas degeneres
 # ============================================================
-seuil_var = 0.05*np.nanpercentile(np.var(produit_adv[m28], axis=1), 90)
-k_z_clean = np.where(np.var(produit_adv, axis=1) > seuil_var, k_z, np.nan)
-
-def n_eff(x, y):
+def n_eff_safe(x, y):
+    if np.nanstd(x) < 1e-15 or np.nanstd(y) < 1e-15:
+        return np.nan
     ac_x = np.corrcoef(x[:-1], x[1:])[0,1]
     ac_y = np.corrcoef(y[:-1], y[1:])[0,1]
+    if not (np.isfinite(ac_x) and np.isfinite(ac_y)):
+        return np.nan
+    denom = 1 + ac_x*ac_y
+    if denom <= 0:
+        return np.nan
     n = len(x)
-    return n * (1-ac_x*ac_y) / (1+ac_x*ac_y)
+    neff = n * (1-ac_x*ac_y) / denom
+    return neff if neff > 2 else np.nan
 
-from scipy import stats
 p_z = np.full(n_z, np.nan)
+statut = [''] * n_z
 for iz in range(n_z):
     x, y = produit_adv[iz,:], dudt_tot[iz,:]
-    if np.nanstd(x) < 1e-15 or np.isnan(r2_adv[iz]): continue
+    if np.nanstd(x) < 1e-15:
+        statut[iz] = 'x quasi constant'; continue
     r_iz = np.corrcoef(x,y)[0,1]
-    neff = n_eff(x,y)
-    if neff <= 2: continue
+    if not np.isfinite(r_iz):
+        statut[iz] = 'r indefini'; continue
+    neff = n_eff_safe(x,y)
+    if not np.isfinite(neff):
+        statut[iz] = 'n_eff indefini/negatif'; continue
     t_val = r_iz*np.sqrt((neff-2)/(1-r_iz**2))
     p_z[iz] = 2*(1-stats.t.cdf(abs(t_val), neff-2))
+    statut[iz] = 'ok'
 
-fig, axes = plt.subplots(1,3,figsize=(13,5), sharey=True)
-axes[0].plot(k_z_clean[mask_show], zkm[mask_show]); axes[0].axvline(0,color='k',lw=.5)
-axes[0].set_xlabel('k(z) nettoye')
-axes[1].plot(r2_adv[mask_show], zkm[mask_show]); axes[1].axvline(0,color='k',lw=.5)
-axes[1].set_xlabel('R²(z)')
-axes[2].plot(p_z[mask_show], zkm[mask_show]); axes[2].axvline(0.05,color='r',lw=1,ls='--')
-axes[2].set_xlabel('p-value (n_eff corrige)'); axes[2].set_xlim(0,1)
-axes[0].set_ylabel('z (km)'); axes[0].set_ylim(0,Z_TOP_KM)
-plt.suptitle("k(z) nettoye, R² et significativite corrigee de l'autocorrelation")
-plt.tight_layout(); plt.show()
+# resume des niveaux non calculables
+for iz in range(n_z):
+    if mask_show[iz] and statut[iz] != 'ok':
+        print(f"z={zkm[iz]:.2f}km : non calculable ({statut[iz]})")
+
+fig, ax = plt.subplots(figsize=(5,6))
+ax.plot(p_z[mask_show], zkm[mask_show], 'o-', ms=3)
+ax.axvline(0.05, color='r', lw=1, ls='--', label='seuil 5%')
+ax.set_xlabel('p-value'); ax.set_ylabel('z (km)'); ax.set_xlim(0,1); ax.set_ylim(0,Z_TOP_KM)
+ax.legend(); plt.tight_layout(); plt.show()
