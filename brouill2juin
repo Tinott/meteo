@@ -1,40 +1,31 @@
 # ============================================================
-#  Reconstruction du flux a partir de K binarise : uw_reconstruit = -K_binaire * dudz_zt
-#  1) difference point par point avec le flux original (u'w')
-#  2) difference entre profils moyennes en temps (flux_tot vs reconstruit moyenne sur t)
+#  Test anti-circularite : la relation flux~cisaillement survit-elle
+#  une fois retiree la composante lente commune (~20j) partagee par tout ?
 # ============================================================
-uw_reconstruit = -K_binaire * dudz_zt          # meme equation, K remplace par sa version binarisee
-diff_zt = uw_zt - uw_reconstruit                # ecart point par point (z,t)
+from scipy.ndimage import uniform_filter1d
 
-fig, axes = plt.subplots(1, 3, figsize=(16,5), sharey=True)
-v = np.nanpercentile(np.abs(uw_zt[mask_show]), 98)
-for ax,(fld,lab) in zip(axes, [(uw_zt, r"$\overline{u'w'}$ original"),
-                                 (uw_reconstruit, r"$-K_{binaire}\,\partial_z\bar u$ reconstruit"),
-                                 (diff_zt, "difference (original - reconstruit)")]):
-    im = ax.pcolormesh(tt+t_stat, zkm[mask_show], fld[mask_show], cmap='RdBu_r',
-                        norm=TwoSlopeNorm(0,-v,v), shading='auto')
-    ax.axhspan(2,8,color='k',alpha=.06); ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
-axes[0].set_ylabel('z (km)'); axes[0].set_ylim(0,Z_TOP_KM)
-fig.colorbar(im, ax=axes, orientation='horizontal', pad=.1, aspect=35, shrink=.6, label="m²/s²")
-plt.suptitle("Flux original vs reconstruit avec K binarise (point par point)", fontweight='bold')
-plt.show()
+# 1) on retire la tendance lente (moyenne glissante longue, ex 15 pas ~ 4 jours)
+WIN_LENT = 15
+def hipass(fld):
+    lent = uniform_filter1d(fld, size=WIN_LENT, axis=1, mode='nearest')
+    return fld - lent
 
-err_rel_zt = np.sqrt(np.nanmean(diff_zt[m28]**2)) / np.sqrt(np.nanmean(uw_zt[m28]**2))
-print(f"RMSE point par point (2-8km) : {np.sqrt(np.nanmean(diff_zt[m28]**2)):.4f} m²/s² "
-      f"| erreur relative = {err_rel_zt:.0%}")
+dudz_hp = hipass(dudz_zt)
+uw_hp   = hipass(uw_zt)
 
-# ---- profils moyennes en temps ----
-uw_tot_mean = uw_zt.mean(axis=1)
-uw_reconstruit_mean = np.nanmean(uw_reconstruit, axis=1)
+# 2) comparaison : correlation brute (piegee) vs correlation apres retrait du mode lent
+x_brut, y_brut = -dudz_zt[m28].ravel(), uw_zt[m28].ravel()
+x_hp,   y_hp   = -dudz_hp[m28].ravel(), uw_hp[m28].ravel()
+ok_b = np.isfinite(x_brut)&np.isfinite(y_brut); ok_h = np.isfinite(x_hp)&np.isfinite(y_hp)
 
-fig, ax = plt.subplots(figsize=(6,5))
-ax.plot(uw_tot_mean[mask_show], zkm[mask_show], label='flux original (moyenne t)')
-ax.plot(uw_reconstruit_mean[mask_show], zkm[mask_show], label='flux reconstruit (moyenne t)', ls='--')
-ax.axvline(0, color='k', lw=.5); ax.axhspan(2,8,color='k',alpha=.06)
-ax.set_xlabel(r"$\overline{u'w'}$ (m²/s²)"); ax.set_ylabel('z (km)'); ax.set_ylim(0,Z_TOP_KM)
-ax.legend(); plt.tight_layout(); plt.show()
+r_brut = np.corrcoef(x_brut[ok_b], y_brut[ok_b])[0,1]
+r_hp   = np.corrcoef(x_hp[ok_h],   y_hp[ok_h])[0,1]
+print(f"correlation flux vs -dudz, BRUTE (avec mode lent)      : r={r_brut:+.2f}")
+print(f"correlation flux vs -dudz, APRES retrait du mode lent  : r={r_hp:+.2f}")
 
-diff_profil = uw_tot_mean - uw_reconstruit_mean
-err_rel_profil = np.sqrt(np.nanmean(diff_profil[m28]**2)) / np.sqrt(np.nanmean(uw_tot_mean[m28]**2))
-print(f"RMSE profil moyen (2-8km) : {np.sqrt(np.nanmean(diff_profil[m28]**2)):.4f} m²/s² "
-      f"| erreur relative = {err_rel_profil:.0%}")
+fig,axes=plt.subplots(1,2,figsize=(10,4.5))
+axes[0].scatter(x_brut[ok_b],y_brut[ok_b],s=3,alpha=.15)
+axes[0].set_title(f"brut, r={r_brut:+.2f}"); axes[0].set_xlabel('-dudz'); axes[0].set_ylabel("u'w'")
+axes[1].scatter(x_hp[ok_h],y_hp[ok_h],s=3,alpha=.15)
+axes[1].set_title(f"haute-frequence, r={r_hp:+.2f}"); axes[1].set_xlabel('-dudz (hp)')
+plt.tight_layout(); plt.show()
