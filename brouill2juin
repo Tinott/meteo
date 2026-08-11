@@ -1,36 +1,26 @@
 # ============================================================
-#  §11. flux_zt decompose humide/sec (le vrai objet a decomposer),
-#       + test down-gradient vs contre-gradient selon le cisaillement d'environnement
+#  §12. Le regime down/contre-gradient bascule-t-il EN PHASE
+#       avec le cisaillement sec (dzus) ? — test quantitatif
 # ============================================================
-flux_h_zt=np.zeros((n_z,n_stat)); flux_s_zt=np.zeros((n_z,n_stat))
-ds_u=xr.open_dataset(path3d('ua')); ds_w=xr.open_dataset(path3d('wa'))
-for iz in range(n_z):
-    u=ds_u['ua'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
-    w=ds_w['wa'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
-    ub=u.mean(axis=1); wb=w.mean(axis=1)          # moyenne DOMAINE (pas par zone), reference physique
-    up=u-ub[:,None]; wp=w-wb[:,None]
-    flux_h_zt[iz]=rho0[iz]*(up[:,mh_flat]*wp[:,mh_flat]).mean(axis=1)
-    flux_s_zt[iz]=rho0[iz]*(up[:,ms_flat]*wp[:,ms_flat]).mean(axis=1)
-    del u,w,up,wp; gc.collect()
-ds_u.close(); ds_w.close(); gc.collect()
-
-# verification : f_h*flux_h + f_s*flux_s doit redonner flux_zt (a peu pres —
-# reste un terme croise negligeable si les moyennes locales par zone sont proches de ub/wb)
-recon_flux=f_h*flux_h_zt+f_s*flux_s_zt
-print(f'erreur reconstruction flux_zt : {np.max(np.abs(recon_flux-flux_zt)):.2e}')
-print(f"contribution humide au flux total (2-8km) : {flux_h_zt[m28].mean()/flux_tot[m28].mean()*f_h:.0%}")
-print(f"contribution seche au flux total  (2-8km) : {flux_s_zt[m28].mean()/flux_tot[m28].mean()*f_s:.0%}")
-
-# down-gradient vs contre-gradient : signe(flux_zt) vs signe(-dudz_zt)
-sens_down_gradient = np.sign(flux_zt) == np.sign(-dudz_zt)
 frac_down = sens_down_gradient[m28].mean()
-print(f"fraction de points (2-8km) en transport DOWN-GRADIENT : {frac_down:.0%} "
-      f"({'majoritairement down-gradient' if frac_down>0.5 else 'majoritairement CONTRE-gradient'})")
+print(f"fraction globale down-gradient (2-8km) : {frac_down:.0%}")
 
-fig,ax=plt.subplots(figsize=(7,5))
-im=ax.pcolormesh(tt+t_stat, zkm[mask_show], sens_down_gradient[mask_show].astype(float),
-                  cmap='RdBu_r', shading='auto')
-ax.axhspan(2,8,color='k',alpha=.06); ax.set_xlabel('t'); ax.set_ylabel('z (km)')
-ax.set_title("1 = down-gradient (flux et -dudz de meme signe) | 0 = contre-gradient")
-fig.colorbar(im,ax=ax)
-plt.tight_layout(); plt.show()
+# correlation entre le regime (0/1) et le signe/amplitude du cisaillement sec
+dzus_band = dzus[m28]                      # cisaillement zone seche, meme bande
+regime_band = sens_down_gradient[m28].astype(float)
+
+# le regime bascule-t-il quand |dzus| depasse un seuil (cisaillement fort) ?
+seuil_fort = np.percentile(np.abs(dzus_band), 70)
+mask_fort = np.abs(dzus_band) > seuil_fort
+mask_faible = ~mask_fort
+print(f"regime down-gradient quand cisaillement SEC fort  : {regime_band[mask_fort].mean():.0%}")
+print(f"regime down-gradient quand cisaillement SEC faible : {regime_band[mask_faible].mean():.0%}")
+
+# correlation croisee (sur la bande, moyenne en z) entre le regime et dzus, pour verifier le lag
+regime_t = regime_band.reshape(dzus[m28].shape).mean(axis=0)   # % down-gradient par instant
+dzus_t   = np.abs(dzus_band).mean(axis=0)                       # |cisaillement sec| par instant
+lags = np.arange(-15,16)
+xcorr = [np.corrcoef(np.roll(dzus_t,l), regime_t)[0,1] for l in lags]
+lag_max = lags[int(np.argmax(np.abs(xcorr)))]
+print(f"correlation |cisaillement sec| / fraction down-gradient : "
+      f"r_max={xcorr[int(np.argmax(np.abs(xcorr)))]:+.2f} au decalage {lag_max} pas ({lag_max*dt_phys/3600:+.0f}h)")
