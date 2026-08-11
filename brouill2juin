@@ -1,6 +1,29 @@
-u_h_s = uniform_filter1d(u_h_zt, size=3, axis=0, mode='nearest')
-u_s_s = uniform_filter1d(u_s_zt, size=3, axis=0, mode='nearest')
-dtuc = np.gradient(u_h_s, dt_phys, axis=1)
-dtus = np.gradient(u_s_s, dt_phys, axis=1)
-dzuc = np.gradient(u_h_s, alt, axis=0)
-dzus = np.gradient(u_s_s, alt, axis=0)
+# ============================================================
+#  Cisaillement dudz_zt et tendance dudt_zt SANS lissage prealable (a partir de uprime brut, pas de ups)
+#  puis version lissee sur 8 pas de TEMPS (axis=1), pas en z
+# ============================================================
+uprime_raw = ubar_zt - ubar_zt.mean(axis=1, keepdims=True)   # anomalie brute, aucun lissage
+
+dudt_raw = np.gradient(uprime_raw, dt_phys, axis=1)   # m/s par seconde
+dudz_raw = np.gradient(uprime_raw, alt, axis=0)       # m/s par metre
+
+WIN_T = 8
+dudt_smooth = uniform_filter1d(dudt_raw, size=WIN_T, axis=1, mode='nearest')
+dudz_smooth = uniform_filter1d(dudz_raw, size=WIN_T, axis=1, mode='nearest')
+
+fig, axes = plt.subplots(2, 2, figsize=(14,10), sharex=True, sharey=True)
+panels = [(dudt_raw*3600,    r"$\partial_t\bar u'$ brut (m/s/h)"),
+          (dudt_smooth*3600, f"$\\partial_t\\bar u'$ lisse sur {WIN_T} pas de temps (m/s/h)"),
+          (dudz_raw*1e3,     r"$\partial_z\bar u'$ brut ($10^{-3}$ s$^{-1}$)"),
+          (dudz_smooth*1e3,  f"$\\partial_z\\bar u'$ lisse sur {WIN_T} pas de temps ($10^{-3}$ s$^{-1}$)")]
+for ax,(fld,lab) in zip(axes.ravel(), panels):
+    v = np.percentile(np.abs(fld[mask_show]), 98) + 1e-12
+    im = ax.pcolormesh(tt+t_stat, zkm[mask_show], fld[mask_show], cmap='RdBu_r',
+                        norm=TwoSlopeNorm(0,-v,v), shading='auto')
+    ax.axhspan(2,8,color='k',alpha=.06); ax.set_title(lab,fontsize=10)
+    fig.colorbar(im, ax=ax, pad=.02)
+for ax in axes[:,0]: ax.set_ylabel('z (km)')
+for ax in axes[1,:]: ax.set_xlabel('t')
+axes[0,0].set_ylim(0,Z_TOP_KM)
+plt.suptitle("Gradients bruts vs lisses sur l'axe temporel (8 pas)", fontweight='bold')
+plt.tight_layout(); plt.show()
