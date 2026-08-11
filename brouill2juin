@@ -1,13 +1,20 @@
 # ============================================================
-#  Hovmoller de flux_zt (brut, pas d'anomalie)
+#  K(z,t) tel que u'w'(z,t) = -K(z,t) * dudz(z,t)   =>   K = -u'w'/dudz
 # ============================================================
+with np.errstate(divide='ignore', invalid='ignore'):
+    K_zt = -uw_zt / dudz_zt   # uw_zt = flux_zt/rho0 deja calcule en §0
+
+# on masque les points ou dudz est quasi nul (K diverge, non physique a afficher)
+seuil_dudz = 0.1*np.percentile(np.abs(dudz_zt[m28]), 90)
+K_zt_masked = np.where(np.abs(dudz_zt) > seuil_dudz, K_zt, np.nan)
+
 fig, ax = plt.subplots(figsize=(8,5))
 ax.grid(False)
-v = np.percentile(np.abs(flux_zt[mask_show]), 98) + 1e-12
-im = ax.pcolormesh(tt+t_stat, zkm[mask_show], flux_zt[mask_show], cmap='RdBu_r',
+v = np.nanpercentile(np.abs(K_zt_masked[mask_show]), 90)
+im = ax.pcolormesh(tt+t_stat, zkm[mask_show], K_zt_masked[mask_show], cmap='RdBu_r',
                     norm=TwoSlopeNorm(0,-v,v), shading='auto')
 ax.axhspan(2,8,color='k',alpha=.06); ax.set_ylim(0,Z_TOP_KM)
 ax.set_xlabel('t'); ax.set_ylabel('z (km)')
-ax.set_title(r"$\rho_0\langle u'w'\rangle(z,t)$ (flux de Reynolds)")
-fig.colorbar(im, ax=ax, pad=.02, label=r"kg m$^{-1}$ s$^{-2}$")
+ax.set_title(r"$K(z,t) = -\overline{u'w'}/\partial_z\bar u$  (rouge = $K<0$ = contre-gradient)")
+fig.colorbar(im, ax=ax, pad=.02, label=r"m$^2$/s")
 plt.tight_layout(); plt.show()
