@@ -1,7 +1,20 @@
 # ============================================================
-#  frac_h_t : fraction de colonnes humides, PAR INSTANT (pas le masque fixe mh)
+#  K binarise : chaque valeur remplacee par la moyenne de son signe
+#  (rouge = moyenne des K>0, bleu = moyenne des K<0)
 # ============================================================
-ds_prw2 = xr.open_dataset(path2d('prw'))
-prw_t = ds_prw2['prw'].isel({dim_t: idx_stat}).values.reshape(n_stat, -1)
-ds_prw2.close()
-frac_h_t = (prw_t > PRW_SEUIL).mean(axis=1)   # fraction de colonnes humides, par instant
+mean_pos = np.nanmean(K_loc[K_loc > 0])
+mean_neg = np.nanmean(K_loc[K_loc < 0])
+print(f"moyenne des K>0 (rouge) : {mean_pos:+.2f} m²/s")
+print(f"moyenne des K<0 (bleu)  : {mean_neg:+.2f} m²/s")
+
+K_binaire = np.where(K_loc > 0, mean_pos, np.where(K_loc < 0, mean_neg, np.nan))
+
+fig, ax = plt.subplots(figsize=(8,5)); ax.grid(False)
+v = max(abs(mean_pos), abs(mean_neg))
+im = ax.pcolormesh(tt+t_stat, zkm[mask_show], K_binaire[mask_show], cmap='RdBu_r',
+                    norm=TwoSlopeNorm(0,-v,v), shading='auto')
+ax.axhspan(2,8,color='k',alpha=.06); ax.set_ylim(0,Z_TOP_KM)
+ax.set_xlabel('t'); ax.set_ylabel('z (km)')
+ax.set_title(f"K binarise : rouge={mean_pos:+.1f} m²/s | bleu={mean_neg:+.1f} m²/s")
+fig.colorbar(im, ax=ax, pad=.02, label='m²/s')
+plt.tight_layout(); plt.show()
