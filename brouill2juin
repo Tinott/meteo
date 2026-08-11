@@ -1,29 +1,73 @@
 # ============================================================
-#  Cisaillement dudz_zt et tendance dudt_zt SANS lissage prealable (a partir de uprime brut, pas de ups)
-#  puis version lissee sur 8 pas de TEMPS (axis=1), pas en z
+#  TEST : dudt ~ dudz (ordre de grandeur/pattern) sur zone totale, humide, seche
+#  puis test de l'hypothese advective : dudt =? w_s(z) * dzus  (subsidence sec x cisaillement sec)
+#  tout est lisse sur 8 pas de temps (axis=1), comme le bloc precedent
 # ============================================================
-uprime_raw = ubar_zt - ubar_zt.mean(axis=1, keepdims=True)   # anomalie brute, aucun lissage
-
-dudt_raw = np.gradient(uprime_raw, dt_phys, axis=1)   # m/s par seconde
-dudz_raw = np.gradient(uprime_raw, alt, axis=0)       # m/s par metre
-
 WIN_T = 8
-dudt_smooth = uniform_filter1d(dudt_raw, size=WIN_T, axis=1, mode='nearest')
-dudz_smooth = uniform_filter1d(dudz_raw, size=WIN_T, axis=1, mode='nearest')
 
-fig, axes = plt.subplots(2, 2, figsize=(14,10), sharex=True, sharey=True)
-panels = [(dudt_raw*3600,    r"$\partial_t\bar u'$ brut (m/s/h)"),
-          (dudt_smooth*3600, f"$\\partial_t\\bar u'$ lisse sur {WIN_T} pas de temps (m/s/h)"),
-          (dudz_raw*1e3,     r"$\partial_z\bar u'$ brut ($10^{-3}$ s$^{-1}$)"),
-          (dudz_smooth*1e3,  f"$\\partial_z\\bar u'$ lisse sur {WIN_T} pas de temps ($10^{-3}$ s$^{-1}$)")]
-for ax,(fld,lab) in zip(axes.ravel(), panels):
-    v = np.percentile(np.abs(fld[mask_show]), 98) + 1e-12
-    im = ax.pcolormesh(tt+t_stat, zkm[mask_show], fld[mask_show], cmap='RdBu_r',
-                        norm=TwoSlopeNorm(0,-v,v), shading='auto')
-    ax.axhspan(2,8,color='k',alpha=.06); ax.set_title(lab,fontsize=10)
-    fig.colorbar(im, ax=ax, pad=.02)
-for ax in axes[:,0]: ax.set_ylabel('z (km)')
-for ax in axes[1,:]: ax.set_xlabel('t')
-axes[0,0].set_ylim(0,Z_TOP_KM)
-plt.suptitle("Gradients bruts vs lisses sur l'axe temporel (8 pas)", fontweight='bold')
+def smooth_t(fld):
+    return uniform_filter1d(fld, size=WIN_T, axis=1, mode='nearest')
+
+# --- champs bruts par zone (deja calcules en §4 : u_h_zt, u_s_zt) ---
+uh_s = smooth_t(u_h_zt); us_s = smooth_t(u_s_zt)
+uprime_s = smooth_t(uprime_raw)   # domaine total, deja lisse dans le bloc precedent mais on le regenere ici pour coherence
+
+dtuc = np.gradient(uh_s, dt_phys, axis=1); dzuc = np.gradient(uh_s, alt, axis=0)
+dtus = np.gradient(us_s, dt_phys, axis=1); dzus = np.gradient(us_s, alt, axis=0)
+dudt_tot = np.gradient(uprime_s, dt_phys, axis=1); dudz_tot = np.gradient(uprime_s, alt, axis=0)
+
+# ---- 1) dudt vs dudz, scatter + regression (pente = -c_z effectif), pour les 3 zones ----
+fig, axes = plt.subplots(1,3,figsize=(15,5))
+for ax,(x,y,lab) in zip(axes, [(dudz_tot, dudt_tot, "total"),
+                                 (dzuc, dtuc, "humide"),
+                                 (dzus, dtus, "sec")]):
+    xb, yb = x[m28].ravel(), y[m28].ravel()
+    ok = np.isfinite(xb)&np.isfinite(yb)
+    slope = np.sum(xb[ok]*yb[ok])/np.sum(xb[ok]**2)     # regression sans intercept
+    r = np.corrcoef(xb[ok], yb[ok])[0,1]
+    ax.scatter(xb[ok], yb[ok], s=3, alpha=.15)
+    xx = np.linspace(xb[ok].min(), xb[ok].max(), 10)
+    ax.plot(xx, slope*xx, 'r-', lw=1.5)
+    ax.set_xlabel(r'$\partial_z u$ (s$^{-1}$)'); ax.set_ylabel(r'$\partial_t u$ (m/s$^2$)')
+    ax.set_title(f"{lab} : r={r:+.2f} | pente=-c_z={slope*100:+.2f} cm/s")
+plt.suptitle("dudt vs dudz (2-8km, lisse 8 pas) — zone totale / humide / seche", fontweight='bold')
 plt.tight_layout(); plt.show()
+
+# ---- 2) hypothese advective : dudt(z,t) =? w_s(z,t) * dzus(z,t)  (advection verticale par la subsidence sechet) ----
+w_s_smooth = smooth_t(w_s_zt)
+produit_adv = w_s_smooth * dzus     # candidat pour expliquer dudt_tot, niveau par niveau
+
+k_z = np.full(n_z, np.nan); r2_adv = np.full(n_z, np.nan)
+dudt_reconstruit = np.full((n_z, n_stat), np.nan)
+for iz in range(n_z):
+    x = produit_adv[iz,:]; y = dudt_tot[iz,:]
+    if np.std(x) < 1e-15: continue
+    k_z[iz] = np.sum(x*y)/np.sum(x*x)
+    y_pred = k_z[iz]*x
+    dudt_reconstruit[iz,:] = y_pred
+    ss_res = np.sum((y-y_pred)**2); ss_tot = np.sum((y-y.mean())**2)
+    r2_adv[iz] = 1 - ss_res/ss_tot if ss_tot>0 else np.nan
+
+fig, axes = plt.subplots(1,2,figsize=(9,5), sharey=True)
+axes[0].plot(k_z[mask_show], zkm[mask_show]); axes[0].axvline(0,color='k',lw=.5)
+axes[0].set_xlabel('k(z) (sans dimension, attendu ~ -1 si advection pure)')
+axes[1].plot(r2_adv[mask_show], zkm[mask_show]); axes[1].axvline(0,color='k',lw=.5)
+axes[1].set_xlabel(r"$R^2(z)$ de l'ajustement $\partial_t u \sim k\, w_s\,\partial_z u_{sec}$")
+axes[0].set_ylabel('z (km)'); axes[0].set_ylim(0,Z_TOP_KM)
+plt.suptitle("Test hypothese advective : dudt = k(z) * w_sec * dzus", fontweight='bold')
+plt.tight_layout(); plt.show()
+
+# ---- 3) comparaison Hovmoller : dudt reel vs produit w_s*dzus reconstruit ----
+fig, axes = plt.subplots(1,3,figsize=(16,5), sharey=True)
+v = np.percentile(np.abs(dudt_tot[mask_show]), 98) + 1e-12
+for ax,(fld,lab) in zip(axes, [(dudt_tot*3600, r"$\partial_t\bar u'$ reel (m/s/h)"),
+                                 (dudt_reconstruit*3600, r"$k(z)\,w_s\partial_z u_{sec}$ reconstruit (m/s/h)"),
+                                 ((dudt_tot-dudt_reconstruit)*3600, "difference (m/s/h)")]):
+    im = ax.pcolormesh(tt+t_stat, zkm[mask_show], fld[mask_show], cmap='RdBu_r',
+                        norm=TwoSlopeNorm(0,-v*3600,v*3600), shading='auto')
+    ax.axhspan(2,8,color='k',alpha=.06); ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
+axes[0].set_ylabel('z (km)'); axes[0].set_ylim(0,Z_TOP_KM)
+plt.suptitle("dudt reel vs hypothese advective (subsidence sec x cisaillement sec)", fontweight='bold')
+plt.tight_layout(); plt.show()
+
+print(f"R2 median (2-8km) hypothese advective : {np.nanmedian(r2_adv[m28]):.2f}")
