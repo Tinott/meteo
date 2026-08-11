@@ -1,47 +1,7 @@
 # ============================================================
-#  K(z,t) ROBUSTE (regression glissante, garde la resolution temporelle)
-#  + test de simplification : K covarie-t-il avec une variable simple ?
+#  frac_h_t : fraction de colonnes humides, PAR INSTANT (pas le masque fixe mh)
 # ============================================================
-W = 7  # largeur de la fenetre glissante (pas de temps), a ajuster
-K_loc = np.full((n_z, n_stat), np.nan)
-for iz in range(n_z):
-    x_full = -dudz_zt[iz,:]; y_full = uw_zt[iz,:]
-    for it in range(n_stat):
-        i0, i1 = max(0,it-W//2), min(n_stat,it+W//2+1)
-        x, y = x_full[i0:i1], y_full[i0:i1]
-        if np.std(x) < 1e-12: continue
-        K_loc[iz,it] = np.sum(x*y)/np.sum(x*x)
-
-fig,ax=plt.subplots(figsize=(8,5)); ax.grid(False)
-v=np.nanpercentile(np.abs(K_loc[mask_show]),90)
-im=ax.pcolormesh(tt+t_stat, zkm[mask_show], K_loc[mask_show], cmap='RdBu_r',
-                  norm=TwoSlopeNorm(0,-v,v), shading='auto')
-ax.axhspan(2,8,color='k',alpha=.06); ax.set_ylim(0,Z_TOP_KM)
-ax.set_xlabel('t'); ax.set_ylabel('z (km)')
-ax.set_title(f'K(z,t) — regression glissante (fenetre={W} pas)')
-fig.colorbar(im,ax=ax,pad=.02,label='m²/s')
-plt.tight_layout(); plt.show()
-
-# ---- candidats pour expliquer K_loc ----
-w_var_zt = np.zeros((n_z,n_stat))  # variance de w a chaque niveau/instant (proxy intensite turbulente)
-ds_w=xr.open_dataset(path3d('wa'))
-for iz in range(n_z):
-    w=ds_w['wa'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
-    w_var_zt[iz]=w.var(axis=1)
-ds_w.close()
-
-candidats = {
-    '|dudz| (m/s scaling)': np.abs(dudz_zt),
-    'variance de w (m2/s2)': w_var_zt,
-    'fraction humide instantanee': np.tile(frac_h_t, (n_z,1)),  # necessite frac_h_t calcule avant (cf §9)
-}
-
-fig,axes=plt.subplots(1,len(candidats),figsize=(5*len(candidats),4.5))
-for ax,(nom,cand) in zip(axes,candidats.items()):
-    x = cand[m28].ravel(); y = K_loc[m28].ravel()
-    ok = np.isfinite(x)&np.isfinite(y)
-    r = np.corrcoef(x[ok],y[ok])[0,1] if ok.sum()>10 else np.nan
-    ax.scatter(x[ok], y[ok], s=3, alpha=.15)
-    ax.set_xlabel(nom); ax.set_ylabel('K local (m²/s)')
-    ax.set_title(f'r={r:+.2f}')
-plt.tight_layout(); plt.show()
+ds_prw2 = xr.open_dataset(path2d('prw'))
+prw_t = ds_prw2['prw'].isel({dim_t: idx_stat}).values.reshape(n_stat, -1)
+ds_prw2.close()
+frac_h_t = (prw_t > PRW_SEUIL).mean(axis=1)   # fraction de colonnes humides, par instant
