@@ -1,26 +1,13 @@
 # ============================================================
-#  §12. Le regime down/contre-gradient bascule-t-il EN PHASE
-#       avec le cisaillement sec (dzus) ? — test quantitatif
+#  Hovmoller de flux_zt (brut, pas d'anomalie)
 # ============================================================
-frac_down = sens_down_gradient[m28].mean()
-print(f"fraction globale down-gradient (2-8km) : {frac_down:.0%}")
-
-# correlation entre le regime (0/1) et le signe/amplitude du cisaillement sec
-dzus_band = dzus[m28]                      # cisaillement zone seche, meme bande
-regime_band = sens_down_gradient[m28].astype(float)
-
-# le regime bascule-t-il quand |dzus| depasse un seuil (cisaillement fort) ?
-seuil_fort = np.percentile(np.abs(dzus_band), 70)
-mask_fort = np.abs(dzus_band) > seuil_fort
-mask_faible = ~mask_fort
-print(f"regime down-gradient quand cisaillement SEC fort  : {regime_band[mask_fort].mean():.0%}")
-print(f"regime down-gradient quand cisaillement SEC faible : {regime_band[mask_faible].mean():.0%}")
-
-# correlation croisee (sur la bande, moyenne en z) entre le regime et dzus, pour verifier le lag
-regime_t = regime_band.reshape(dzus[m28].shape).mean(axis=0)   # % down-gradient par instant
-dzus_t   = np.abs(dzus_band).mean(axis=0)                       # |cisaillement sec| par instant
-lags = np.arange(-15,16)
-xcorr = [np.corrcoef(np.roll(dzus_t,l), regime_t)[0,1] for l in lags]
-lag_max = lags[int(np.argmax(np.abs(xcorr)))]
-print(f"correlation |cisaillement sec| / fraction down-gradient : "
-      f"r_max={xcorr[int(np.argmax(np.abs(xcorr)))]:+.2f} au decalage {lag_max} pas ({lag_max*dt_phys/3600:+.0f}h)")
+fig, ax = plt.subplots(figsize=(8,5))
+ax.grid(False)
+v = np.percentile(np.abs(flux_zt[mask_show]), 98) + 1e-12
+im = ax.pcolormesh(tt+t_stat, zkm[mask_show], flux_zt[mask_show], cmap='RdBu_r',
+                    norm=TwoSlopeNorm(0,-v,v), shading='auto')
+ax.axhspan(2,8,color='k',alpha=.06); ax.set_ylim(0,Z_TOP_KM)
+ax.set_xlabel('t'); ax.set_ylabel('z (km)')
+ax.set_title(r"$\rho_0\langle u'w'\rangle(z,t)$ (flux de Reynolds)")
+fig.colorbar(im, ax=ax, pad=.02, label=r"kg m$^{-1}$ s$^{-2}$")
+plt.tight_layout(); plt.show()
