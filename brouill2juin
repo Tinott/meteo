@@ -1,30 +1,15 @@
 # ============================================================
-#  Meme comparaison mais restreinte a 2-8km uniquement (echelle couleur + R² sur cette bande)
+#  wbar * dudz(ubar) — termes 100% domaine-total (pas de masque humide/sec),
+#  affiche sur 2-8km uniquement
 # ============================================================
-fig, axes = plt.subplots(1,2,figsize=(11,5),sharey=True)
-v3 = max(np.percentile(np.abs(terme_flux[m28]),98), np.percentile(np.abs(produit_adv[m28]),98))*3600+1e-12
-for ax,(fld,lab) in zip(axes,[(terme_flux*3600, r"$-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$ (m/s/h)"),
-                                (produit_adv*3600, r"$w_{sec}\,\partial_z u_{sec}$ (m/s/h)")]):
-    im=ax.pcolormesh(tt+t_stat, zkm[m28], fld[m28], cmap='RdBu_r',
-                      norm=TwoSlopeNorm(0,-v3,v3), shading='auto')
-    ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
-    fig.colorbar(im,ax=ax,pad=.02)
-axes[0].set_ylabel('z (km)')
-plt.suptitle("Divergence du flux de Reynolds vs advection du cisaillement sec (2-8km)", fontweight='bold')
+wbar_smooth = smooth_t(wbar_zt)
+produit_domtot = wbar_smooth * dudz_tot
+
+fig, ax = plt.subplots(figsize=(8,5)); ax.grid(False)
+v = np.percentile(np.abs(produit_domtot[m28]), 98)*3600 + 1e-12
+im = ax.pcolormesh(tt+t_stat, zkm[m28], produit_domtot[m28]*3600, cmap='RdBu_r',
+                    norm=TwoSlopeNorm(0,-v,v), shading='auto')
+ax.set_xlabel('t'); ax.set_ylabel('z (km)')
+ax.set_title(r"$\bar w\,\partial_z\bar u$ (m/s/h), domaine total, 2-8km")
+fig.colorbar(im, ax=ax, pad=.02, label='m/s/h')
 plt.tight_layout(); plt.show()
-
-R2_direct_28 = np.full(n_z, np.nan)
-for iz in range(n_z):
-    if not (2000 <= alt[iz] <= 8000): continue
-    a, b = terme_flux[iz,:], produit_adv[iz,:]
-    if np.nanstd(a) < 1e-15: continue
-    ss_res = np.nansum((a-b)**2); ss_tot = np.nansum((a-a.mean())**2)
-    R2_direct_28[iz] = 1 - ss_res/ss_tot if ss_tot>0 else np.nan
-
-fig, ax = plt.subplots(figsize=(5,6))
-ax.plot(R2_direct_28[m28], zkm[m28], 'o-', ms=3); ax.axvline(0,color='k',lw=.5)
-ax.set_xlabel('R² direct (2-8km)'); ax.set_ylabel('z (km)')
-ax.set_title(r"$-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$ vs $w_{sec}\,\partial_z u_{sec}$ (2-8km)")
-plt.tight_layout(); plt.show()
-
-print(f"R2 direct median (2-8km uniquement) : {np.nanmedian(R2_direct_28[m28]):.2f}")
