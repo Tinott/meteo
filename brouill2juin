@@ -1,40 +1,27 @@
 # ============================================================
-#  ETAPE 1 — DERIVEES BRUTES (aucun smooth avant derivation)
+#  1) DERIVEES BRUTES — directement sur ubar_zt / u_h_zt / u_s_zt, coherent partout
+#     (pas d'anomalie retiree : meme traitement pour total/humide/sec)
 # ============================================================
-uprime_raw = ubar_zt - ubar_zt.mean(axis=1, keepdims=True)
-
-dudt_tot_raw = np.gradient(uprime_raw, dt_phys, axis=1)
-dudz_tot_raw = np.gradient(uprime_raw, alt, axis=0)
-
-dtuc_raw = np.gradient(u_h_zt, dt_phys, axis=1)
-dtus_raw = np.gradient(u_s_zt, dt_phys, axis=1)
-dzuc_raw = np.gradient(u_h_zt, alt, axis=0)
-dzus_raw = np.gradient(u_s_zt, alt, axis=0)
-
-w_s_raw = w_s_zt   # pas une derivee, rien a calculer, deja brut
-
-
-
+dudt_tot_raw = np.gradient(ubar_zt, dt_phys, axis=1)
+dudz_tot_raw = np.gradient(ubar_zt, alt, axis=0)
+dtuc_raw = np.gradient(u_h_zt, dt_phys, axis=1); dzuc_raw = np.gradient(u_h_zt, alt, axis=0)
+dtus_raw = np.gradient(u_s_zt, dt_phys, axis=1); dzus_raw = np.gradient(u_s_zt, alt, axis=0)
+w_s_raw = w_s_zt
 
 # ============================================================
-#  ETAPE 2 — SMOOTH APPLIQUE EN DERNIER, sur les champs deja derives
+#  2) SMOOTH applique en dernier, sur les champs deja derives
 # ============================================================
 WIN_T = 8
 def smooth_t(fld):
     return uniform_filter1d(fld, size=WIN_T, axis=1, mode='nearest')
 
-dudt_tot = smooth_t(dudt_tot_raw)
-dudz_tot = smooth_t(dudz_tot_raw)
-dtuc = smooth_t(dtuc_raw); dtus = smooth_t(dtus_raw)
-dzuc = smooth_t(dzuc_raw); dzus = smooth_t(dzus_raw)
+dudt_tot = smooth_t(dudt_tot_raw); dudz_tot = smooth_t(dudz_tot_raw)
+dtuc = smooth_t(dtuc_raw); dzuc = smooth_t(dzuc_raw)
+dtus = smooth_t(dtus_raw); dzus = smooth_t(dzus_raw)
 w_s_smooth = smooth_t(w_s_raw)
 
-
-
-
-
 # ============================================================
-#  ETAPE 3 — dzuc vs dzus en (z,t)
+#  3) cisaillement humide vs sec, en (z,t)
 # ============================================================
 fig, axes = plt.subplots(1,2,figsize=(11,5),sharey=True)
 v = max(np.percentile(np.abs(dzuc[mask_show]),98), np.percentile(np.abs(dzus[mask_show]),98))*1e3+1e-12
@@ -45,15 +32,11 @@ for ax,(fld,lab) in zip(axes,[(dzuc*1e3,r"$\partial_z u_{humide}$ ($10^{-3}$ s$^
     ax.axhspan(2,8,color='k',alpha=.06); ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
     fig.colorbar(im,ax=ax,pad=.02)
 axes[0].set_ylabel('z (km)'); axes[0].set_ylim(0,Z_TOP_KM)
-plt.suptitle("Cisaillement vertical par zone (brut puis lisse 8 pas)", fontweight='bold')
+plt.suptitle("Cisaillement vertical par zone", fontweight='bold')
 plt.tight_layout(); plt.show()
 
-
-
-
-
 # ============================================================
-#  ETAPE 4 — dtuc vs dtus en (z,t)
+#  4) tendance humide vs sec, en (z,t)
 # ============================================================
 fig, axes = plt.subplots(1,2,figsize=(11,5),sharey=True)
 v = max(np.percentile(np.abs(dtuc[mask_show]),98), np.percentile(np.abs(dtus[mask_show]),98))*3600+1e-12
@@ -64,34 +47,24 @@ for ax,(fld,lab) in zip(axes,[(dtuc*3600,r"$\partial_t u_{humide}$ (m/s/h)"),
     ax.axhspan(2,8,color='k',alpha=.06); ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
     fig.colorbar(im,ax=ax,pad=.02)
 axes[0].set_ylabel('z (km)'); axes[0].set_ylim(0,Z_TOP_KM)
-plt.suptitle("Tendance temporelle par zone (brut puis lisse 8 pas)", fontweight='bold')
+plt.suptitle("Tendance temporelle par zone", fontweight='bold')
 plt.tight_layout(); plt.show()
 
-
-
-
-
-
 # ============================================================
-#  ETAPE 5 — w_sec en (z,t)
+#  5) w_sec, en (z,t)
 # ============================================================
-w_s_prime = w_s_smooth - w_s_smooth.mean(axis=1, keepdims=True)
 fig, ax = plt.subplots(figsize=(8,5)); ax.grid(False)
-v = np.percentile(np.abs(w_s_prime[mask_show]),98)*100+1e-12
-im = ax.pcolormesh(tt+t_stat, zkm[mask_show], w_s_prime[mask_show]*100, cmap='RdBu_r',
+v = np.percentile(np.abs(w_s_smooth[mask_show]),98)*100+1e-12
+im = ax.pcolormesh(tt+t_stat, zkm[mask_show], w_s_smooth[mask_show]*100, cmap='RdBu_r',
                     norm=TwoSlopeNorm(0,-v,v), shading='auto')
 ax.axhspan(2,8,color='k',alpha=.06); ax.set_ylim(0,Z_TOP_KM)
 ax.set_xlabel('t'); ax.set_ylabel('z (km)')
-ax.set_title(r"$\bar w_{sec}'(z,t)$ (cm/s, lisse 8 pas)")
+ax.set_title(r"$\bar w_{sec}(z,t)$ (cm/s)")
 fig.colorbar(im, ax=ax, pad=.02, label='cm/s')
 plt.tight_layout(); plt.show()
 
-
-
-
-
 # ============================================================
-#  ETAPE 6 — dudt vs dudz : total / humide / sec (scatter, 2-8km)
+#  6) dudt vs dudz : total / humide / sec (scatter, 2-8km)
 # ============================================================
 fig, axes = plt.subplots(1,3,figsize=(15,5))
 for ax,(x,y,lab) in zip(axes, [(dudz_tot, dudt_tot, "total"),
@@ -106,21 +79,17 @@ for ax,(x,y,lab) in zip(axes, [(dudz_tot, dudt_tot, "total"),
     ax.plot(xx, slope*xx, 'r-', lw=1.5)
     ax.set_xlabel(r'$\partial_z u$ (s$^{-1}$)'); ax.set_ylabel(r'$\partial_t u$ (m/s$^2$)')
     ax.set_title(f"{lab} : r={r:+.2f} | pente=-c_z={slope*100:+.2f} cm/s")
-plt.suptitle("dudt vs dudz (2-8km, lisse 8 pas)", fontweight='bold')
+plt.suptitle("dudt vs dudz (2-8km)", fontweight='bold')
 plt.tight_layout(); plt.show()
 
-
-
-
-
 # ============================================================
-#  ETAPE 7 — le produit w_sec * dzus en (z,t), a comparer visuellement a dudt_tot
+#  7) le produit w_sec * dzus en (z,t), a comparer visuellement a dudt_tot
 # ============================================================
 produit_adv = w_s_smooth * dzus
 
 fig, axes = plt.subplots(1,2,figsize=(11,5),sharey=True)
 v = max(np.percentile(np.abs(dudt_tot[mask_show]),98), np.percentile(np.abs(produit_adv[mask_show]),98))*3600+1e-12
-for ax,(fld,lab) in zip(axes,[(dudt_tot*3600, r"$\partial_t\bar u'$ reel (m/s/h)"),
+for ax,(fld,lab) in zip(axes,[(dudt_tot*3600, r"$\partial_t\bar u$ reel (m/s/h)"),
                                 (produit_adv*3600, r"$w_{sec}\,\partial_z u_{sec}$ (m/s/h)")]):
     im=ax.pcolormesh(tt+t_stat, zkm[mask_show], fld[mask_show], cmap='RdBu_r',
                       norm=TwoSlopeNorm(0,-v,v), shading='auto')
@@ -130,12 +99,8 @@ axes[0].set_ylabel('z (km)'); axes[0].set_ylim(0,Z_TOP_KM)
 plt.suptitle("Comparaison directe avant regression", fontweight='bold')
 plt.tight_layout(); plt.show()
 
-
-
-
-
 # ============================================================
-#  ETAPE 8 — regression par niveau (coefficient interne, jamais affiche seul) + R²(z)
+#  8) regression par niveau (coefficient interne, jamais affiche seul) + R²(z)
 # ============================================================
 r2_adv = np.full(n_z, np.nan)
 dudt_reconstruit = np.full((n_z, n_stat), np.nan)
@@ -154,16 +119,12 @@ ax.set_xlabel('R²(z)'); ax.set_ylabel('z (km)'); ax.set_ylim(0,Z_TOP_KM)
 ax.set_title(r"Qualite de l'ajustement $\partial_t u \sim w_{sec}\,\partial_z u_{sec}$")
 plt.tight_layout(); plt.show()
 
-
-
-
-
 # ============================================================
-#  ETAPE 9 — Hovmoller final : dudt reel vs reconstruit vs difference
+#  9) Hovmoller final : dudt reel vs reconstruit vs difference
 # ============================================================
 fig, axes = plt.subplots(1,3,figsize=(16,5), sharey=True)
 v = np.percentile(np.abs(dudt_tot[mask_show]), 98)*3600 + 1e-12
-for ax,(fld,lab) in zip(axes, [(dudt_tot*3600, r"$\partial_t\bar u'$ reel (m/s/h)"),
+for ax,(fld,lab) in zip(axes, [(dudt_tot*3600, r"$\partial_t\bar u$ reel (m/s/h)"),
                                  (dudt_reconstruit*3600, r"$w_{sec}\,\partial_z u_{sec}$ reconstruit (m/s/h)"),
                                  ((dudt_tot-dudt_reconstruit)*3600, "difference (m/s/h)")]):
     im = ax.pcolormesh(tt+t_stat, zkm[mask_show], fld[mask_show], cmap='RdBu_r',
