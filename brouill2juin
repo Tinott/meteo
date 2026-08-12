@@ -1,15 +1,59 @@
 # ============================================================
-#  wbar * dudz(ubar) — termes 100% domaine-total (pas de masque humide/sec),
-#  affiche sur 2-8km uniquement
+#  Test RCE : w_sec ≈ -Qrad / (dtheta/dz), dans les colonnes seches
+#  tntr = tendance temperature radiative (K/s), a convertir en tendance de theta
 # ============================================================
-wbar_smooth = smooth_t(wbar_zt)
-produit_domtot = wbar_smooth * dudz_tot
+# theta_bar(z) : profil moyen de temperature potentielle (pour dtheta/dz)
+p_ref = 1e5  # Pa, pression de reference
+theta_zt = np.zeros((n_z, n_stat))
+ds_ta = xr.open_dataset(path3d('ta')); ds_pa = xr.open_dataset(path3d('pa'))
+for iz in range(n_z):
+    T = ds_ta['ta'].isel({dim_t:idx_stat, dim_z:iz}).values.reshape(n_stat,-1)
+    p = ds_pa['pa'].isel({dim_t:idx_stat, dim_z:iz}).values.reshape(n_stat,-1)
+    theta = T*(p_ref/p)**(Rd/1004.0)
+    theta_zt[iz] = theta.mean(axis=1)   # domaine total, suffisant pour dtheta/dz de fond
+    del T,p,theta
+ds_ta.close(); ds_pa.close(); gc.collect()
 
-fig, ax = plt.subplots(figsize=(8,5)); ax.grid(False)
-v = np.percentile(np.abs(produit_domtot[m28]), 98)*3600 + 1e-12
-im = ax.pcolormesh(tt+t_stat, zkm[m28], produit_domtot[m28]*3600, cmap='RdBu_r',
-                    norm=TwoSlopeNorm(0,-v,v), shading='auto')
-ax.set_xlabel('t'); ax.set_ylabel('z (km)')
-ax.set_title(r"$\bar w\,\partial_z\bar u$ (m/s/h), domaine total, 2-8km")
-fig.colorbar(im, ax=ax, pad=.02, label='m/s/h')
+dthetadz_zt = np.gradient(theta_zt, alt, axis=0)   # K/m
+
+# tntr : tendance radiative, moyennee sur les colonnes SECHES uniquement (comme w_s_zt)
+tntr_s_zt = np.zeros((n_z, n_stat))
+ds_tntr = xr.open_dataset(path3d('tntr'))
+for iz in range(n_z):
+    tr = ds_tntr['tntr'].isel({dim_t:idx_stat, dim_z:iz}).values.reshape(n_stat,-1)
+    tntr_s_zt[iz] = tr[:,ms_flat].mean(axis=1)   # K/s, zone seche
+    del tr
+ds_tntr.close(); gc.collect()
+
+# equilibre RCE : w_sec * dtheta/dz ≈ -Qrad  =>  w_sec_predit = -Qrad/(dtheta/dz)
+with np.errstate(divide='ignore', invalid='ignore'):
+    w_sec_rce = -tntr_s_zt / dthetadz_zt
+
+w_sec_rce_s = smooth_t(w_sec_rce)
+w_s_obs_s = smooth_t(w_s_zt)   # deja calcule precedemment (§4)
+
+fig, axes = plt.subplots(1,2,figsize=(11,5),sharey=True)
+v = max(np.percentile(np.abs(w_s_obs_s[m28]),98), np.percentile(np.abs(w_sec_rce_s[m28]),98))*100+1e-9
+for ax,(fld,lab) in zip(axes,[(w_s_obs_s*100, r"$\bar w_{sec}$ observe (cm/s)"),
+                                (w_sec_rce_s*100, r"$-\dot Q_{rad}/(\partial_z\bar\theta)$ predit (cm/s)")]):
+    im=ax.pcolormesh(tt+t_stat, zkm[m28], fld[m28], cmap='RdBu_r',
+                      norm=TwoSlopeNorm(0,-v,v), shading='auto')
+    ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
+    fig.colorbar(im,ax=ax,pad=.02)
+axes[0].set_ylabel('z (km)')
+plt.suptitle("w_sec observe vs predit par l'equilibre radiatif-subsident RCE (2-8km)", fontweight='bold')
 plt.tight_layout(); plt.show()
+
+R2_wrce = np.full(n_z, np.nan)
+for iz in range(n_z):
+    if not (2000 <= alt[iz] <= 8000): continue
+    a, b = w_s_obs_s[iz,:], w_sec_rce_s[iz,:]
+    if np.nanstd(a) < 1e-15: continue
+    ss_res = np.nansum((a-b)**2); ss_tot = np.nansum((a-a.mean())**2)
+    R2_wrce[iz] = 1 - ss_res/ss_tot if ss_tot>0 else np.nan
+
+fig, ax = plt.subplots(figsize=(5,6))
+ax.plot(R2_wrce[m28], zkm[m28], 'o-', ms=3); ax.axvline(0,color='k',lw=.5)
+ax.set_xlabel('R² (w_sec observe vs predit RCE)'); ax.set_ylabel('z (km)')
+plt.tight_layout(); plt.show()
+print(f"R2 median (2-8km) : {np.nanmedian(R2_wrce[m28]):.2f}")
