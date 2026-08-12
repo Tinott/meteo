@@ -1,18 +1,61 @@
 # ============================================================
-#  Comparaison SANS regression : correlation brute, niveau par niveau
+#  1) terme de divergence du flux de Reynolds : -(1/rho0) d(flux_zt)/dz , affiche sur 0-15km
 # ============================================================
-r_brut = np.full(n_z, np.nan)
+# rho0(z) deja calcule dans le setup (§0) — recalcul de securite si absent
+try:
+    rho0
+except NameError:
+    rho0_sum=np.zeros(n_z); n_rho=0
+    ds_ta=xr.open_dataset(path3d('ta')); ds_pa=xr.open_dataset(path3d('pa')); ds_hus=xr.open_dataset(path3d('hus'))
+    for t0 in range(t_stat,n_t,BLOC):
+        t1=min(t0+BLOC,n_t); sl={dim_t:slice(t0,t1)}
+        T=ds_ta['ta'].isel(sl).values; p=ds_pa['pa'].isel(sl).values; qv=ds_hus['hus'].isel(sl).values
+        Tv=T*(1+qv/EPSILON)/(1+qv); rho=p/(Rd*Tv)
+        rho0_sum+=rho.mean(axis=(0,2,3))*(t1-t0); n_rho+=(t1-t0)
+        del T,p,qv,Tv,rho; gc.collect()
+    ds_ta.close(); ds_pa.close(); ds_hus.close(); rho0=rho0_sum/n_rho
+
+terme_flux_raw = -(1/rho0[:,None]) * np.gradient(flux_zt, alt, axis=0)
+terme_flux = smooth_t(terme_flux_raw)
+
+fig, ax = plt.subplots(figsize=(8,5)); ax.grid(False)
+v = np.percentile(np.abs(terme_flux[mask_show]), 98)*3600 + 1e-12
+im = ax.pcolormesh(tt+t_stat, zkm[mask_show], terme_flux[mask_show]*3600, cmap='RdBu_r',
+                    norm=TwoSlopeNorm(0,-v,v), shading='auto')
+ax.axhspan(2,8,color='k',alpha=.06); ax.set_ylim(0,Z_TOP_KM)
+ax.set_xlabel('t'); ax.set_ylabel('z (km)')
+ax.set_title(r"$-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$ (m/s/h)")
+fig.colorbar(im, ax=ax, pad=.02, label='m/s/h')
+plt.tight_layout(); plt.show()
+
+# ============================================================
+#  2) comparaison terme_flux vs w_sec*dzus, en (z,t), 2-8km
+#     R² SANS regression (pas de coefficient ajuste, variance expliquee directe)
+# ============================================================
+fig, axes = plt.subplots(1,2,figsize=(11,5),sharey=True)
+v2 = max(np.percentile(np.abs(terme_flux[mask_show]),98), np.percentile(np.abs(produit_adv[mask_show]),98))*3600+1e-12
+for ax,(fld,lab) in zip(axes,[(terme_flux*3600, r"$-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$ (m/s/h)"),
+                                (produit_adv*3600, r"$w_{sec}\,\partial_z u_{sec}$ (m/s/h)")]):
+    im=ax.pcolormesh(tt+t_stat, zkm[mask_show], fld[mask_show], cmap='RdBu_r',
+                      norm=TwoSlopeNorm(0,-v2,v2), shading='auto')
+    ax.axhspan(2,8,color='k',alpha=.06); ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
+    fig.colorbar(im,ax=ax,pad=.02)
+axes[0].set_ylabel('z (km)'); axes[0].set_ylim(0,Z_TOP_KM)
+plt.suptitle("Divergence du flux de Reynolds vs advection du cisaillement sec", fontweight='bold')
+plt.tight_layout(); plt.show()
+
+diff = terme_flux - produit_adv
+R2_direct = np.full(n_z, np.nan)
 for iz in range(n_z):
-    x, y = produit_adv[iz,:], dudt_tot[iz,:]
-    if np.nanstd(x) < 1e-15 or np.nanstd(y) < 1e-15: continue
-    r_brut[iz] = np.corrcoef(x,y)[0,1]
+    a, b = terme_flux[iz,:], produit_adv[iz,:]
+    if np.nanstd(a) < 1e-15: continue
+    ss_res = np.nansum((a-b)**2); ss_tot = np.nansum((a-a.mean())**2)
+    R2_direct[iz] = 1 - ss_res/ss_tot if ss_tot>0 else np.nan
 
 fig, ax = plt.subplots(figsize=(5,6))
-ax.plot(r_brut[mask_show], zkm[mask_show], 'o-', ms=3); ax.axvline(0,color='k',lw=.5)
-ax.set_xlabel('correlation(w_sec*dzus , dudt)'); ax.set_ylabel('z (km)'); ax.set_ylim(0,Z_TOP_KM)
-ax.set_title("Correlation brute, sans aucun coefficient ajuste")
+ax.plot(R2_direct[mask_show], zkm[mask_show], 'o-', ms=3); ax.axvline(0,color='k',lw=.5)
+ax.set_xlabel('R² direct (sans coefficient ajuste)'); ax.set_ylabel('z (km)'); ax.set_ylim(0,Z_TOP_KM)
+ax.set_title(r"$-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$ vs $w_{sec}\,\partial_z u_{sec}$")
 plt.tight_layout(); plt.show()
-print(f"R2 median (2-8km) : {np.nanmedian(r2_adv[m28]):.2f}")
 
-
-
+print(f"R2 direct median (2-8km) : {np.nanmedian(R2_direct[m28]):.2f}")
