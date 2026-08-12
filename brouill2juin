@@ -1,139 +1,17 @@
 # ============================================================
-#  1) DERIVEES BRUTES — directement sur ubar_zt / u_h_zt / u_s_zt, coherent partout
-#     (pas d'anomalie retiree : meme traitement pour total/humide/sec)
+#  Comparaison SANS regression : correlation brute, niveau par niveau
 # ============================================================
-dudt_tot_raw = np.gradient(ubar_zt, dt_phys, axis=1)
-dudz_tot_raw = np.gradient(ubar_zt, alt, axis=0)
-dtuc_raw = np.gradient(u_h_zt, dt_phys, axis=1); dzuc_raw = np.gradient(u_h_zt, alt, axis=0)
-dtus_raw = np.gradient(u_s_zt, dt_phys, axis=1); dzus_raw = np.gradient(u_s_zt, alt, axis=0)
-w_s_raw = w_s_zt
-
-# ============================================================
-#  2) SMOOTH applique en dernier, sur les champs deja derives
-# ============================================================
-WIN_T = 8
-def smooth_t(fld):
-    return uniform_filter1d(fld, size=WIN_T, axis=1, mode='nearest')
-
-dudt_tot = smooth_t(dudt_tot_raw); dudz_tot = smooth_t(dudz_tot_raw)
-dtuc = smooth_t(dtuc_raw); dzuc = smooth_t(dzuc_raw)
-dtus = smooth_t(dtus_raw); dzus = smooth_t(dzus_raw)
-w_s_smooth = smooth_t(w_s_raw)
-
-# ============================================================
-#  3) cisaillement humide vs sec, en (z,t)
-# ============================================================
-fig, axes = plt.subplots(1,2,figsize=(11,5),sharey=True)
-v = max(np.percentile(np.abs(dzuc[mask_show]),98), np.percentile(np.abs(dzus[mask_show]),98))*1e3+1e-12
-for ax,(fld,lab) in zip(axes,[(dzuc*1e3,r"$\partial_z u_{humide}$ ($10^{-3}$ s$^{-1}$)"),
-                                (dzus*1e3,r"$\partial_z u_{sec}$ ($10^{-3}$ s$^{-1}$)")]):
-    im=ax.pcolormesh(tt+t_stat, zkm[mask_show], fld[mask_show], cmap='RdBu_r',
-                      norm=TwoSlopeNorm(0,-v,v), shading='auto')
-    ax.axhspan(2,8,color='k',alpha=.06); ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
-    fig.colorbar(im,ax=ax,pad=.02)
-axes[0].set_ylabel('z (km)'); axes[0].set_ylim(0,Z_TOP_KM)
-plt.suptitle("Cisaillement vertical par zone", fontweight='bold')
-plt.tight_layout(); plt.show()
-
-# ============================================================
-#  4) tendance humide vs sec, en (z,t)
-# ============================================================
-fig, axes = plt.subplots(1,2,figsize=(11,5),sharey=True)
-v = max(np.percentile(np.abs(dtuc[mask_show]),98), np.percentile(np.abs(dtus[mask_show]),98))*3600+1e-12
-for ax,(fld,lab) in zip(axes,[(dtuc*3600,r"$\partial_t u_{humide}$ (m/s/h)"),
-                                (dtus*3600,r"$\partial_t u_{sec}$ (m/s/h)")]):
-    im=ax.pcolormesh(tt+t_stat, zkm[mask_show], fld[mask_show], cmap='RdBu_r',
-                      norm=TwoSlopeNorm(0,-v,v), shading='auto')
-    ax.axhspan(2,8,color='k',alpha=.06); ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
-    fig.colorbar(im,ax=ax,pad=.02)
-axes[0].set_ylabel('z (km)'); axes[0].set_ylim(0,Z_TOP_KM)
-plt.suptitle("Tendance temporelle par zone", fontweight='bold')
-plt.tight_layout(); plt.show()
-
-# ============================================================
-#  5) w_sec, en (z,t)
-# ============================================================
-fig, ax = plt.subplots(figsize=(8,5)); ax.grid(False)
-v = np.percentile(np.abs(w_s_smooth[mask_show]),98)*100+1e-12
-im = ax.pcolormesh(tt+t_stat, zkm[mask_show], w_s_smooth[mask_show]*100, cmap='RdBu_r',
-                    norm=TwoSlopeNorm(0,-v,v), shading='auto')
-ax.axhspan(2,8,color='k',alpha=.06); ax.set_ylim(0,Z_TOP_KM)
-ax.set_xlabel('t'); ax.set_ylabel('z (km)')
-ax.set_title(r"$\bar w_{sec}(z,t)$ (cm/s)")
-fig.colorbar(im, ax=ax, pad=.02, label='cm/s')
-plt.tight_layout(); plt.show()
-
-# ============================================================
-#  6) dudt vs dudz : total / humide / sec (scatter, 2-8km)
-# ============================================================
-fig, axes = plt.subplots(1,3,figsize=(15,5))
-for ax,(x,y,lab) in zip(axes, [(dudz_tot, dudt_tot, "total"),
-                                 (dzuc, dtuc, "humide"),
-                                 (dzus, dtus, "sec")]):
-    xb, yb = x[m28].ravel(), y[m28].ravel()
-    ok = np.isfinite(xb)&np.isfinite(yb)
-    slope = np.sum(xb[ok]*yb[ok])/np.sum(xb[ok]**2)
-    r = np.corrcoef(xb[ok], yb[ok])[0,1]
-    ax.scatter(xb[ok], yb[ok], s=3, alpha=.15)
-    xx = np.linspace(xb[ok].min(), xb[ok].max(), 10)
-    ax.plot(xx, slope*xx, 'r-', lw=1.5)
-    ax.set_xlabel(r'$\partial_z u$ (s$^{-1}$)'); ax.set_ylabel(r'$\partial_t u$ (m/s$^2$)')
-    ax.set_title(f"{lab} : r={r:+.2f} | pente=-c_z={slope*100:+.2f} cm/s")
-plt.suptitle("dudt vs dudz (2-8km)", fontweight='bold')
-plt.tight_layout(); plt.show()
-
-# ============================================================
-#  7) le produit w_sec * dzus en (z,t), a comparer visuellement a dudt_tot
-# ============================================================
-produit_adv = w_s_smooth * dzus
-
-fig, axes = plt.subplots(1,2,figsize=(11,5),sharey=True)
-v = max(np.percentile(np.abs(dudt_tot[mask_show]),98), np.percentile(np.abs(produit_adv[mask_show]),98))*3600+1e-12
-for ax,(fld,lab) in zip(axes,[(dudt_tot*3600, r"$\partial_t\bar u$ reel (m/s/h)"),
-                                (produit_adv*3600, r"$w_{sec}\,\partial_z u_{sec}$ (m/s/h)")]):
-    im=ax.pcolormesh(tt+t_stat, zkm[mask_show], fld[mask_show], cmap='RdBu_r',
-                      norm=TwoSlopeNorm(0,-v,v), shading='auto')
-    ax.axhspan(2,8,color='k',alpha=.06); ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
-    fig.colorbar(im,ax=ax,pad=.02)
-axes[0].set_ylabel('z (km)'); axes[0].set_ylim(0,Z_TOP_KM)
-plt.suptitle("Comparaison directe avant regression", fontweight='bold')
-plt.tight_layout(); plt.show()
-
-# ============================================================
-#  8) regression par niveau (coefficient interne, jamais affiche seul) + R²(z)
-# ============================================================
-r2_adv = np.full(n_z, np.nan)
-dudt_reconstruit = np.full((n_z, n_stat), np.nan)
+r_brut = np.full(n_z, np.nan)
 for iz in range(n_z):
     x, y = produit_adv[iz,:], dudt_tot[iz,:]
-    if np.nanstd(x) < 1e-15: continue
-    coef = np.sum(x*y)/np.sum(x*x)
-    y_pred = coef*x
-    dudt_reconstruit[iz,:] = y_pred
-    ss_res = np.sum((y-y_pred)**2); ss_tot = np.sum((y-y.mean())**2)
-    r2_adv[iz] = 1-ss_res/ss_tot if ss_tot>0 else np.nan
+    if np.nanstd(x) < 1e-15 or np.nanstd(y) < 1e-15: continue
+    r_brut[iz] = np.corrcoef(x,y)[0,1]
 
 fig, ax = plt.subplots(figsize=(5,6))
-ax.plot(r2_adv[mask_show], zkm[mask_show], 'o-', ms=3); ax.axvline(0,color='k',lw=.5)
-ax.set_xlabel('R²(z)'); ax.set_ylabel('z (km)'); ax.set_ylim(0,Z_TOP_KM)
-ax.set_title(r"Qualite de l'ajustement $\partial_t u \sim w_{sec}\,\partial_z u_{sec}$")
+ax.plot(r_brut[mask_show], zkm[mask_show], 'o-', ms=3); ax.axvline(0,color='k',lw=.5)
+ax.set_xlabel('correlation(w_sec*dzus , dudt)'); ax.set_ylabel('z (km)'); ax.set_ylim(0,Z_TOP_KM)
+ax.set_title("Correlation brute, sans aucun coefficient ajuste")
 plt.tight_layout(); plt.show()
-
-# ============================================================
-#  9) Hovmoller final : dudt reel vs reconstruit vs difference
-# ============================================================
-fig, axes = plt.subplots(1,3,figsize=(16,5), sharey=True)
-v = np.percentile(np.abs(dudt_tot[mask_show]), 98)*3600 + 1e-12
-for ax,(fld,lab) in zip(axes, [(dudt_tot*3600, r"$\partial_t\bar u$ reel (m/s/h)"),
-                                 (dudt_reconstruit*3600, r"$w_{sec}\,\partial_z u_{sec}$ reconstruit (m/s/h)"),
-                                 ((dudt_tot-dudt_reconstruit)*3600, "difference (m/s/h)")]):
-    im = ax.pcolormesh(tt+t_stat, zkm[mask_show], fld[mask_show], cmap='RdBu_r',
-                        norm=TwoSlopeNorm(0,-v,v), shading='auto')
-    ax.axhspan(2,8,color='k',alpha=.06); ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
-axes[0].set_ylabel('z (km)'); axes[0].set_ylim(0,Z_TOP_KM)
-plt.suptitle("dudt reel vs hypothese advective (subsidence sec x cisaillement sec)", fontweight='bold')
-plt.tight_layout(); plt.show()
-
 print(f"R2 median (2-8km) : {np.nanmedian(r2_adv[m28]):.2f}")
 
 
