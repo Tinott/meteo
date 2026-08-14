@@ -1,18 +1,88 @@
 # ============================================================
-#  D(uc-ubar) vs dudt reel, sur 8-12km
+#  TEST 1 — masque de nuage LOCAL (pas PRW) : w>1m/s et condensat>1e-5, niveau par niveau
+#  TEST 2 — epsilon diagnostique separement sur u (moment) vs sur theta (thermo)
 # ============================================================
-terme_detrainement = D_zt * (u_h_zt - ubar_zt)
-dudt_reel = smooth_t(np.gradient(ubar_zt, dt_phys, axis=1))
+SEUIL_W = 1.0; SEUIL_COND = 1e-5
+
+u_c_loc_zt = np.full((n_z, n_stat), np.nan)
+theta_c_loc_zt = np.full((n_z, n_stat), np.nan)
+w_c_loc_zt = np.full((n_z, n_stat), np.nan)
+f_cloud_zt = np.zeros((n_z, n_stat))
+
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+ds_clw = xr.open_dataset(path3d('clw')); ds_cli = xr.open_dataset(path3d('cli'))
+ds_ta = xr.open_dataset(path3d('ta')); ds_pa = xr.open_dataset(path3d('pa'))
+for iz in range(n_z):
+    u = ds_u['ua'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
+    w = ds_w['wa'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
+    clw = ds_clw['clw'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
+    cli = ds_cli['cli'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
+    T = ds_ta['ta'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
+    p = ds_pa['pa'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
+    theta = T*(p_ref/p)**(Rd/cp)
+    cloud = (w > SEUIL_W) & ((clw+cli) > SEUIL_COND)
+    for it in range(n_stat):
+        m = cloud[it,:]; f_cloud_zt[iz,it] = m.mean()
+        if m.sum() > 10:
+            u_c_loc_zt[iz,it] = u[it,m].mean()
+            theta_c_loc_zt[iz,it] = theta[it,m].mean()
+            w_c_loc_zt[iz,it] = w[it,m].mean()
+    del u,w,clw,cli,T,p,theta,cloud; gc.collect()
+ds_u.close(); ds_w.close(); ds_clw.close(); ds_cli.close(); ds_ta.close(); ds_pa.close(); gc.collect()
+
+# ============================================================
+#  M local : rho0 * fraction nuageuse locale * w dans le nuage
+# ============================================================
+M_loc_zt = rho0[:,None] * f_cloud_zt * w_c_loc_zt
+
+# ============================================================
+#  epsilon diagnostique separement : sur u (moment) et sur theta (thermo)
+# ============================================================
+du_c_dz = np.gradient(u_c_loc_zt, alt, axis=0)
+dtheta_c_dz_loc = np.gradient(theta_c_loc_zt, alt, axis=0)
+
+denom_u = ubar_zt - u_c_loc_zt
+denom_theta = theta_zt - theta_c_loc_zt
+seuil_u = 0.3*np.nanpercentile(np.abs(denom_u[m812]), 90)
+seuil_theta = 0.3*np.nanpercentile(np.abs(denom_theta[m812]), 90)
+
+with np.errstate(divide='ignore', invalid='ignore'):
+    eps_u_zt = np.where(np.abs(denom_u) > seuil_u, du_c_dz/denom_u, np.nan)
+    eps_theta_zt = np.where(np.abs(denom_theta) > seuil_theta, dtheta_c_dz_loc/denom_theta, np.nan)
+
+fig, ax = plt.subplots(figsize=(6,7))
+ax.plot(np.nanmedian(eps_u_zt, axis=1)[mask_show]*1e3, zkm[mask_show], 'o-', ms=3, label='eps_u (moment)')
+ax.plot(np.nanmedian(eps_theta_zt, axis=1)[mask_show]*1e3, zkm[mask_show], 'o-', ms=3, label='eps_theta (thermo)')
+ax.axvline(0,color='k',lw=.5); ax.axhspan(8,12,color='k',alpha=.06); ax.legend(fontsize=9)
+ax.set_xlabel(r'$\varepsilon$ ($10^{-3}$ m$^{-1}$)'); ax.set_ylabel('z (km)')
+ax.set_title("Entrainement diagnostique sur le moment vs sur theta (masque local)")
+plt.tight_layout(); plt.show()
+
+# ============================================================
+#  Prediction amelioree de dudt (Romps eq.2 complete) : rho0*dt(ubar) = dz[M_loc*(ubar-u_c_loc)]
+#  utilise directement M et u_c LOCAUX (pas le masque PRW mh)
+# ============================================================
+dudt_pred_ameliore = (1/rho0[:,None]) * np.gradient(M_loc_zt*(ubar_zt - u_c_loc_zt), alt, axis=0)
+dudt_pred_ameliore_s = smooth_t(dudt_pred_ameliore)
 
 fig, axes = plt.subplots(1,2,figsize=(11,5),sharey=True)
-v = max(np.nanpercentile(np.abs(terme_detrainement[m812]),95),
-        np.nanpercentile(np.abs(dudt_reel[m812]),95))*3600+1e-12
-for ax,(fld,lab) in zip(axes,[(terme_detrainement*3600, r"$D(u_c-\bar u)$ (m/s/h)"),
-                                (dudt_reel*3600, r"$\partial_t\bar u$ reel (m/s/h)")]):
+v = max(np.nanpercentile(np.abs(dudt_reel[m812]),95),
+        np.nanpercentile(np.abs(dudt_pred_ameliore_s[m812]),95))*3600+1e-12
+for ax,(fld,lab) in zip(axes,[(dudt_reel*3600, r"$\partial_t\bar u$ reel (m/s/h)"),
+                                (dudt_pred_ameliore_s*3600, r"$\partial_t\bar u$ predit, masque local (m/s/h)")]):
     im=ax.pcolormesh(tt+t_stat, zkm[m812], fld[m812], cmap='RdBu_r',
                       norm=TwoSlopeNorm(0,-v,v), shading='auto')
     ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
     fig.colorbar(im,ax=ax,pad=.02)
 axes[0].set_ylabel('z (km)')
-plt.suptitle("Detrainement seul vs tendance reelle (8-12km)", fontweight='bold')
+plt.suptitle("Prediction amelioree (masque nuage local) vs tendance reelle (8-12km)", fontweight='bold')
 plt.tight_layout(); plt.show()
+
+R2_ameliore = np.full(n_z, np.nan)
+for iz in range(n_z):
+    if not (8000 <= alt[iz] <= 12000): continue
+    a, b = dudt_reel[iz,:], dudt_pred_ameliore_s[iz,:]
+    if np.nanstd(a) < 1e-15 or np.all(np.isnan(b)): continue
+    ss_res = np.nansum((a-b)**2); ss_tot = np.nansum((a-a.mean())**2)
+    R2_ameliore[iz] = 1-ss_res/ss_tot if ss_tot>0 else np.nan
+print(f"R2 median (8-12km), prediction amelioree (masque local) : {np.nanmedian(R2_ameliore[m812]):.2f}")
