@@ -1,21 +1,18 @@
 # ============================================================
-#  D(uc-ubar) vs w_sec*dudz(ubar) vs leur somme, en (z,t) sur 0-15km
+#  D(uc-ubar) vs dudt reel, sur 8-12km
 # ============================================================
 terme_detrainement = D_zt * (u_h_zt - ubar_zt)
-terme_advectif = w_s_obs_s * dudz_tot_s
-somme_termes = terme_detrainement + terme_advectif
+dudt_reel = smooth_t(np.gradient(ubar_zt, dt_phys, axis=1))
 
-fig, axes = plt.subplots(1,3,figsize=(16,5),sharey=True)
-v = max(np.nanpercentile(np.abs(terme_detrainement[mask_show]),95),
-        np.nanpercentile(np.abs(terme_advectif[mask_show]),95),
-        np.nanpercentile(np.abs(somme_termes[mask_show]),95))*3600+1e-12
+fig, axes = plt.subplots(1,2,figsize=(11,5),sharey=True)
+v = max(np.nanpercentile(np.abs(terme_detrainement[m812]),95),
+        np.nanpercentile(np.abs(dudt_reel[m812]),95))*3600+1e-12
 for ax,(fld,lab) in zip(axes,[(terme_detrainement*3600, r"$D(u_c-\bar u)$ (m/s/h)"),
-                                (terme_advectif*3600, r"$w_{sec}\,\partial_z\bar u$ (m/s/h)"),
-                                (somme_termes*3600, "somme des deux (m/s/h)")]):
-    im=ax.pcolormesh(tt+t_stat, zkm[mask_show], fld[mask_show], cmap='RdBu_r',
+                                (dudt_reel*3600, r"$\partial_t\bar u$ reel (m/s/h)")]):
+    im=ax.pcolormesh(tt+t_stat, zkm[m812], fld[m812], cmap='RdBu_r',
                       norm=TwoSlopeNorm(0,-v,v), shading='auto')
     ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
     fig.colorbar(im,ax=ax,pad=.02)
-axes[0].set_ylabel('z (km)'); axes[0].set_ylim(0,Z_TOP_KM)
-plt.suptitle("Decomposition du bilan de moment bulk-plume (0-15km)", fontweight='bold')
+axes[0].set_ylabel('z (km)')
+plt.suptitle("Detrainement seul vs tendance reelle (8-12km)", fontweight='bold')
 plt.tight_layout(); plt.show()
