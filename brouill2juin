@@ -1,69 +1,56 @@
 # ============================================================
-#  theta_c = theta restreinte a la zone humide (meme construction que theta_zt, masque mh)
+#  D(uc-ubar) vs w_sec*dudz(ubar) vs leur somme, en (z,t) sur 2-8km
 # ============================================================
-theta_c_zt = np.zeros((n_z, n_stat))
-ds_ta = xr.open_dataset(path3d('ta')); ds_pa = xr.open_dataset(path3d('pa'))
-for iz in range(n_z):
-    T = ds_ta['ta'].isel({dim_t:idx_stat, dim_z:iz}).values.reshape(n_stat,-1)
-    p = ds_pa['pa'].isel({dim_t:idx_stat, dim_z:iz}).values.reshape(n_stat,-1)
-    theta = T*(p_ref/p)**(Rd/cp)
-    theta_c_zt[iz] = theta[:,mh_flat].mean(axis=1)   # moyenne sur les colonnes humides uniquement
-    del T,p,theta
-ds_ta.close(); ds_pa.close(); gc.collect()
+terme_detrainement = D_zt * (u_h_zt - ubar_zt)
+terme_advectif = w_s_obs_s * dudz_tot_s
+somme_termes = terme_detrainement + terme_advectif
 
-# ============================================================
-#  epsilon(z,t) : dz(theta_c) = eps*(theta_bar - theta_c), point par point (plus composite)
-# ============================================================
-dtheta_c_dz_zt = np.gradient(theta_c_zt, alt, axis=0)
-denom_zt = theta_zt - theta_c_zt
-seuil_denom = 0.3*np.nanpercentile(np.abs(denom_zt[m28]), 90)
-with np.errstate(divide='ignore', invalid='ignore'):
-    eps_zt = np.where(np.abs(denom_zt) > seuil_denom, dtheta_c_dz_zt/denom_zt, np.nan)
-
-# ============================================================
-#  M(z,t) : flux de masse convectif = rho0 * f_h * w_h_zt
-#  D(z,t) : detrainement, via continuite dz(M) = (eps - D) M  =>  D = eps - dz(M)/M
-# ============================================================
-M_zt = rho0[:,None] * f_h * w_h_zt
-dMdz_zt = np.gradient(M_zt, alt, axis=0)
-with np.errstate(divide='ignore', invalid='ignore'):
-    D_zt = eps_zt - dMdz_zt/M_zt
-
-# ============================================================
-#  Nouvelle estimation de dudt : rho0*dt(ubar) = dz[M*(ubar - uc)]   (Romps eq. 2, uc = u_h_zt)
-# ============================================================
-dudt_pred_zt = (1/rho0[:,None]) * np.gradient(M_zt*(ubar_zt - u_h_zt), alt, axis=0)
-
-# ============================================================
-#  Affichage : theta_c, epsilon, D, dudt_pred — chacun en (z,t)
-# ============================================================
-fig, axes = plt.subplots(2,2,figsize=(13,10),sharex=True,sharey=True)
-
-ax = axes[0,0]
-v = np.percentile(np.abs(theta_c_zt[mask_show]-theta_c_zt[mask_show].mean()),98)+1e-9
-im = ax.pcolormesh(tt+t_stat, zkm[mask_show], theta_c_zt[mask_show], cmap='RdBu_r', shading='auto')
-ax.set_title(r'$\theta_c$ (K)', fontsize=10); fig.colorbar(im,ax=ax,pad=.02)
-
-ax = axes[0,1]
-v = np.nanpercentile(np.abs(eps_zt[mask_show]),95)*1e3+1e-12
-im = ax.pcolormesh(tt+t_stat, zkm[mask_show], eps_zt[mask_show]*1e3, cmap='RdBu_r',
-                    norm=TwoSlopeNorm(0,-v,v), shading='auto')
-ax.set_title(r'$\varepsilon$ ($10^{-3}$ m$^{-1}$)', fontsize=10); fig.colorbar(im,ax=ax,pad=.02)
-
-ax = axes[1,0]
-v = np.nanpercentile(np.abs(D_zt[mask_show]),95)*1e3+1e-12
-im = ax.pcolormesh(tt+t_stat, zkm[mask_show], D_zt[mask_show]*1e3, cmap='RdBu_r',
-                    norm=TwoSlopeNorm(0,-v,v), shading='auto')
-ax.set_title(r'$D$ ($10^{-3}$ m$^{-1}$)', fontsize=10); fig.colorbar(im,ax=ax,pad=.02)
-
-ax = axes[1,1]
-v = np.nanpercentile(np.abs(dudt_pred_zt[mask_show]),98)*3600+1e-12
-im = ax.pcolormesh(tt+t_stat, zkm[mask_show], dudt_pred_zt[mask_show]*3600, cmap='RdBu_r',
-                    norm=TwoSlopeNorm(0,-v,v), shading='auto')
-ax.set_title(r'$\partial_t\bar u$ predit, bulk-plume (m/s/h)', fontsize=10); fig.colorbar(im,ax=ax,pad=.02)
-
-for ax in axes[:,0]: ax.set_ylabel('z (km)')
-for ax in axes[1,:]: ax.set_xlabel('t')
-axes[0,0].set_ylim(0,Z_TOP_KM)
-plt.suptitle(r"$\theta_c$, $\varepsilon$, $D$, et prediction bulk-plume de $\partial_t\bar u$", fontweight='bold')
+fig, axes = plt.subplots(1,3,figsize=(16,5),sharey=True)
+v = max(np.nanpercentile(np.abs(terme_detrainement[m28]),95),
+        np.nanpercentile(np.abs(terme_advectif[m28]),95),
+        np.nanpercentile(np.abs(somme_termes[m28]),95))*3600+1e-12
+for ax,(fld,lab) in zip(axes,[(terme_detrainement*3600, r"$D(u_c-\bar u)$ (m/s/h)"),
+                                (terme_advectif*3600, r"$w_{sec}\,\partial_z\bar u$ (m/s/h)"),
+                                (somme_termes*3600, "somme des deux (m/s/h)")]):
+    im=ax.pcolormesh(tt+t_stat, zkm[m28], fld[m28], cmap='RdBu_r',
+                      norm=TwoSlopeNorm(0,-v,v), shading='auto')
+    ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
+    fig.colorbar(im,ax=ax,pad=.02)
+axes[0].set_ylabel('z (km)')
+plt.suptitle("Decomposition du bilan de moment bulk-plume (2-8km)", fontweight='bold')
 plt.tight_layout(); plt.show()
+
+
+
+
+
+
+
+
+
+# ============================================================
+#  R2 : Tu (=terme_flux) vs somme_termes, et Tu vs D(uc-ubar) seul
+# ============================================================
+R2_somme = np.full(n_z, np.nan)
+R2_detrainement_seul = np.full(n_z, np.nan)
+for iz in range(n_z):
+    if not (2000 <= alt[iz] <= 8000): continue
+    a = terme_flux[iz,:]
+    if np.nanstd(a) < 1e-15: continue
+    b1 = somme_termes[iz,:]
+    ss_res = np.nansum((a-b1)**2); ss_tot = np.nansum((a-a.mean())**2)
+    R2_somme[iz] = 1-ss_res/ss_tot if ss_tot>0 else np.nan
+    b2 = terme_detrainement[iz,:]
+    ss_res = np.nansum((a-b2)**2)
+    R2_detrainement_seul[iz] = 1-ss_res/ss_tot if ss_tot>0 else np.nan
+
+fig, ax = plt.subplots(figsize=(6,7))
+ax.plot(R2_somme[m28], zkm[m28], 'o-', ms=3, label='Tu vs D(uc-ubar) + w_sec*dudz')
+ax.plot(R2_detrainement_seul[m28], zkm[m28], 'o-', ms=3, label='Tu vs D(uc-ubar) seul')
+ax.axvline(0,color='k',lw=.5); ax.legend(fontsize=9)
+ax.set_xlabel('R2'); ax.set_ylabel('z (km)')
+ax.set_title('Bilan complet vs terme de detrainement seul')
+plt.tight_layout(); plt.show()
+
+print(f"R2 median (2-8km), Tu vs somme complete : {np.nanmedian(R2_somme[m28]):.2f}")
+print(f"R2 median (2-8km), Tu vs D(uc-ubar) seul : {np.nanmedian(R2_detrainement_seul[m28]):.2f}")
