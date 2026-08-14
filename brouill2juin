@@ -1,21 +1,4 @@
-# ============================================================
-#  M(z,t) : flux de masse convectif = rho0 * f_h * w_h_zt
-#  D(z,t) : detrainement, via continuite dz(M) = (eps - D) M  =>  D = eps - dz(M)/M
-# ============================================================
-M_zt = rho0[:,None] * f_h * w_h_zt
-dMdz_zt = np.gradient(M_zt, alt, axis=0)
-seuil_M = 0.3*np.nanpercentile(np.abs(M_zt[m28]), 90)
-with np.errstate(divide='ignore', invalid='ignore'):
-    D_zt = np.where(np.abs(M_zt) > seuil_M, eps_zt - dMdz_zt/M_zt, np.nan)
-
-
-
-
-
-# ============================================================
-#  epsilon(z,t) : dz(theta_c) = eps*(theta_bar - theta_c), point par point
-# ============================================================
-dtheta_c_dz_zt = np.gradient(theta_c_zt, alt, axis=0)
+theta_c_dz_zt = np.gradient(theta_c_zt, alt, axis=0)
 denom_zt = theta_zt - theta_c_zt
 seuil_denom = 0.3*np.nanpercentile(np.abs(denom_zt[m28]), 90)
 with np.errstate(divide='ignore', invalid='ignore'):
