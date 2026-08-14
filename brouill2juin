@@ -1,16 +1,69 @@
 # ============================================================
-#  -Qrad/(dtheta/dz) * dudz_tot  (colonnes seches pour Qrad)  vs  terme_flux, en (z,t), 2-8km
+#  theta_c = theta restreinte a la zone humide (meme construction que theta_zt, masque mh)
 # ============================================================
-w_sec_rce_x_shear = w_sec_rce_s * dudz_tot
+theta_c_zt = np.zeros((n_z, n_stat))
+ds_ta = xr.open_dataset(path3d('ta')); ds_pa = xr.open_dataset(path3d('pa'))
+for iz in range(n_z):
+    T = ds_ta['ta'].isel({dim_t:idx_stat, dim_z:iz}).values.reshape(n_stat,-1)
+    p = ds_pa['pa'].isel({dim_t:idx_stat, dim_z:iz}).values.reshape(n_stat,-1)
+    theta = T*(p_ref/p)**(Rd/cp)
+    theta_c_zt[iz] = theta[:,mh_flat].mean(axis=1)   # moyenne sur les colonnes humides uniquement
+    del T,p,theta
+ds_ta.close(); ds_pa.close(); gc.collect()
 
-fig, axes = plt.subplots(1,2,figsize=(11,5),sharey=True)
-v = max(np.percentile(np.abs(w_sec_rce_x_shear[m28]),98), np.percentile(np.abs(terme_flux[m28]),98))*3600+1e-12
-for ax,(fld,lab) in zip(axes,[(w_sec_rce_x_shear*3600, r"$-\frac{\dot Q_{rad}}{\partial_z\bar\theta}\,\partial_z\bar u$ (m/s/h)"),
-                                (terme_flux*3600, r"$-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$ (m/s/h)")]):
-    im=ax.pcolormesh(tt+t_stat, zkm[m28], fld[m28], cmap='RdBu_r',
-                      norm=TwoSlopeNorm(0,-v,v), shading='auto')
-    ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
-    fig.colorbar(im,ax=ax,pad=.02)
-axes[0].set_ylabel('z (km)')
-plt.suptitle("Fermeture radiative-subsidente complete vs terme de flux reel (2-8km)", fontweight='bold')
+# ============================================================
+#  epsilon(z,t) : dz(theta_c) = eps*(theta_bar - theta_c), point par point (plus composite)
+# ============================================================
+dtheta_c_dz_zt = np.gradient(theta_c_zt, alt, axis=0)
+denom_zt = theta_zt - theta_c_zt
+seuil_denom = 0.3*np.nanpercentile(np.abs(denom_zt[m28]), 90)
+with np.errstate(divide='ignore', invalid='ignore'):
+    eps_zt = np.where(np.abs(denom_zt) > seuil_denom, dtheta_c_dz_zt/denom_zt, np.nan)
+
+# ============================================================
+#  M(z,t) : flux de masse convectif = rho0 * f_h * w_h_zt
+#  D(z,t) : detrainement, via continuite dz(M) = (eps - D) M  =>  D = eps - dz(M)/M
+# ============================================================
+M_zt = rho0[:,None] * f_h * w_h_zt
+dMdz_zt = np.gradient(M_zt, alt, axis=0)
+with np.errstate(divide='ignore', invalid='ignore'):
+    D_zt = eps_zt - dMdz_zt/M_zt
+
+# ============================================================
+#  Nouvelle estimation de dudt : rho0*dt(ubar) = dz[M*(ubar - uc)]   (Romps eq. 2, uc = u_h_zt)
+# ============================================================
+dudt_pred_zt = (1/rho0[:,None]) * np.gradient(M_zt*(ubar_zt - u_h_zt), alt, axis=0)
+
+# ============================================================
+#  Affichage : theta_c, epsilon, D, dudt_pred — chacun en (z,t)
+# ============================================================
+fig, axes = plt.subplots(2,2,figsize=(13,10),sharex=True,sharey=True)
+
+ax = axes[0,0]
+v = np.percentile(np.abs(theta_c_zt[mask_show]-theta_c_zt[mask_show].mean()),98)+1e-9
+im = ax.pcolormesh(tt+t_stat, zkm[mask_show], theta_c_zt[mask_show], cmap='RdBu_r', shading='auto')
+ax.set_title(r'$\theta_c$ (K)', fontsize=10); fig.colorbar(im,ax=ax,pad=.02)
+
+ax = axes[0,1]
+v = np.nanpercentile(np.abs(eps_zt[mask_show]),95)*1e3+1e-12
+im = ax.pcolormesh(tt+t_stat, zkm[mask_show], eps_zt[mask_show]*1e3, cmap='RdBu_r',
+                    norm=TwoSlopeNorm(0,-v,v), shading='auto')
+ax.set_title(r'$\varepsilon$ ($10^{-3}$ m$^{-1}$)', fontsize=10); fig.colorbar(im,ax=ax,pad=.02)
+
+ax = axes[1,0]
+v = np.nanpercentile(np.abs(D_zt[mask_show]),95)*1e3+1e-12
+im = ax.pcolormesh(tt+t_stat, zkm[mask_show], D_zt[mask_show]*1e3, cmap='RdBu_r',
+                    norm=TwoSlopeNorm(0,-v,v), shading='auto')
+ax.set_title(r'$D$ ($10^{-3}$ m$^{-1}$)', fontsize=10); fig.colorbar(im,ax=ax,pad=.02)
+
+ax = axes[1,1]
+v = np.nanpercentile(np.abs(dudt_pred_zt[mask_show]),98)*3600+1e-12
+im = ax.pcolormesh(tt+t_stat, zkm[mask_show], dudt_pred_zt[mask_show]*3600, cmap='RdBu_r',
+                    norm=TwoSlopeNorm(0,-v,v), shading='auto')
+ax.set_title(r'$\partial_t\bar u$ predit, bulk-plume (m/s/h)', fontsize=10); fig.colorbar(im,ax=ax,pad=.02)
+
+for ax in axes[:,0]: ax.set_ylabel('z (km)')
+for ax in axes[1,:]: ax.set_xlabel('t')
+axes[0,0].set_ylim(0,Z_TOP_KM)
+plt.suptitle(r"$\theta_c$, $\varepsilon$, $D$, et prediction bulk-plume de $\partial_t\bar u$", fontweight='bold')
 plt.tight_layout(); plt.show()
