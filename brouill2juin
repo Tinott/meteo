@@ -1,5 +1,1 @@
-theta_c_dz_zt = np.gradient(theta_c_zt, alt, axis=0)
-denom_zt = theta_zt - theta_c_zt
-seuil_denom = 0.3*np.nanpercentile(np.abs(denom_zt[m28]), 90)
-with np.errstate(divide='ignore', invalid='ignore'):
-    eps_zt = np.where(np.abs(denom_zt) > seuil_denom, dtheta_c_dz_zt/denom_zt, np.nan)
+D_zt = np.gradient(w_s_obs_s, alt, axis=0)
