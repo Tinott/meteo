@@ -1,16 +1,89 @@
 # ============================================================
-#  Decomposition complete : Tu = w_sec*dz(ubar) + ubar(D-E) - D*Mc + E*Mbar
-#  Mc = M*uc (flux de masse pondere par le vent nuage), Mbar = M*ubar (pondere par le vent moyen)
-#  D, E=eps deja calcules (version lissee, corrigee a la Romps)
+#  BLOC COMPLET, REFAIT PROPREMENT — decomposition du bilan de moment
+#  Tu = w_sec*dz(ubar) + ubar(D-E) - D*Mc + E*Mbar
+#  avec clipping physique sur eps et D pour eviter toute explosion de division
 # ============================================================
+from scipy.ndimage import uniform_filter1d
+
+SEUIL_W = 1.0; SEUIL_COND = 1e-5
+N_MIN_POINTS = 200
+m212 = (alt>=2000)&(alt<=12000)
+D_MAX = 2e-3   # borne physique (Romps: eps/D jamais au-dela de ~2e-3 m^-1)
+
+# ---- 1) T_u reel = -(1/rho0) d(rho0<u'w'>)/dz, recalcule proprement ----
+flux_zt = np.zeros((n_z, n_stat))
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    u = ds_u['ua'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
+    w = ds_w['wa'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
+    ub = u.mean(axis=1); wb = w.mean(axis=1)
+    up = u-ub[:,None]; wp = w-wb[:,None]
+    flux_zt[iz] = rho0[iz]*(up*wp).mean(axis=1)
+    del u,w,ub,wb,up,wp
+ds_u.close(); ds_w.close(); gc.collect()
+terme_flux = smooth_t(-(1/rho0[:,None])*np.gradient(flux_zt, alt, axis=0))
+
+# ---- 2) M(z,t) et u_c(z,t), masque nuage + seuil d'echantillon ----
+M_zt = np.full((n_z, n_stat), np.nan)
+uc_zt = np.full((n_z, n_stat), np.nan)
+f_cloud_zt = np.zeros((n_z, n_stat))
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+ds_clw = xr.open_dataset(path3d('clw')); ds_cli = xr.open_dataset(path3d('cli'))
+for iz in range(n_z):
+    u = ds_u['ua'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
+    w = ds_w['wa'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
+    clw = ds_clw['clw'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
+    cli = ds_cli['cli'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
+    cloud = (w > SEUIL_W) & ((clw+cli) > SEUIL_COND)
+    for it in range(n_stat):
+        m = cloud[it,:]; f_cloud_zt[iz,it] = m.mean()
+        if m.sum() >= N_MIN_POINTS:
+            w_m = w[it,m]; u_m = u[it,m]
+            M_zt[iz,it] = rho0[iz]*f_cloud_zt[iz,it]*w_m.mean()
+            uc_zt[iz,it] = np.sum(w_m*u_m)/np.sum(w_m)
+    del u,w,clw,cli,cloud
+ds_u.close(); ds_w.close(); ds_clw.close(); ds_cli.close(); gc.collect()
+
+# ---- 3) comblement + lissage vertical de M et u_c ----
+def combler_et_lisser(champ_zt, fallback_zt, win=5):
+    out = champ_zt.copy()
+    for it in range(n_stat):
+        col = out[:,it]; valid = np.isfinite(col)
+        if valid.sum() < 3:
+            out[:,it] = fallback_zt[:,it]; continue
+        out[:,it] = np.interp(alt, alt[valid], col[valid])
+    return uniform_filter1d(out, size=win, axis=0, mode='nearest')
+
+M_zt_lisse  = combler_et_lisser(M_zt,  np.zeros_like(M_zt))
+uc_zt_lisse = combler_et_lisser(uc_zt, ubar_zt)
+
+# ---- 4) epsilon et D, AVEC CLIPPING PHYSIQUE DUR (correction du bug) ----
+duc_dz_zt = np.gradient(uc_zt_lisse, alt, axis=0)
+denom_zt = ubar_zt - uc_zt_lisse
+echelle = np.nanpercentile(np.abs(denom_zt[m212]), 90)
+with np.errstate(divide='ignore', invalid='ignore'):
+    eps_zt = np.where(np.abs(denom_zt) > 0.3*echelle, duc_dz_zt/denom_zt, np.nan)
+eps_zt = np.where(np.abs(eps_zt) < D_MAX, eps_zt, np.nan)   # clip dur
+
+dMdz_zt = np.gradient(M_zt_lisse, alt, axis=0)
+echelle_M = np.nanpercentile(np.abs(M_zt_lisse[m212]), 90)
+with np.errstate(divide='ignore', invalid='ignore'):
+    D_zt = np.where(np.abs(M_zt_lisse) > 0.3*echelle_M, eps_zt - dMdz_zt/M_zt_lisse, np.nan)
+D_zt = np.where(np.abs(D_zt) < D_MAX, D_zt, np.nan)         # clip dur
+
+print(f"eps_zt : {np.nanmean(np.isfinite(eps_zt[m212]))*100:.0f}% valide (2-12km) apres clip")
+print(f"D_zt   : {np.nanmean(np.isfinite(D_zt[m212]))*100:.0f}% valide (2-12km) apres clip")
+print(f"eps_zt max abs : {np.nanmax(np.abs(eps_zt[m212])):.2e} m^-1")
+print(f"D_zt max abs   : {np.nanmax(np.abs(D_zt[m212])):.2e} m^-1")
+
+# ---- 5) decomposition des 4 termes ----
 Mc_zt   = M_zt_lisse * uc_zt_lisse
 Mbar_zt = M_zt_lisse * ubar_zt
 
-terme1_advectif = w_s_obs_s * dudz_tot_s          #  w_sec * dz(ubar)
-terme2_ubar_DE  = ubar_zt * (D_zt - eps_zt)        #  ubar*(D-E)
-terme3_neg_DMc  = -D_zt * Mc_zt                     # -D*Mc
-terme4_EMbar    = eps_zt * Mbar_zt                  #  E*Mbar
-
+terme1_advectif = w_s_obs_s * dudz_tot_s
+terme2_ubar_DE  = ubar_zt * (D_zt - eps_zt)
+terme3_neg_DMc  = -D_zt * Mc_zt
+terme4_EMbar    = eps_zt * Mbar_zt
 somme_tous = terme1_advectif + terme2_ubar_DE + terme3_neg_DMc + terme4_EMbar
 
 fig, axes = plt.subplots(2,3,figsize=(17,10),sharex=True,sharey=True)
@@ -28,25 +101,10 @@ for ax,(fld,lab) in zip(axes.ravel(), panels):
     fig.colorbar(im,ax=ax,pad=.02)
 for ax in axes[:,0]: ax.set_ylabel('z (km)')
 for ax in axes[1,:]: ax.set_xlabel('t')
-plt.suptitle("Decomposition complete du bilan (2-12km, m/s/h)", fontweight='bold')
+plt.suptitle("Decomposition complete du bilan, apres correction (2-12km, m/s/h)", fontweight='bold')
 plt.tight_layout(); plt.show()
 
-# ============================================================
-#  Somme vs Tu reel
-# ============================================================
-fig, axes = plt.subplots(1,3,figsize=(16,5),sharey=True)
-v = max(np.nanpercentile(np.abs(terme_flux[m212]),95), np.nanpercentile(np.abs(somme_tous[m212]),95))*3600+1e-12
-for ax,(fld,lab) in zip(axes, [(terme_flux*3600, r"$T_u$ reel (m/s/h)"),
-                                 (somme_tous*3600, "somme des 4 termes (m/s/h)"),
-                                 ((terme_flux-somme_tous)*3600, "difference (m/s/h)")]):
-    im=ax.pcolormesh(tt+t_stat, zkm[m212], fld[m212], cmap='RdBu_r',
-                      norm=TwoSlopeNorm(0,-v,v), shading='auto')
-    ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
-    fig.colorbar(im,ax=ax,pad=.02)
-axes[0].set_ylabel('z (km)')
-plt.suptitle("Bilan complet reconstruit vs Tu reel (2-12km)", fontweight='bold')
-plt.tight_layout(); plt.show()
-
+# ---- 6) R2 somme vs Tu reel ----
 R2_bilan_complet = np.full(n_z, np.nan)
 for iz in range(n_z):
     if not m212[iz]: continue
@@ -60,7 +118,7 @@ fig, ax = plt.subplots(figsize=(5,7))
 ax.plot(R2_bilan_complet[m212], zkm[m212], 'o-', ms=3)
 ax.axvline(0,color='k',lw=.5)
 ax.set_xlabel('R2'); ax.set_ylabel('z (km)')
-ax.set_title('Bilan a 4 termes vs Tu reel')
+ax.set_title('Bilan a 4 termes vs Tu reel, apres correction')
 plt.tight_layout(); plt.show()
 
 print(f"R2 median 2-8km  : {np.nanmedian(R2_bilan_complet[m28]):.2f}")
