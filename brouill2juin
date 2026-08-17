@@ -1,109 +1,22 @@
 # ============================================================
-#  Bulk-plume a la Romps (2014), corrige pour bien modeliser jusqu'a 12km
-#  1) M(z,t), u_c(z,t) avec seuil d'echantillon renforce
-#  2) lissage vertical (comblement + moyenne glissante), comme le fit
-#     quadratique que Romps applique a epsilon avant de l'utiliser
-#  3) epsilon(z,t), D(z,t) sur les champs lisses
-#  4) test direct de l'equation testable (eq.2/15) jusqu'a 12km
+#  Verification : quelle variable ce graphique teste-t-il vraiment ?
 # ============================================================
-from scipy.ndimage import uniform_filter1d
+# repasse la cellule qui produit r_brut en verifiant explicitement les entrees :
+print('x utilise :', 'dudt_reel' if 'dudt_reel' in dir() else '???')
+print('y utilise :', 'dudt_pred_s (bulk-plume)' if 'dudt_pred_s' in dir() else '???')
 
-SEUIL_W = 1.0; SEUIL_COND = 1e-5
-N_MIN_POINTS = 200
-m212 = (alt>=2000)&(alt<=12000)
-
-# ---- 1) M et u_c, masque nuage + seuil d'echantillon ----
-M_zt = np.full((n_z, n_stat), np.nan)
-uc_zt = np.full((n_z, n_stat), np.nan)
-f_cloud_zt = np.zeros((n_z, n_stat))
-
-ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
-ds_clw = xr.open_dataset(path3d('clw')); ds_cli = xr.open_dataset(path3d('cli'))
+# puis calcule le vrai R2 (pas juste la correlation) sur la MEME plage 1-12km
+m112 = (alt>=1000)&(alt<=12000)
+R2_final = np.full(n_z, np.nan)
 for iz in range(n_z):
-    u = ds_u['ua'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
-    w = ds_w['wa'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
-    clw = ds_clw['clw'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
-    cli = ds_cli['cli'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
-    cloud = (w > SEUIL_W) & ((clw+cli) > SEUIL_COND)
-    for it in range(n_stat):
-        m = cloud[it,:]; f_cloud_zt[iz,it] = m.mean()
-        if m.sum() >= N_MIN_POINTS:
-            w_m = w[it,m]; u_m = u[it,m]
-            M_zt[iz,it] = rho0[iz] * f_cloud_zt[iz,it] * w_m.mean()
-            uc_zt[iz,it] = np.sum(w_m*u_m)/np.sum(w_m)
-    del u,w,clw,cli,cloud
-ds_u.close(); ds_w.close(); ds_clw.close(); ds_cli.close(); gc.collect()
-
-frac_valide = np.mean(np.isfinite(uc_zt[m212]))
-print(f"fraction de points (z,t) valides sur 2-12km avec N_MIN_POINTS={N_MIN_POINTS} : {frac_valide:.0%}")
-
-# ---- 2) comblement + lissage vertical de M et u_c ----
-def combler_et_lisser(champ_zt, fallback_zt, win=5):
-    out = champ_zt.copy()
-    for it in range(n_stat):
-        col = out[:,it]
-        valid = np.isfinite(col)
-        if valid.sum() < 3:
-            out[:,it] = fallback_zt[:,it]; continue
-        out[:,it] = np.interp(alt, alt[valid], col[valid])
-    return uniform_filter1d(out, size=win, axis=0, mode='nearest')
-
-M_zt_lisse  = combler_et_lisser(M_zt,  np.zeros_like(M_zt))
-uc_zt_lisse = combler_et_lisser(uc_zt, ubar_zt)
-
-# ---- 3) epsilon(z,t) et D(z,t) sur champs lisses ----
-duc_dz_zt = np.gradient(uc_zt_lisse, alt, axis=0)
-denom_zt = ubar_zt - uc_zt_lisse
-echelle = np.nanpercentile(np.abs(denom_zt[m212]), 90)
-with np.errstate(divide='ignore', invalid='ignore'):
-    eps_zt = np.where(np.abs(denom_zt) > 0.3*echelle, duc_dz_zt/denom_zt, np.nan)
-
-dMdz_zt = np.gradient(M_zt_lisse, alt, axis=0)
-echelle_M = np.nanpercentile(np.abs(M_zt_lisse[m212]), 90)
-with np.errstate(divide='ignore', invalid='ignore'):
-    D_zt = np.where(np.abs(M_zt_lisse) > 0.3*echelle_M, eps_zt - dMdz_zt/M_zt_lisse, np.nan)
-
-eps_z_composite = np.nanmedian(eps_zt, axis=1)
-D_z_composite = np.nanmedian(D_zt, axis=1)
-
-fig, ax = plt.subplots(figsize=(6,8))
-ax.plot(eps_z_composite[mask_show]*1e3, zkm[mask_show], 'o-', ms=3, label='epsilon')
-ax.plot(D_z_composite[mask_show]*1e3, zkm[mask_show], 'o-', ms=3, label='D')
-ax.axhline(12, color='r', lw=1, ls='--'); ax.axvline(0,color='k',lw=.5); ax.legend(fontsize=9)
-ax.set_xlabel(r'($10^{-3}$ m$^{-1}$)'); ax.set_ylabel('z (km)')
-ax.set_title("Entrainement et detrainement, champs lisses")
-plt.tight_layout(); plt.show()
-
-# ---- 4) test direct de l'equation testable, jusqu'a 12km ----
-dudt_pred = (1/rho0[:,None]) * np.gradient(M_zt_lisse*(ubar_zt - uc_zt_lisse), alt, axis=0)
-dudt_pred_s = smooth_t(dudt_pred)
-dudt_reel = smooth_t(np.gradient(ubar_zt, dt_phys, axis=1))
-
-fig, axes = plt.subplots(1,2,figsize=(11,5),sharey=True)
-v = max(np.nanpercentile(np.abs(dudt_reel[m212]),95), np.nanpercentile(np.abs(dudt_pred_s[m212]),95))*3600+1e-12
-for ax,(fld,lab) in zip(axes,[(dudt_reel*3600, r"$\partial_t\bar u$ reel (m/s/h)"),
-                                (dudt_pred_s*3600, r"$\frac{1}{\rho_0}\partial_z[M(\bar u-u_c)]$ predit, lisse (m/s/h)")]):
-    im=ax.pcolormesh(tt+t_stat, zkm[m212], fld[m212], cmap='RdBu_r',
-                      norm=TwoSlopeNorm(0,-v,v), shading='auto')
-    ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
-    fig.colorbar(im,ax=ax,pad=.02)
-axes[0].set_ylabel('z (km)')
-plt.suptitle("Bulk-plume corrige (Romps) — 2-12km", fontweight='bold')
-plt.tight_layout(); plt.show()
-
-R2_romps = np.full(n_z, np.nan)
-for iz in range(n_z):
-    if not (2000<=alt[iz]<=12000): continue
+    if not m112[iz]: continue
     a,b = dudt_reel[iz,:], dudt_pred_s[iz,:]
     if np.nanstd(a)<1e-15 or np.all(np.isnan(b)): continue
     ss_res=np.nansum((a-b)**2); ss_tot=np.nansum((a-a.mean())**2)
-    R2_romps[iz]=1-ss_res/ss_tot if ss_tot>0 else np.nan
+    R2_final[iz]=1-ss_res/ss_tot if ss_tot>0 else np.nan
 
 fig, ax = plt.subplots(figsize=(5,7))
-ax.plot(R2_romps[m212], zkm[m212], 'o-', ms=3); ax.axvline(0,color='k',lw=.5)
-ax.axhline(10, color='r', lw=1, ls='--', label='limite theorique Romps (overshoot)')
-ax.set_xlabel('R2'); ax.set_ylabel('z (km)'); ax.legend(fontsize=9)
+ax.plot(R2_final[m112], zkm[m112], 'o-', ms=3); ax.axvline(0,color='k',lw=.5)
+ax.set_xlabel('R2 reel (dudt_reel vs dudt_pred_s, bulk-plume)'); ax.set_ylabel('z (km)')
+ax.set_title('Validation propre, 1-12km')
 plt.tight_layout(); plt.show()
-
-print(f"R2 median 2-8km  : {np.nanmedian(R2_romps[m28]):.2f}")
-print(f"R2 median 8-12km : {np.nanmedian(R2_romps[(alt>=8000)&(alt<=12000)]):.2f}")
