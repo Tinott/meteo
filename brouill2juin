@@ -1,18 +1,23 @@
 # ============================================================
-#  Pente reel vs predit, niveau par niveau (regression sans intercept)
+#  Prediction recalibree par le facteur d'echelle global, puis nouveau R2
 # ============================================================
-pente_z = np.full(n_z, np.nan)
+FACTEUR = 1.69
+dudt_pred_recalibre = dudt_pred_s / FACTEUR
+
+R2_recalibre = np.full(n_z, np.nan)
 for iz in range(n_z):
     if not m212[iz]: continue
-    x, y = dudt_reel[iz,:], dudt_pred_s[iz,:]
-    if np.nanstd(x) < 1e-15 or np.all(np.isnan(y)): continue
-    ok = np.isfinite(x) & np.isfinite(y)
-    if ok.sum() < 10: continue
-    pente_z[iz] = np.sum(x[ok]*y[ok])/np.sum(x[ok]**2)   # y = pente*x, x=reel, y=predit
+    a, b = dudt_reel[iz,:], dudt_pred_recalibre[iz,:]
+    if np.nanstd(a) < 1e-15 or np.all(np.isnan(b)): continue
+    ss_res = np.nansum((a-b)**2); ss_tot = np.nansum((a-a.mean())**2)
+    R2_recalibre[iz] = 1-ss_res/ss_tot if ss_tot>0 else np.nan
 
 fig, ax = plt.subplots(figsize=(5,7))
-ax.plot(pente_z[m212], zkm[m212], 'o-', ms=3)
-ax.axvline(1, color='r', lw=1, ls='--', label='pente=1 (accord parfait)')
-ax.set_xlabel('pente (predit / reel)'); ax.set_ylabel('z (km)'); ax.legend(fontsize=9)
+ax.plot(R2_final[m212], zkm[m212], 'o-', ms=3, label='sans recalibration')
+ax.plot(R2_recalibre[m212], zkm[m212], 'o-', ms=3, label='recalibre (/1.69)')
+ax.axvline(0,color='k',lw=.5); ax.legend(fontsize=9)
+ax.set_xlabel('R2'); ax.set_ylabel('z (km)')
+ax.set_title('Effet de la recalibration d\'echelle')
 plt.tight_layout(); plt.show()
-print(f"pente mediane (2-8km) : {np.nanmedian(pente_z[m28]):.2f}")
+
+print(f"R2 median (2-8km) apres recalibration : {np.nanmedian(R2_recalibre[m28]):.2f}")
