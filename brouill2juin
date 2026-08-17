@@ -1,17 +1,18 @@
 # ============================================================
-#  Comparaison directe des amplitudes — pas de couleur, pas d'echelle relative
+#  Pente reel vs predit, niveau par niveau (regression sans intercept)
 # ============================================================
-std_reel = np.nanstd(dudt_reel[m212])
-std_pred = np.nanstd(dudt_pred_s[m212])
-print(f"ecart-type dudt_reel  : {std_reel*3600:.4f} m/s/h")
-print(f"ecart-type dudt_pred_s: {std_pred*3600:.4f} m/s/h")
-print(f"ratio amplitude (pred/reel) : {std_pred/std_reel:.2f}")
+pente_z = np.full(n_z, np.nan)
+for iz in range(n_z):
+    if not m212[iz]: continue
+    x, y = dudt_reel[iz,:], dudt_pred_s[iz,:]
+    if np.nanstd(x) < 1e-15 or np.all(np.isnan(y)): continue
+    ok = np.isfinite(x) & np.isfinite(y)
+    if ok.sum() < 10: continue
+    pente_z[iz] = np.sum(x[ok]*y[ok])/np.sum(x[ok]**2)   # y = pente*x, x=reel, y=predit
 
-# nuage de points brut, sans normalisation independante
-iz_test = np.argmin(np.abs(alt-5000))   # un niveau au milieu de la bande qui marchait bien
-plt.figure(figsize=(5,5))
-plt.scatter(dudt_reel[iz_test,:]*3600, dudt_pred_s[iz_test,:]*3600, s=10, alpha=.5)
-lims = [min(plt.xlim()[0],plt.ylim()[0]), max(plt.xlim()[1],plt.ylim()[1])]
-plt.plot(lims, lims, 'r--', lw=1, label='y=x (accord parfait)')
-plt.xlabel('dudt reel (m/s/h)'); plt.ylabel('dudt predit (m/s/h)')
-plt.legend(); plt.axis('equal'); plt.tight_layout(); plt.show()
+fig, ax = plt.subplots(figsize=(5,7))
+ax.plot(pente_z[m212], zkm[m212], 'o-', ms=3)
+ax.axvline(1, color='r', lw=1, ls='--', label='pente=1 (accord parfait)')
+ax.set_xlabel('pente (predit / reel)'); ax.set_ylabel('z (km)'); ax.legend(fontsize=9)
+plt.tight_layout(); plt.show()
+print(f"pente mediane (2-8km) : {np.nanmedian(pente_z[m28]):.2f}")
