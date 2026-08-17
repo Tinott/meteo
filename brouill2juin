@@ -1,23 +1,32 @@
 # ============================================================
-#  Prediction recalibree par le facteur d'echelle global, puis nouveau R2
+#  Pente calibree sur 1-12km (une seule constante, pas de recalibration niveau par niveau)
+#  puis R2 recalibre resultant, tout seul
 # ============================================================
-FACTEUR = 1.69
-dudt_pred_recalibre = dudt_pred_s / FACTEUR
+m112 = (alt>=1000)&(alt<=12000)
 
-R2_recalibre = np.full(n_z, np.nan)
+x_all = dudt_reel[m112].ravel()
+y_all = dudt_pred_s[m112].ravel()
+ok = np.isfinite(x_all) & np.isfinite(y_all)
+PENTE_112 = np.sum(x_all[ok]*y_all[ok]) / np.sum(x_all[ok]**2)
+print(f"pente calibree sur 1-12km : {PENTE_112:.3f}")
+
+dudt_pred_recalibre_112 = dudt_pred_s / PENTE_112
+
+R2_recal_112 = np.full(n_z, np.nan)
 for iz in range(n_z):
-    if not m212[iz]: continue
-    a, b = dudt_reel[iz,:], dudt_pred_recalibre[iz,:]
+    if not m112[iz]: continue
+    a, b = dudt_reel[iz,:], dudt_pred_recalibre_112[iz,:]
     if np.nanstd(a) < 1e-15 or np.all(np.isnan(b)): continue
     ss_res = np.nansum((a-b)**2); ss_tot = np.nansum((a-a.mean())**2)
-    R2_recalibre[iz] = 1-ss_res/ss_tot if ss_tot>0 else np.nan
+    R2_recal_112[iz] = 1-ss_res/ss_tot if ss_tot>0 else np.nan
 
 fig, ax = plt.subplots(figsize=(5,7))
-ax.plot(R2_final[m212], zkm[m212], 'o-', ms=3, label='sans recalibration')
-ax.plot(R2_recalibre[m212], zkm[m212], 'o-', ms=3, label='recalibre (/1.69)')
-ax.axvline(0,color='k',lw=.5); ax.legend(fontsize=9)
+ax.plot(R2_recal_112[m112], zkm[m112], 'o-', ms=3)
+ax.axvline(0,color='k',lw=.5)
 ax.set_xlabel('R2'); ax.set_ylabel('z (km)')
-ax.set_title('Effet de la recalibration d\'echelle')
+ax.set_title(f'R2 recalibre (facteur unique={PENTE_112:.2f}, ajuste sur 1-12km)')
 plt.tight_layout(); plt.show()
 
-print(f"R2 median (2-8km) apres recalibration : {np.nanmedian(R2_recalibre[m28]):.2f}")
+print(f"R2 median 1-12km : {np.nanmedian(R2_recal_112[m112]):.2f}")
+print(f"R2 median 2-8km  : {np.nanmedian(R2_recal_112[m28]):.2f}")
+print(f"R2 median 8-12km : {np.nanmedian(R2_recal_112[(alt>=8000)&(alt<=12000)]):.2f}")
