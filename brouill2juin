@@ -1,13 +1,31 @@
 # ============================================================
-#  Diagnostic direct : biais, variance, et R2 recalcule proprement
+#  Recalibration complete (pente + biais) par niveau, sur 2-12km
 # ============================================================
+pente_z = np.full(n_z, np.nan); biais_z = np.full(n_z, np.nan)
 for iz in range(n_z):
-    if not (8000<=alt[iz]<=12000): continue
+    if not m212[iz]: continue
     a, b = dudt_reel[iz,:], dudt_pred_s[iz,:]
     ok = np.isfinite(a) & np.isfinite(b)
-    if ok.sum() < 20: continue
-    biais = np.mean(b[ok]-a[ok])
-    std_a = np.std(a[ok]); std_b = np.std(b[ok])
-    corr = np.corrcoef(a[ok], b[ok])[0,1]
-    print(f"z={zkm[iz]:.1f}km | n_valid={ok.sum()} | biais={biais*3600:+.4f} | "
-          f"std_reel={std_a*3600:.4f} | std_pred={std_b*3600:.4f} | corr={corr:+.2f}")
+    if ok.sum() < 20 or np.std(b[ok]) < 1e-15: continue
+    A = np.vstack([b[ok], np.ones(ok.sum())]).T
+    coefs, *_ = np.linalg.lstsq(A, a[ok], rcond=None)   # a = pente*b + biais
+    pente_z[iz], biais_z[iz] = coefs
+
+dudt_pred_calibre = pente_z[:,None]*dudt_pred_s + biais_z[:,None]
+
+R2_calibre = np.full(n_z, np.nan)
+for iz in range(n_z):
+    if not m212[iz]: continue
+    a, b = dudt_reel[iz,:], dudt_pred_calibre[iz,:]
+    if np.nanstd(a) < 1e-15 or np.all(np.isnan(b)): continue
+    ss_res = np.nansum((a-b)**2); ss_tot = np.nansum((a-a.mean())**2)
+    R2_calibre[iz] = 1-ss_res/ss_tot if ss_tot>0 else np.nan
+
+fig, ax = plt.subplots(figsize=(5,7))
+ax.plot(R2_calibre[m212], zkm[m212], 'o-', ms=3)
+ax.axvline(0,color='k',lw=.5)
+ax.set_xlabel('R2'); ax.set_ylabel('z (km)')
+ax.set_title('R2 apres calibration complete (pente + biais)')
+plt.tight_layout(); plt.show()
+print('R2 median 2-8km  :', np.nanmedian(R2_calibre[m28]))
+print('R2 median 8-12km :', np.nanmedian(R2_calibre[(alt>=8000)&(alt<=12000)]))
