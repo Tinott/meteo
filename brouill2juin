@@ -1,98 +1,35 @@
 # ============================================================
-#  1) M(z,t) et u_c(z,t) — reproduction stricte de Romps (2014)
-#     masque nuage : w>1 m/s ET condensat>1e-5 kg/kg (Romps & Kuang 2010)
-#     M = rho0 * sigma_c * <w>_c  (flux de masse, kg/m2/s)
-#     u_c = mass-flux-weighted : sum(w*u)/sum(w) sur les points de nuage (def. exacte sous eq.17)
 # ============================================================
-SEUIL_W = 1.0; SEUIL_COND = 1e-5
-
-M_zt = np.zeros((n_z, n_stat))
-uc_zt = np.full((n_z, n_stat), np.nan)
-f_cloud_zt = np.zeros((n_z, n_stat))
-
-ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
-ds_clw = xr.open_dataset(path3d('clw')); ds_cli = xr.open_dataset(path3d('cli'))
-for iz in range(n_z):
-    u = ds_u['ua'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
-    w = ds_w['wa'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
-    clw = ds_clw['clw'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
-    cli = ds_cli['cli'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
-    cloud = (w > SEUIL_W) & ((clw+cli) > SEUIL_COND)
-    for it in range(n_stat):
-        m = cloud[it,:]; f_cloud_zt[iz,it] = m.mean()
-        if m.sum() > 10:
-            w_m = w[it,m]; u_m = u[it,m]
-            M_zt[iz,it] = rho0[iz] * f_cloud_zt[iz,it] * w_m.mean()
-            uc_zt[iz,it] = np.sum(w_m*u_m)/np.sum(w_m)
-    del u,w,clw,cli,cloud
-ds_u.close(); ds_w.close(); ds_clw.close(); ds_cli.close(); gc.collect()
-
-print(f"fraction nuageuse moyenne (2-8km) : {np.nanmean(f_cloud_zt[m28])*100:.1f}%")
-print(f"M max (2-8km) : {np.nanmax(np.abs(M_zt[m28])):.3f} kg/m2/s")
-
+#  4) Test direct sur les champs lisses, jusqu'a 12km
 # ============================================================
-#  2) epsilon(z,t) via Romps eq. 18 : dz(uc) = eps*(ubar-uc)
-#     filtrage identique au papier : on ne garde que |ubar-uc| > 0.3*echelle
-# ============================================================
-duc_dz_zt = np.gradient(uc_zt, alt, axis=0)
-denom_zt = ubar_zt - uc_zt
-echelle = np.nanpercentile(np.abs(denom_zt[m28]), 90)
-with np.errstate(divide='ignore', invalid='ignore'):
-    eps_zt = np.where(np.abs(denom_zt) > 0.3*echelle, duc_dz_zt/denom_zt, np.nan)
-
-eps_z_composite = np.nanmedian(eps_zt, axis=1)
-
-fig, ax = plt.subplots(figsize=(6,7))
-ax.plot(eps_z_composite[mask_show]*1e3, zkm[mask_show], 'o-', ms=3)
-ax.axvline(0,color='k',lw=.5)
-ax.set_xlabel(r'$\varepsilon(z)$ ($10^{-3}$ m$^{-1}$)'); ax.set_ylabel('z (km)')
-ax.set_title("Entrainement composite, vent (Romps eq.18)")
-plt.tight_layout(); plt.show()
-print(f"eps median (2-8km) : {np.nanmedian(np.abs(eps_z_composite[m28]))*1e3:.3f} x10^-3 m^-1")
-
-# ============================================================
-#  3) D(z,t) via Romps eq. 1 : dz(M) = (eps-D)M  =>  D = eps - dz(M)/M
-#     meme filtrage sur M pour eviter la singularite
-# ============================================================
-dMdz_zt = np.gradient(M_zt, alt, axis=0)
-echelle_M = np.nanpercentile(np.abs(M_zt[m28]), 90)
-with np.errstate(divide='ignore', invalid='ignore'):
-    D_zt = np.where(np.abs(M_zt) > 0.3*echelle_M, eps_zt - dMdz_zt/M_zt, np.nan)
-
-D_z_composite = np.nanmedian(D_zt, axis=1)
-fig, ax = plt.subplots(figsize=(6,7))
-ax.plot(eps_z_composite[mask_show]*1e3, zkm[mask_show], 'o-', ms=3, label='epsilon')
-ax.plot(D_z_composite[mask_show]*1e3, zkm[mask_show], 'o-', ms=3, label='D')
-ax.axvline(0,color='k',lw=.5); ax.legend(fontsize=9)
-ax.set_xlabel(r'($10^{-3}$ m$^{-1}$)'); ax.set_ylabel('z (km)')
-ax.set_title("Entrainement et detrainement (Romps eq.1 et 18)")
-plt.tight_layout(); plt.show()
-
-# ============================================================
-#  4) Test direct — l'equation TESTABLE du papier (eq.2/15)
-#     rho0 * dt(ubar) = dz[M*(ubar-uc)]
-# ============================================================
-dudt_pred = (1/rho0[:,None]) * np.gradient(M_zt*(ubar_zt - uc_zt), alt, axis=0)
+dudt_pred = (1/rho0[:,None]) * np.gradient(M_zt_lisse*(ubar_zt - uc_zt_lisse), alt, axis=0)
 dudt_pred_s = smooth_t(dudt_pred)
 dudt_reel = smooth_t(np.gradient(ubar_zt, dt_phys, axis=1))
 
 fig, axes = plt.subplots(1,2,figsize=(11,5),sharey=True)
-v = max(np.nanpercentile(np.abs(dudt_reel[m28]),95), np.nanpercentile(np.abs(dudt_pred_s[m28]),95))*3600+1e-12
+v = max(np.nanpercentile(np.abs(dudt_reel[m212]),95), np.nanpercentile(np.abs(dudt_pred_s[m212]),95))*3600+1e-12
 for ax,(fld,lab) in zip(axes,[(dudt_reel*3600, r"$\partial_t\bar u$ reel (m/s/h)"),
-                                (dudt_pred_s*3600, r"$\frac{1}{\rho_0}\partial_z[M(\bar u-u_c)]$ predit (m/s/h)")]):
-    im=ax.pcolormesh(tt+t_stat, zkm[m28], fld[m28], cmap='RdBu_r',
+                                (dudt_pred_s*3600, r"$\frac{1}{\rho_0}\partial_z[M(\bar u-u_c)]$ predit, lisse (m/s/h)")]):
+    im=ax.pcolormesh(tt+t_stat, zkm[m212], fld[m212], cmap='RdBu_r',
                       norm=TwoSlopeNorm(0,-v,v), shading='auto')
     ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
     fig.colorbar(im,ax=ax,pad=.02)
 axes[0].set_ylabel('z (km)')
-plt.suptitle("Test direct de l'equation testable de Romps (eq.2/15), 2-8km", fontweight='bold')
+plt.suptitle("Bulk-plume corrige (Romps) — 2-12km", fontweight='bold')
 plt.tight_layout(); plt.show()
 
 R2_romps = np.full(n_z, np.nan)
 for iz in range(n_z):
-    if not (2000<=alt[iz]<=8000): continue
+    if not (2000<=alt[iz]<=12000): continue
     a,b = dudt_reel[iz,:], dudt_pred_s[iz,:]
     if np.nanstd(a)<1e-15 or np.all(np.isnan(b)): continue
     ss_res=np.nansum((a-b)**2); ss_tot=np.nansum((a-a.mean())**2)
     R2_romps[iz]=1-ss_res/ss_tot if ss_tot>0 else np.nan
-print(f"R2 median (2-8km) : {np.nanmedian(R2_romps[m28]):.2f}")
+
+fig, ax = plt.subplots(figsize=(5,7))
+ax.plot(R2_romps[m212], zkm[m212], 'o-', ms=3); ax.axvline(0,color='k',lw=.5)
+ax.axhline(10, color='r', lw=1, ls='--', label='limite theorique Romps (overshoot)')
+ax.set_xlabel('R2'); ax.set_ylabel('z (km)'); ax.legend(fontsize=9)
+plt.tight_layout(); plt.show()
+print(f"R2 median 2-8km  : {np.nanmedian(R2_romps[m28]):.2f}")
+print(f"R2 median 8-12km : {np.nanmedian(R2_romps[(alt>=8000)&(alt<=12000)]):.2f}")
