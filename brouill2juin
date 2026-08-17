@@ -1,31 +1,67 @@
 # ============================================================
-#  Recalibration complete (pente + biais) par niveau, sur 2-12km
+#  Decomposition complete : Tu = w_sec*dz(ubar) + ubar(D-E) - D*Mc + E*Mbar
+#  Mc = M*uc (flux de masse pondere par le vent nuage), Mbar = M*ubar (pondere par le vent moyen)
+#  D, E=eps deja calcules (version lissee, corrigee a la Romps)
 # ============================================================
-pente_z = np.full(n_z, np.nan); biais_z = np.full(n_z, np.nan)
+Mc_zt   = M_zt_lisse * uc_zt_lisse
+Mbar_zt = M_zt_lisse * ubar_zt
+
+terme1_advectif = w_s_obs_s * dudz_tot_s          #  w_sec * dz(ubar)
+terme2_ubar_DE  = ubar_zt * (D_zt - eps_zt)        #  ubar*(D-E)
+terme3_neg_DMc  = -D_zt * Mc_zt                     # -D*Mc
+terme4_EMbar    = eps_zt * Mbar_zt                  #  E*Mbar
+
+somme_tous = terme1_advectif + terme2_ubar_DE + terme3_neg_DMc + terme4_EMbar
+
+fig, axes = plt.subplots(2,3,figsize=(17,10),sharex=True,sharey=True)
+panels = [(terme1_advectif*3600, r"$w_{sec}\partial_z\bar u$"),
+          (terme2_ubar_DE*3600, r"$\bar u(D-E)$"),
+          (terme3_neg_DMc*3600, r"$-D\,M^c$"),
+          (terme4_EMbar*3600, r"$E\,\bar M$"),
+          (somme_tous*3600, "somme des 4 termes"),
+          (terme_flux*3600, r"$T_u$ reel")]
+for ax,(fld,lab) in zip(axes.ravel(), panels):
+    v = np.nanpercentile(np.abs(fld[m212]),95)+1e-12
+    im=ax.pcolormesh(tt+t_stat, zkm[m212], fld[m212], cmap='RdBu_r',
+                      norm=TwoSlopeNorm(0,-v,v), shading='auto')
+    ax.set_title(lab, fontsize=10)
+    fig.colorbar(im,ax=ax,pad=.02)
+for ax in axes[:,0]: ax.set_ylabel('z (km)')
+for ax in axes[1,:]: ax.set_xlabel('t')
+plt.suptitle("Decomposition complete du bilan (2-12km, m/s/h)", fontweight='bold')
+plt.tight_layout(); plt.show()
+
+# ============================================================
+#  Somme vs Tu reel
+# ============================================================
+fig, axes = plt.subplots(1,3,figsize=(16,5),sharey=True)
+v = max(np.nanpercentile(np.abs(terme_flux[m212]),95), np.nanpercentile(np.abs(somme_tous[m212]),95))*3600+1e-12
+for ax,(fld,lab) in zip(axes, [(terme_flux*3600, r"$T_u$ reel (m/s/h)"),
+                                 (somme_tous*3600, "somme des 4 termes (m/s/h)"),
+                                 ((terme_flux-somme_tous)*3600, "difference (m/s/h)")]):
+    im=ax.pcolormesh(tt+t_stat, zkm[m212], fld[m212], cmap='RdBu_r',
+                      norm=TwoSlopeNorm(0,-v,v), shading='auto')
+    ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
+    fig.colorbar(im,ax=ax,pad=.02)
+axes[0].set_ylabel('z (km)')
+plt.suptitle("Bilan complet reconstruit vs Tu reel (2-12km)", fontweight='bold')
+plt.tight_layout(); plt.show()
+
+R2_bilan_complet = np.full(n_z, np.nan)
 for iz in range(n_z):
     if not m212[iz]: continue
-    a, b = dudt_reel[iz,:], dudt_pred_s[iz,:]
+    a,b = terme_flux[iz,:], somme_tous[iz,:]
     ok = np.isfinite(a) & np.isfinite(b)
-    if ok.sum() < 20 or np.std(b[ok]) < 1e-15: continue
-    A = np.vstack([b[ok], np.ones(ok.sum())]).T
-    coefs, *_ = np.linalg.lstsq(A, a[ok], rcond=None)   # a = pente*b + biais
-    pente_z[iz], biais_z[iz] = coefs
-
-dudt_pred_calibre = pente_z[:,None]*dudt_pred_s + biais_z[:,None]
-
-R2_calibre = np.full(n_z, np.nan)
-for iz in range(n_z):
-    if not m212[iz]: continue
-    a, b = dudt_reel[iz,:], dudt_pred_calibre[iz,:]
-    if np.nanstd(a) < 1e-15 or np.all(np.isnan(b)): continue
-    ss_res = np.nansum((a-b)**2); ss_tot = np.nansum((a-a.mean())**2)
-    R2_calibre[iz] = 1-ss_res/ss_tot if ss_tot>0 else np.nan
+    if ok.sum()<20 or np.std(a[ok])<1e-15: continue
+    ss_res=np.sum((a[ok]-b[ok])**2); ss_tot=np.sum((a[ok]-a[ok].mean())**2)
+    R2_bilan_complet[iz]=1-ss_res/ss_tot if ss_tot>0 else np.nan
 
 fig, ax = plt.subplots(figsize=(5,7))
-ax.plot(R2_calibre[m212], zkm[m212], 'o-', ms=3)
+ax.plot(R2_bilan_complet[m212], zkm[m212], 'o-', ms=3)
 ax.axvline(0,color='k',lw=.5)
 ax.set_xlabel('R2'); ax.set_ylabel('z (km)')
-ax.set_title('R2 apres calibration complete (pente + biais)')
+ax.set_title('Bilan a 4 termes vs Tu reel')
 plt.tight_layout(); plt.show()
-print('R2 median 2-8km  :', np.nanmedian(R2_calibre[m28]))
-print('R2 median 8-12km :', np.nanmedian(R2_calibre[(alt>=8000)&(alt<=12000)]))
+
+print(f"R2 median 2-8km  : {np.nanmedian(R2_bilan_complet[m28]):.2f}")
+print(f"R2 median 8-12km : {np.nanmedian(R2_bilan_complet[(alt>=8000)&(alt<=12000)]):.2f}")
