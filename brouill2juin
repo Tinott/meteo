@@ -1,2 +1,20 @@
-f_cloud_zt[iz,it] = m.mean()   # m = cloud, le masque booleen w>seuil ET condensat>seuil
-print(f"fraction nuageuse moyenne (2-8km) : {np.nanmean(f_cloud_zt[m28])*100:.1f}%")
+# ============================================================
+#  Diagnostic : y a-t-il vraiment des NaN a combler, et ou (dans quelle bande d'altitude) ?
+# ============================================================
+nan_M = ~np.isfinite(M_zt)
+nan_uc = ~np.isfinite(uc_zt)
+
+print(f"NaN dans M_zt  : {nan_M.sum()} / {M_zt.size} ({nan_M.mean()*100:.1f}%)")
+print(f"NaN dans uc_zt : {nan_uc.sum()} / {uc_zt.size} ({nan_uc.mean()*100:.1f}%)")
+
+# repartition par niveau : combien de NaN a chaque altitude (sur tous les instants)
+nan_par_niveau = nan_uc.mean(axis=1)*100
+fig, ax = plt.subplots(figsize=(6,7))
+ax.plot(nan_par_niveau[mask_show], zkm[mask_show], 'o-', ms=3)
+ax.axhspan(2,12,color='k',alpha=.06)
+ax.set_xlabel('% de NaN (uc_zt) a ce niveau'); ax.set_ylabel('z (km)')
+ax.set_title('Ou sont les cases a combler, en dehors de 2-12km ?')
+plt.tight_layout(); plt.show()
+
+print(f"NaN dans la bande 2-12km uniquement : {nan_uc[m212].mean()*100:.2f}% (devrait etre ~0)")
+print(f"NaN en dehors de 2-12km              : {nan_uc[~m212].mean()*100:.1f}%")
