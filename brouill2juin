@@ -1,91 +1,15 @@
-# ============================================================
-#  §7. T2 "adapte" au T1 = M(z,t)(ubar-uc) de nb12 (masque nuageux clw+cli)
-#      T1 inchange (dudt_pred_s de la cell 19). T2 = covariance interne
-#      des DEUX categories qui composent ce T1 : nuage (meme masque que
-#      M_zt/uc_zt) et environnement (le complement).
-#      Comparaison correlation + R2 recalibre, T1 seul vs T1+T2.
-# ============================================================
-T2_zt = np.full((n_z, n_stat), np.nan)
+# Le bruit de T2_zt domine-t-il son signal, comparé a T1 ?
+snr_T1 = np.nanstd(flux_T1[m28], axis=1) / (np.nanstd(np.diff(flux_T1[m28], axis=1)) + 1e-12)
+snr_T2 = np.nanstd(T2_zt_lisse[m28], axis=1) / (np.nanstd(np.diff(T2_zt_lisse[m28], axis=1)) + 1e-12)
+print(f"rapport signal/bruit temporel T1 : {np.nanmedian(snr_T1):.2f}")
+print(f"rapport signal/bruit temporel T2 : {np.nanmedian(snr_T2):.2f}")
 
-ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
-ds_clw = xr.open_dataset(path3d('clw')); ds_cli = xr.open_dataset(path3d('cli'))
-for iz in range(n_z):
-    u = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
-    w = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
-    clw = ds_clw['clw'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
-    cli = ds_cli['cli'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
-    cloud = (w > SEUIL_W) & ((clw + cli) > SEUIL_COND)
-    for it in range(n_stat):
-        m = cloud[it, :]
-        if m.sum() < N_MIN_POINTS or (~m).sum() < N_MIN_POINTS:
-            continue
-        u_c, w_c = u[it, m].mean(), w[it, m].mean()
-        u_e, w_e = u[it, ~m].mean(), w[it, ~m].mean()
-        sig_c = m.mean(); sig_e = 1 - sig_c
-        cov_c = np.mean((u[it, m] - u_c) * (w[it, m] - w_c))
-        cov_e = np.mean((u[it, ~m] - u_e) * (w[it, ~m] - w_e))
-        T2_zt[iz, it] = rho0[iz] * (sig_c * cov_c + sig_e * cov_e)
-    del u, w, clw, cli, cloud
-ds_u.close(); ds_w.close(); ds_clw.close(); ds_cli.close(); gc.collect()
-
-T2_zt_lisse = combler_et_lisser(T2_zt, np.zeros_like(T2_zt))
-
-# --- T1 inchange (identique a la cell 19) + T1+T2 ---
-flux_T1    = M_zt_lisse * (ubar_zt - uc_zt_lisse)
-flux_T1_T2 = flux_T1 + T2_zt_lisse
-
-dudt_T1    = smooth_t((1/rho0[:,None]) * np.gradient(flux_T1,    alt, axis=0))   # = dudt_pred_s
-dudt_T1_T2 = smooth_t((1/rho0[:,None]) * np.gradient(flux_T1_T2, alt, axis=0))
-
-# --- correlation brute + R2 recalibre (pente+biais), meme protocole que §6/§8 ---
-def correlation_brute(pred_zt, mask):
-    r = np.full(n_z, np.nan)
-    for iz in np.where(mask)[0]:
-        a, b = dudt_reel[iz,:], pred_zt[iz,:]
-        ok = np.isfinite(a) & np.isfinite(b)
-        if ok.sum() < 20 or np.nanstd(a[ok]) < 1e-15 or np.nanstd(b[ok]) < 1e-15: continue
-        r[iz] = np.corrcoef(a[ok], b[ok])[0,1]
-    return r
-
-def r2_recalibre(pred_zt, mask):
-    pente = np.full(n_z, np.nan); biais = np.full(n_z, np.nan)
-    for iz in np.where(mask)[0]:
-        a, b = dudt_reel[iz,:], pred_zt[iz,:]
-        ok = np.isfinite(a) & np.isfinite(b)
-        if ok.sum() < 20 or np.std(b[ok]) < 1e-15: continue
-        A = np.vstack([b[ok], np.ones(ok.sum())]).T
-        coefs, *_ = np.linalg.lstsq(A, a[ok], rcond=None)
-        pente[iz], biais[iz] = coefs
-    pred_cal = pente[:,None]*pred_zt + biais[:,None]
-    r2 = np.full(n_z, np.nan)
-    for iz in np.where(mask)[0]:
-        a, b = dudt_reel[iz,:], pred_cal[iz,:]
-        ok = np.isfinite(a) & np.isfinite(b)
-        if ok.sum() < 20 or np.std(a[ok]) < 1e-15: continue
-        ss_res = np.sum((a[ok]-b[ok])**2); ss_tot = np.sum((a[ok]-a[ok].mean())**2)
-        r2[iz] = 1 - ss_res/ss_tot if ss_tot > 0 else np.nan
-    return r2
-
-corr_T1, corr_T1_T2 = correlation_brute(dudt_T1, m212), correlation_brute(dudt_T1_T2, m212)
-R2cal_T1, R2cal_T1_T2 = r2_recalibre(dudt_T1, m212), r2_recalibre(dudt_T1_T2, m212)
-
-fig, axes = plt.subplots(1,2,figsize=(10,7),sharey=True)
-axes[0].plot(corr_T1[m212],    zkm[m212], 'o-', ms=3, color='crimson', label='T1 seul')
-axes[0].plot(corr_T1_T2[m212], zkm[m212], 'o-', ms=3, color='black',   label='T1+T2')
-axes[0].axvline(0,color='grey',lw=.5); axes[0].set_xlabel('correlation'); axes[0].set_ylabel('z (km)')
-axes[0].set_title('Correlation brute'); axes[0].legend(fontsize=9)
-
-axes[1].plot(R2cal_T1[m212],    zkm[m212], 'o-', ms=3, color='crimson', label='T1 seul')
-axes[1].plot(R2cal_T1_T2[m212], zkm[m212], 'o-', ms=3, color='black',   label='T1+T2')
-axes[1].axvline(0,color='grey',lw=.5); axes[1].set_xlabel('R2 recalibre (pente+biais)')
-axes[1].set_title('R2 apres recalibration'); axes[1].legend(fontsize=9)
-plt.suptitle("T1 = M(ubar-uc) [nb12, inchange] vs T1+T2 [T2 = cov. interne nuage+env]", fontweight='bold')
-plt.tight_layout(); plt.show()
-
-print("=== correlation mediane ===")
-print(f"T1 seul  2-8km : {np.nanmedian(corr_T1[m28]):.2f}   | 8-12km : {np.nanmedian(corr_T1[(alt>=8000)&(alt<=12000)]):.2f}")
-print(f"T1+T2    2-8km : {np.nanmedian(corr_T1_T2[m28]):.2f}   | 8-12km : {np.nanmedian(corr_T1_T2[(alt>=8000)&(alt<=12000)]):.2f}")
-print("\n=== R2 recalibre median ===")
-print(f"T1 seul  2-8km : {np.nanmedian(R2cal_T1[m28]):.2f}   | 8-12km : {np.nanmedian(R2cal_T1[(alt>=8000)&(alt<=12000)]):.2f}")
-print(f"T1+T2    2-8km : {np.nanmedian(R2cal_T1_T2[m28]):.2f}   | 8-12km : {np.nanmedian(R2cal_T1_T2[(alt>=8000)&(alt<=12000)]):.2f}")
-print(f"\n[rappel §6, deja calcule] R2 recalibre T1 seul (var. R2_calibre) 2-8km : {np.nanmedian(R2_calibre[m28]):.2f}")
+# Test : si on lisse fortement T2 en temps (comme nb3/4 le fait implicitement
+# en moyennant sur toute la fenetre), le gain revient-il ?
+T2_zt_tres_lisse = uniform_filter1d(T2_zt_lisse, size=20, axis=1, mode='nearest')
+flux_T1_T2_lisse = flux_T1 + T2_zt_tres_lisse
+dudt_T1_T2_lisse = smooth_t((1/rho0[:,None]) * np.gradient(flux_T1_T2_lisse, alt, axis=0))
+corr_T1_T2_lisse = correlation_brute(dudt_T1_T2_lisse, m212)
+R2_T1_T2_lisse = r2_recalibre(dudt_T1_T2_lisse, m212)
+print(f"corr T1+T2 (T2 tres lisse) 2-8km : {np.nanmedian(corr_T1_T2_lisse[m28]):.2f}  (vs T1 seul: {np.nanmedian(corr_T1[m28]):.2f})")
+print(f"R2   T1+T2 (T2 tres lisse) 2-8km : {np.nanmedian(R2_T1_T2_lisse[m28]):.2f}  (vs T1 seul: {np.nanmedian(R2cal_T1[m28]):.2f})")
