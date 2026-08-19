@@ -1,33 +1,60 @@
 # ============================================================
-#  §8. Affichage brut : T1 seul vs T1+T2 vs dudt_reel vs terme_flux
+#  §9. T1 seul vs T1+T2 — correlation brute ET R2 recalibre (pente+biais)
+#      cote a cote, meme methode que le §6/§8 pour le bulk-plume 1-courant
 # ============================================================
-fig, axes = plt.subplots(2, 2, figsize=(12, 10), sharex=True, sharey=True)
-v = max(np.nanpercentile(np.abs(dudt_reel[m212]), 95),
-        np.nanpercentile(np.abs(dudt_T1[m212]), 95),
-        np.nanpercentile(np.abs(dudt_T1_T2[m212]), 95),
-        np.nanpercentile(np.abs(terme_flux[m212]), 95)) * 3600 + 1e-12
+def correlation_brute(pred_zt, mask):
+    r = np.full(n_z, np.nan)
+    for iz in np.where(mask)[0]:
+        a, b = dudt_reel[iz,:], pred_zt[iz,:]
+        ok = np.isfinite(a) & np.isfinite(b)
+        if ok.sum() < 20 or np.nanstd(a[ok]) < 1e-15 or np.nanstd(b[ok]) < 1e-15:
+            continue
+        r[iz] = np.corrcoef(a[ok], b[ok])[0,1]
+    return r
 
-champs = [(dudt_reel*3600,    r"$\partial_t\bar u$ reel"),
-          (dudt_T1*3600,      r"T1 seul $\to$ tendance"),
-          (dudt_T1_T2*3600,   r"T1+T2 $\to$ tendance"),
-          (terme_flux*3600,   r"$-\frac{1}{\rho_0}\partial_z(\rho_0\overline{u'w'})$ (domaine entier)")]
+def r2_recalibre(pred_zt, mask):
+    pente = np.full(n_z, np.nan); biais = np.full(n_z, np.nan)
+    for iz in np.where(mask)[0]:
+        a, b = dudt_reel[iz,:], pred_zt[iz,:]
+        ok = np.isfinite(a) & np.isfinite(b)
+        if ok.sum() < 20 or np.std(b[ok]) < 1e-15:
+            continue
+        A = np.vstack([b[ok], np.ones(ok.sum())]).T
+        coefs, *_ = np.linalg.lstsq(A, a[ok], rcond=None)
+        pente[iz], biais[iz] = coefs
+    pred_cal = pente[:,None]*pred_zt + biais[:,None]
+    r2 = np.full(n_z, np.nan)
+    for iz in np.where(mask)[0]:
+        a, b = dudt_reel[iz,:], pred_cal[iz,:]
+        ok = np.isfinite(a) & np.isfinite(b)
+        if ok.sum() < 20 or np.std(a[ok]) < 1e-15:
+            continue
+        ss_res = np.sum((a[ok]-b[ok])**2); ss_tot = np.sum((a[ok]-a[ok].mean())**2)
+        r2[iz] = 1 - ss_res/ss_tot if ss_tot > 0 else np.nan
+    return r2
 
-for ax, (fld, lab) in zip(axes.ravel(), champs):
-    im = ax.pcolormesh(tt+t_stat, zkm[m212], fld[m212], cmap='RdBu_r',
-                        norm=TwoSlopeNorm(0, -v, v), shading='auto')
-    ax.set_title(lab, fontsize=10); fig.colorbar(im, ax=ax, pad=.02)
-for ax in axes[:,0]: ax.set_ylabel('z (km)')
-for ax in axes[1,:]: ax.set_xlabel('t')
-plt.suptitle("T1 seul / T1+T2 / reel / terme de turbulence convective (domaine entier)", fontweight='bold')
+corr_T1     = correlation_brute(dudt_T1,    m212)
+corr_T1_T2  = correlation_brute(dudt_T1_T2, m212)
+R2cal_T1    = r2_recalibre(dudt_T1,    m212)
+R2cal_T1_T2 = r2_recalibre(dudt_T1_T2, m212)
+
+fig, axes = plt.subplots(1,2,figsize=(10,7),sharey=True)
+axes[0].plot(corr_T1[m212],    zkm[m212], 'o-', ms=3, color='crimson', label='T1 seul')
+axes[0].plot(corr_T1_T2[m212], zkm[m212], 'o-', ms=3, color='black',   label='T1+T2')
+axes[0].axvline(0,color='grey',lw=.5); axes[0].set_xlabel('correlation'); axes[0].set_ylabel('z (km)')
+axes[0].set_title('Correlation brute'); axes[0].legend(fontsize=9)
+
+axes[1].plot(R2cal_T1[m212],    zkm[m212], 'o-', ms=3, color='crimson', label='T1 seul')
+axes[1].plot(R2cal_T1_T2[m212], zkm[m212], 'o-', ms=3, color='black',   label='T1+T2')
+axes[1].axvline(0,color='grey',lw=.5); axes[1].set_xlabel('R2 recalibre (pente+biais)')
+axes[1].set_title('R2 apres recalibration'); axes[1].legend(fontsize=9)
+plt.suptitle("T1 seul vs T1+T2 — meme protocole que le bulk-plume 1-courant (§6/§8)", fontweight='bold')
 plt.tight_layout(); plt.show()
 
-for lab, pred in [('T1 seul', dudt_T1), ('T1+T2', dudt_T1_T2)]:
-    print(f"\n--- {lab} ---")
-    for iz in range(0, n_z, 6):
-        if not m212[iz]: continue
-        a, b = dudt_reel[iz,:], pred[iz,:]
-        ok = np.isfinite(a) & np.isfinite(b)
-        if ok.sum() < 20: continue
-        print(f"z={zkm[iz]:.1f}km | biais={np.mean(b[ok]-a[ok])*3600:+.4f} | "
-              f"std_reel={np.std(a[ok])*3600:.4f} | std_pred={np.std(b[ok])*3600:.4f} | "
-              f"corr={np.corrcoef(a[ok],b[ok])[0,1]:+.2f}")
+print("=== correlation mediane ===")
+print(f"T1 seul     2-8km : {np.nanmedian(corr_T1[m28]):.2f}   | 8-12km : {np.nanmedian(corr_T1[(alt>=8000)&(alt<=12000)]):.2f}")
+print(f"T1+T2       2-8km : {np.nanmedian(corr_T1_T2[m28]):.2f}   | 8-12km : {np.nanmedian(corr_T1_T2[(alt>=8000)&(alt<=12000)]):.2f}")
+print("\n=== R2 recalibre median ===")
+print(f"T1 seul     2-8km : {np.nanmedian(R2cal_T1[m28]):.2f}   | 8-12km : {np.nanmedian(R2cal_T1[(alt>=8000)&(alt<=12000)]):.2f}")
+print(f"T1+T2       2-8km : {np.nanmedian(R2cal_T1_T2[m28]):.2f}   | 8-12km : {np.nanmedian(R2cal_T1_T2[(alt>=8000)&(alt<=12000)]):.2f}")
+print(f"\n[rappel §6] bulk-plume 1-courant recalibre  2-8km : {np.nanmedian(R2_calibre[m28]):.2f}")
