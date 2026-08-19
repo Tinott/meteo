@@ -1,15 +1,19 @@
-# Le bruit de T2_zt domine-t-il son signal, comparé a T1 ?
-snr_T1 = np.nanstd(flux_T1[m28], axis=1) / (np.nanstd(np.diff(flux_T1[m28], axis=1)) + 1e-12)
-snr_T2 = np.nanstd(T2_zt_lisse[m28], axis=1) / (np.nanstd(np.diff(T2_zt_lisse[m28], axis=1)) + 1e-12)
-print(f"rapport signal/bruit temporel T1 : {np.nanmedian(snr_T1):.2f}")
-print(f"rapport signal/bruit temporel T2 : {np.nanmedian(snr_T2):.2f}")
+# ============================================================
+#  Controle CRITIQUE : T1(Romps) + T2(cov. interne) = flux reel mesure ?
+#  Si ce residu n'est PAS ~0, alors T2 tel que defini n'est pas le
+#  complement de T1 -- c'est juste un terme parasite qu'on additionne.
+# ============================================================
+rey_meme_region_zt = np.full((n_z, n_stat), np.nan)
 
-# Test : si on lisse fortement T2 en temps (comme nb3/4 le fait implicitement
-# en moyennant sur toute la fenetre), le gain revient-il ?
-T2_zt_tres_lisse = uniform_filter1d(T2_zt_lisse, size=20, axis=1, mode='nearest')
-flux_T1_T2_lisse = flux_T1 + T2_zt_tres_lisse
-dudt_T1_T2_lisse = smooth_t((1/rho0[:,None]) * np.gradient(flux_T1_T2_lisse, alt, axis=0))
-corr_T1_T2_lisse = correlation_brute(dudt_T1_T2_lisse, m212)
-R2_T1_T2_lisse = r2_recalibre(dudt_T1_T2_lisse, m212)
-print(f"corr T1+T2 (T2 tres lisse) 2-8km : {np.nanmedian(corr_T1_T2_lisse[m28]):.2f}  (vs T1 seul: {np.nanmedian(corr_T1[m28]):.2f})")
-print(f"R2   T1+T2 (T2 tres lisse) 2-8km : {np.nanmedian(R2_T1_T2_lisse[m28]):.2f}  (vs T1 seul: {np.nanmedian(R2cal_T1[m28]):.2f})")
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    u = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
+    w = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
+    ub = u.mean(axis=1); wb = w.mean(axis=1)
+    rey_meme_region_zt[iz] = rho0[iz] * ((u - ub[:,None]) * (w - wb[:,None])).mean(axis=1)
+    del u, w
+ds_u.close(); ds_w.close(); gc.collect()
+
+residu_identite = (flux_T1 + T2_zt_lisse) - rey_meme_region_zt
+print("residu |T1+T2 - flux reel mesure|, mediane relative :",
+      np.nanmedian(np.abs(residu_identite[m28])) / np.nanmedian(np.abs(rey_meme_region_zt[m28])))
