@@ -1,19 +1,109 @@
 # ============================================================
-#  Controle CRITIQUE : T1(Romps) + T2(cov. interne) = flux reel mesure ?
-#  Si ce residu n'est PAS ~0, alors T2 tel que defini n'est pas le
-#  complement de T1 -- c'est juste un terme parasite qu'on additionne.
+#  §8. Partition 3-cat (up/dn/env, a la nb3/4) sur domaine entier,
+#      en 3 etapes progressives, comparees a T1 Romps (M(ubar-uc))
+#      et au flux de Reynolds reellement mesure (rey_meme_region_zt)
 # ============================================================
-rey_meme_region_zt = np.full((n_z, n_stat), np.nan)
+C_CAT = 0.5
+W0_MIN = 0.001
+
+T1_up_zt    = np.full((n_z, n_stat), np.nan)   # up seul, organise
+T1_updn_zt  = np.full((n_z, n_stat), np.nan)   # up+dn, organise
+T2_3cat_zt  = np.full((n_z, n_stat), np.nan)   # covariance interne, 3 cat (up+dn+env)
 
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
 for iz in range(n_z):
-    u = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
-    w = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
-    ub = u.mean(axis=1); wb = w.mean(axis=1)
-    rey_meme_region_zt[iz] = rho0[iz] * ((u - ub[:,None]) * (w - wb[:,None])).mean(axis=1)
-    del u, w
+    u_all = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
+    w_all = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
+    for it in range(n_stat):
+        u = u_all[it]; w = w_all[it]
+        ub = u.mean(); wb = w.mean()
+        ws = max(W0_MIN, C_CAT * w.std())
+        cats = {'up': w > ws, 'dn': w < -ws, 'env': np.abs(w) <= ws}
+
+        t1_up = t1_dn = t2_tot = 0.0
+        for k, msk in cats.items():
+            if msk.sum() == 0: continue
+            sig_k = msk.mean()
+            u_k, w_k = u[msk].mean(), w[msk].mean()
+            t1_k = sig_k * (u_k - ub) * (w_k - wb)
+            if k == 'up': t1_up = t1_k
+            elif k == 'dn': t1_dn = t1_k
+            t2_tot += sig_k * np.mean((u[msk] - u_k) * (w[msk] - w_k))
+
+        T1_up_zt[iz, it]   = rho0[iz] * t1_up
+        T1_updn_zt[iz, it] = rho0[iz] * (t1_up + t1_dn)
+        T2_3cat_zt[iz, it] = rho0[iz] * t2_tot
+    del u_all, w_all; gc.collect()
 ds_u.close(); ds_w.close(); gc.collect()
 
-residu_identite = (flux_T1 + T2_zt_lisse) - rey_meme_region_zt
-print("residu |T1+T2 - flux reel mesure|, mediane relative :",
-      np.nanmedian(np.abs(residu_identite[m28])) / np.nanmedian(np.abs(rey_meme_region_zt[m28])))
+flux_up          = T1_up_zt
+flux_updn        = T1_updn_zt
+flux_updn_T2     = T1_updn_zt + T2_3cat_zt
+
+def tend_from_flux(flux_zt):
+    return smooth_t(-(1.0/rho0[:,None]) * np.gradient(flux_zt, alt, axis=0))
+
+dudt_up      = tend_from_flux(flux_up)
+dudt_updn    = tend_from_flux(flux_updn)
+dudt_updn_T2 = tend_from_flux(flux_updn_T2)
+
+# --- residu vs flux de Reynolds REELLEMENT mesure (deja calcule : rey_meme_region_zt) ---
+def residu_median(flux_zt, mask):
+    r = np.abs(flux_zt - rey_meme_region_zt)
+    return np.nanmedian(r[mask]) / np.nanmedian(np.abs(rey_meme_region_zt[mask]))
+
+print("=== residu relatif median vs flux de Reynolds mesure (2-8km) ===")
+print(f"T1 Romps (M(ubar-uc))     : {residu_median(flux_T1, m28):.2f}")
+print(f"T1 3-cat, up seul         : {residu_median(flux_up, m28):.2f}")
+print(f"T1 3-cat, up+dn           : {residu_median(flux_updn, m28):.2f}")
+print(f"T1 3-cat, up+dn+T2        : {residu_median(flux_updn_T2, m28):.2f}")
+
+# --- correlation + R2 recalibre vs dudt_reel, meme protocole que toujours ---
+def correlation_brute(pred_zt, mask):
+    r = np.full(n_z, np.nan)
+    for iz in np.where(mask)[0]:
+        a, b = dudt_reel[iz,:], pred_zt[iz,:]
+        ok = np.isfinite(a) & np.isfinite(b)
+        if ok.sum() < 20 or np.nanstd(a[ok]) < 1e-15 or np.nanstd(b[ok]) < 1e-15: continue
+        r[iz] = np.corrcoef(a[ok], b[ok])[0,1]
+    return r
+
+def r2_recalibre(pred_zt, mask):
+    pente = np.full(n_z, np.nan); biais = np.full(n_z, np.nan)
+    for iz in np.where(mask)[0]:
+        a, b = dudt_reel[iz,:], pred_zt[iz,:]
+        ok = np.isfinite(a) & np.isfinite(b)
+        if ok.sum() < 20 or np.std(b[ok]) < 1e-15: continue
+        A = np.vstack([b[ok], np.ones(ok.sum())]).T
+        coefs, *_ = np.linalg.lstsq(A, a[ok], rcond=None)
+        pente[iz], biais[iz] = coefs
+    pred_cal = pente[:,None]*pred_zt + biais[:,None]
+    r2 = np.full(n_z, np.nan)
+    for iz in np.where(mask)[0]:
+        a, b = dudt_reel[iz,:], pred_cal[iz,:]
+        ok = np.isfinite(a) & np.isfinite(b)
+        if ok.sum() < 20 or np.std(a[ok]) < 1e-15: continue
+        ss_res = np.sum((a[ok]-b[ok])**2); ss_tot = np.sum((a[ok]-a[ok].mean())**2)
+        r2[iz] = 1 - ss_res/ss_tot if ss_tot > 0 else np.nan
+    return r2
+
+etapes = [('T1 Romps',        dudt_T1),
+          ('T1 3cat up seul', dudt_up),
+          ('T1 3cat up+dn',   dudt_updn),
+          ('T1 3cat up+dn+T2',dudt_updn_T2)]
+
+fig, axes = plt.subplots(1,2,figsize=(11,7),sharey=True)
+colors = ['grey','crimson','orange','black']
+print("\n=== correlation / R2 recalibre median, 2-8km ===")
+for (lab, pred), col in zip(etapes, colors):
+    c = correlation_brute(pred, m212); r2 = r2_recalibre(pred, m212)
+    axes[0].plot(c[m212],  zkm[m212], 'o-', ms=3, color=col, label=lab)
+    axes[1].plot(r2[m212], zkm[m212], 'o-', ms=3, color=col, label=lab)
+    print(f"{lab:20s} | corr = {np.nanmedian(c[m28]):+.2f} | R2cal = {np.nanmedian(r2[m28]):+.2f}")
+
+axes[0].axvline(0,color='grey',lw=.5); axes[0].set_xlabel('correlation'); axes[0].set_ylabel('z (km)')
+axes[0].set_title('Correlation brute'); axes[0].legend(fontsize=8)
+axes[1].axvline(0,color='grey',lw=.5); axes[1].set_xlabel('R2 recalibre')
+axes[1].set_title('R2 apres recalibration'); axes[1].legend(fontsize=8)
+plt.suptitle("Progression : T1 Romps -> up seul -> up+dn -> up+dn+T2", fontweight='bold')
+plt.tight_layout(); plt.show()
