@@ -1,35 +1,23 @@
-## ============================================================
+# ============================================================
 #  PRW reconstruit : PWV = (1/g) * integrale(hus dp) sur la colonne
+#  correction : .transpose() force l'ordre (t,z,y,x) explicitement,
+#  independamment de l'ordre interne de chaque fichier
 # ============================================================
 prw_sum = np.zeros((n_y, n_x))
 ds_hus = xr.open_dataset(path3d('hus')); ds_pa = xr.open_dataset(path3d('pa'))
 for t0 in range(t_stat, n_t, BLOC):
     t1 = min(t0+BLOC, n_t); sl = {dim_t: slice(t0,t1)}
-    qv = ds_hus['hus'].isel(sl).values   # (t, z, y, x)
-    p  = ds_pa['pa'].isel(sl).values     # (t, z, y, x)
-    # integrale verticale |dp| trapezoidale, axe z = axis 1
-    pwv_block = np.trapz(qv, p, axis=1)  # negatif car p decroit avec z
+    qv_da = ds_hus['hus'].isel(sl).transpose(dim_t, dim_z, dim_y, dim_x)
+    p_da  = ds_pa['pa'].isel(sl).transpose(dim_t, dim_z, dim_y, dim_x)
+    qv = qv_da.values   # (t, z, y, x) garanti par le transpose
+    p  = p_da.values
+    pwv_block = np.trapz(qv, p, axis=1)   # axis=1 = z, maintenant fiable
     prw_sum += -pwv_block.sum(axis=0)/g
-    del qv, p, pwv_block; gc.collect()
+    del qv_da, p_da, qv, p, pwv_block; gc.collect()
 ds_hus.close(); ds_pa.close(); gc.collect()
-prw_mean_arr = prw_sum / n_stat   # moyenne temporelle, (y,x)
-
+prw_mean_arr = prw_sum / n_stat
 PRW_SEUIL = float(np.median(prw_mean_arr.ravel()))
 mh = (prw_mean_arr > PRW_SEUIL); ms = ~mh; mh_flat = mh.ravel(); ms_flat = ms.ravel()
 f_h = float(mh.mean()); f_s = float(ms.mean())
-
 print(f'PRW reconstruit : moyenne={prw_mean_arr.mean():.2f} kg/m2 (doit ressembler a 20-60 kg/m2 en tropical)')
 print(f'humide={f_h:.0%} sec={f_s:.0%}')
-
-
-
----------------------------------------------------------------------------
-ValueError                                Traceback (most recent call last)
-Cell In[8], line 12
-     10     # integrale verticale |dp| trapezoidale, axe z = axis 1
-     11     pwv_block = np.trapz(qv, p, axis=1)  # negatif car p decroit avec z
----> 12     prw_sum += -pwv_block.sum(axis=0)/g
-     13     del qv, p, pwv_block; gc.collect()
-     14 ds_hus.close(); ds_pa.close(); gc.collect()
-
-ValueError: operands could not be broadcast together with shapes (128,1984) (1984,75) (128,1984) 
