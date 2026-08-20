@@ -1,8 +1,82 @@
-clw : min/max/mean : 0.0 0.0018882295 2.529488e-06
-ice : min/max/mean : 0.0 0.0013046917 9.9713084e-08
-cond a z=5km : min/max/mean = 0.00e+00 / 1.56e-03 / 2.58e-06
-cond a z=5km : p90=9.98e-21 | p99=1.33e-10 | p99.9=8.17e-04
-fraction cond>1e-5  : 0.5032%
-fraction cond>1e-6  : 0.5138%
-fraction cond>1e-7  : 0.5334%
-fraction cond>0     : 99.9064%
+c# ============================================================
+#  Diagramme de Taylor : bulk-plume vs radiatif, cote a cote
+#  (corr, ratio std, RMSE centre) — un point PAR NIVEAU dans la bande 2-12km
+# ============================================================
+from matplotlib.projections import PolarAxes
+import matplotlib.projections
+import mpl_toolkits.axisartist.floating_axes as FA
+import mpl_toolkits.axisartist.grid_finder as GF
+
+def taylor_axes(fig, subplot, std_max):
+    tr = PolarAxes.PolarTransform()
+    r_locs = np.array([0, 0.2, 0.4, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0])
+    t_locs = np.arccos(r_locs)
+    gl1 = GF.FixedLocator(t_locs); tf1 = GF.DictFormatter(dict(zip(t_locs, map(str, r_locs))))
+    ghelper = FA.GridHelperCurveLinear(tr, extremes=(0, np.pi/2, 0, std_max*1.3),
+                                        grid_locator1=gl1, tick_formatter1=tf1)
+    ax = FA.FloatingSubplot(fig, subplot, grid_helper=ghelper)
+    fig.add_subplot(ax)
+    ax.axis["top"].set_axis_direction("bottom"); ax.axis["top"].toggle(ticklabels=True, label=True)
+    ax.axis["top"].major_ticklabels.set_axis_direction("top")
+    ax.axis["top"].label.set_axis_direction("top"); ax.axis["top"].label.set_text("Correlation")
+    ax.axis["left"].set_axis_direction("bottom"); ax.axis["left"].label.set_text("Ecart-type (normalise)")
+    ax.axis["right"].set_axis_direction("top"); ax.axis["right"].toggle(ticklabels=True)
+    ax.axis["right"].major_ticklabels.set_axis_direction("left")
+    ax.axis["bottom"].set_visible(False)
+    ax.grid(True, alpha=.3)
+    ax_polar = ax.get_aux_axes(tr)
+    ax_polar.plot([0], [1], 'k*', ms=14, zorder=10)  # reference = observation
+    return ax, ax_polar
+
+fig = plt.figure(figsize=(12,6))
+
+# --- calcul corr et ratio std, par niveau, dans m212, pour chaque prediction ---
+def points_taylor(pred, mask):
+    corrs, ratios, zs = [], [], []
+    for iz in range(n_z):
+        if not mask[iz]: continue
+        a, b = dudt_reel[iz,:], pred[iz,:]
+        ok = np.isfinite(a) & np.isfinite(b)
+        if ok.sum() < 20 or np.std(a[ok]) < 1e-15 or np.std(b[ok]) < 1e-15: continue
+        r = np.corrcoef(a[ok], b[ok])[0,1]
+        ratio = np.std(b[ok]) / np.std(a[ok])
+        corrs.append(r); ratios.append(ratio); zs.append(zkm[iz])
+    return np.array(corrs), np.array(ratios), np.array(zs)
+
+corr_b, ratio_b, z_b = points_taylor(dudt_pred_s, m212)
+corr_r, ratio_r, z_r = points_taylor(dudt_pred_rad, m212)
+
+std_max = max(ratio_b.max() if len(ratio_b) else 1, ratio_r.max() if len(ratio_r) else 1, 1.5)
+
+ax1, axp1 = taylor_axes(fig, 121, std_max)
+sc1 = axp1.scatter(np.arccos(corr_b), ratio_b, c=z_b, cmap='viridis', s=40, edgecolor='k', lw=.3)
+axp1.set_title('Bulk-plume $M(\\bar u-u_c)$', y=1.08)
+
+ax2, axp2 = taylor_axes(fig, 122, std_max)
+sc2 = axp2.scatter(np.arccos(corr_r), ratio_r, c=z_r, cmap='viridis', s=40, edgecolor='k', lw=.3)
+axp2.set_title('Radiatif $-\\dot Q_{rad}/\\partial_z\\bar\\theta\\,\\partial_z\\bar u$', y=1.08)
+
+cbar = fig.colorbar(sc2, ax=[ax1,ax2], orientation='horizontal', pad=.08, aspect=40, shrink=.6)
+cbar.set_label('altitude (km)')
+plt.suptitle("Diagramme de Taylor — chaque point = un niveau (2-12km)", fontweight='bold', y=1.02)
+plt.show()
+
+
+
+
+
+# ============================================================
+#  Version simplifiee, sans axisartist — polaire matplotlib standard
+# ============================================================
+fig, axes = plt.subplots(1,2,figsize=(12,6), subplot_kw={'projection':'polar'})
+for ax,(corr,ratio,z,lab) in zip(axes,[(corr_b,ratio_b,z_b,'Bulk-plume'),
+                                          (corr_r,ratio_r,z_r,'Radiatif')]):
+    ax.set_thetamin(0); ax.set_thetamax(90)
+    sc = ax.scatter(np.arccos(corr), ratio, c=z, cmap='viridis', s=40, edgecolor='k', lw=.3)
+    ax.plot(0, 1, 'k*', ms=14)
+    ax.set_xticks(np.arccos([1,0.99,0.95,0.9,0.8,0.6,0.4,0.2,0]))
+    ax.set_xticklabels(['1','0.99','0.95','0.9','0.8','0.6','0.4','0.2','0'])
+    ax.set_title(lab, pad=20)
+fig.colorbar(sc, ax=axes, orientation='horizontal', pad=.1, aspect=40, shrink=.6, label='altitude (km)')
+plt.suptitle("Diagramme de Taylor — chaque point = un niveau (2-12km)", fontweight='bold')
+plt.show()
