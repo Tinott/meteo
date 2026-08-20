@@ -1,16 +1,37 @@
-# ============================================================
-#  rho0(z), theta(z,t), T(z,t)  — domaine total
-#  correction : .transpose() force l'ordre (t,z,y,x), independamment
-#  de l'ordre interne propre a chaque fichier
-# ============================================================
+def load_ordered(da, *dims_voulues):
+    """Lit un DataArray dans son ordre natif (rapide), puis reordonne en memoire (rapide aussi)."""
+    ordre_natif = da.dims
+    raw = da.values                     # lecture disque, ordre natif = sequentiel = rapide
+    perm = [ordre_natif.index(d) for d in dims_voulues]
+    return np.transpose(raw, perm)       # reordonnement en RAM, pas sur disque = rapide
+
+
+prw_sum = np.zeros((n_y, n_x))
+ds_hus = xr.open_dataset(path3d('hus')); ds_pa = xr.open_dataset(path3d('pa'))
+for t0 in range(t_stat, n_t, BLOC):
+    t1 = min(t0+BLOC, n_t); sl = {dim_t: slice(t0,t1)}
+    qv = load_ordered(ds_hus['hus'].isel(sl), dim_t, dim_z, dim_y, dim_x)
+    p  = load_ordered(ds_pa['pa'].isel(sl),   dim_t, dim_z, dim_y, dim_x)
+    pwv_block = np.trapz(qv, p, axis=1)
+    prw_sum += -pwv_block.sum(axis=0)/g
+    del qv, p, pwv_block; gc.collect()
+ds_hus.close(); ds_pa.close(); gc.collect()
+prw_mean_arr = prw_sum / n_stat
+PRW_SEUIL = float(np.median(prw_mean_arr.ravel()))
+mh = (prw_mean_arr > PRW_SEUIL); ms = ~mh; mh_flat = mh.ravel(); ms_flat = ms.ravel()
+f_h = float(mh.mean()); f_s = float(ms.mean())
+print(f'PRW reconstruit : moyenne={prw_mean_arr.mean():.2f} kg/m2')
+print(f'humide={f_h:.0%} sec={f_s:.0%}')
+
+
 rho0_sum=np.zeros(n_z); n_rho=0
 theta_zt=np.zeros((n_z,n_stat)); T_zt=np.zeros((n_z,n_stat))
 ds_ta=xr.open_dataset(path3d('ta')); ds_pa=xr.open_dataset(path3d('pa')); ds_hus=xr.open_dataset(path3d('hus'))
 for t0 in range(t_stat,n_t,BLOC):
     t1=min(t0+BLOC,n_t); sl={dim_t:slice(t0,t1)}
-    T=ds_ta['ta'].isel(sl).transpose(dim_t,dim_z,dim_y,dim_x).values
-    p=ds_pa['pa'].isel(sl).transpose(dim_t,dim_z,dim_y,dim_x).values
-    qv=ds_hus['hus'].isel(sl).transpose(dim_t,dim_z,dim_y,dim_x).values
+    T = load_ordered(ds_ta['ta'].isel(sl),  dim_t, dim_z, dim_y, dim_x)
+    p = load_ordered(ds_pa['pa'].isel(sl),  dim_t, dim_z, dim_y, dim_x)
+    qv = load_ordered(ds_hus['hus'].isel(sl), dim_t, dim_z, dim_y, dim_x)
     Tv=T*(1+qv/EPSILON)/(1+qv); rho=p/(Rd*Tv)
     rho0_sum+=rho.mean(axis=(0,2,3))*(t1-t0); n_rho+=(t1-t0)
     del T,p,qv,Tv,rho; gc.collect()
@@ -18,8 +39,8 @@ ds_ta.close(); ds_pa.close(); ds_hus.close(); rho0=rho0_sum/n_rho
 
 ds_ta=xr.open_dataset(path3d('ta')); ds_pa=xr.open_dataset(path3d('pa'))
 for iz in range(n_z):
-    T=ds_ta['ta'].isel({dim_t:idx_stat,dim_z:iz}).transpose(dim_t,dim_y,dim_x).values.reshape(n_stat,-1)
-    p=ds_pa['pa'].isel({dim_t:idx_stat,dim_z:iz}).transpose(dim_t,dim_y,dim_x).values.reshape(n_stat,-1)
+    T = load_ordered(ds_ta['ta'].isel({dim_t:idx_stat,dim_z:iz}), dim_t, dim_y, dim_x).reshape(n_stat,-1)
+    p = load_ordered(ds_pa['pa'].isel({dim_t:idx_stat,dim_z:iz}), dim_t, dim_y, dim_x).reshape(n_stat,-1)
     theta=T*(p_ref/p)**(Rd/cp)
     theta_zt[iz]=theta.mean(axis=1); T_zt[iz]=T.mean(axis=1)
     del T,p,theta
