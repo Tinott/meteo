@@ -1,26 +1,4 @@
-# ============================================================
-#  rho0(z), theta(z,t), T(z,t) — tout en une seule passe par bloc de TEMPS
-#  (plus de lecture niveau par niveau, un seul passage sur les fichiers)
-# ============================================================
-rho0_sum=np.zeros(n_z); n_rho=0
-theta_zt=np.zeros((n_z,n_stat)); T_zt=np.zeros((n_z,n_stat))
-
-ds_ta=xr.open_dataset(path3d('ta')); ds_pa=xr.open_dataset(path3d('pa')); ds_hus=xr.open_dataset(path3d('hus'))
-for t0 in range(t_stat,n_t,BLOC):
-    t1=min(t0+BLOC,n_t); sl={dim_t:slice(t0,t1)}
-    T = load_ordered(ds_ta['ta'].isel(sl),  dim_t, dim_z, dim_y, dim_x)
-    p = load_ordered(ds_pa['pa'].isel(sl),  dim_t, dim_z, dim_y, dim_x)
-    qv = load_ordered(ds_hus['hus'].isel(sl), dim_t, dim_z, dim_y, dim_x)
-
-    Tv=T*(1+qv/EPSILON)/(1+qv); rho=p/(Rd*Tv)
-    rho0_sum+=rho.mean(axis=(0,2,3))*(t1-t0); n_rho+=(t1-t0)
-
-    theta = T*(p_ref/p)**(Rd/cp)                    # (t_bloc, z, y, x)
-    theta_zt[:, t0:t1] = theta.mean(axis=(2,3)).T    # moyenne spatiale -> (z, t_bloc)
-    T_zt[:, t0:t1]     = T.mean(axis=(2,3)).T
-
-    del T,p,qv,Tv,rho,theta; gc.collect()
-ds_ta.close(); ds_pa.close(); ds_hus.close()
-rho0=rho0_sum/n_rho
-dthetadz_zt=np.gradient(theta_zt, alt, axis=0)
-print('rho0, theta_zt, T_zt, dthetadz_zt : ok')
+ds_test = xr.open_dataset(path3d('ua'))
+print(ds_test['ua'].encoding.get('chunksizes', 'pas de chunking explicite (contigu ou chunk auto)'))
+print(ds_test['ua'].encoding.get('original_shape', ds_test['ua'].shape))
+ds_test.close()
