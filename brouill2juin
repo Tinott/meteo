@@ -1,4 +1,46 @@
-ds_test = xr.open_dataset(path3d('ua'))
-print(ds_test['ua'].encoding.get('chunksizes', 'pas de chunking explicite (contigu ou chunk auto)'))
-print(ds_test['ua'].encoding.get('original_shape', ds_test['ua'].shape))
-ds_test.close()
+# ============================================================
+#  Sensibilite au seuil w : la fraction nuageuse et le R2 bulk-plume,
+#  pour plusieurs seuils, MesoNH vs UCLA-CRM
+# ============================================================
+seuils_test = [0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
+
+for sw in seuils_test:
+    M_zt_test = np.full((n_z, n_stat), np.nan)
+    uc_zt_test = np.full((n_z, n_stat), np.nan)
+    f_cloud_test = np.zeros((n_z, n_stat))
+
+    ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+    ds_clw = xr.open_dataset(path3d('clw')); ds_ice = xr.open_dataset(path3d('ice'))
+    for t0 in range(t_stat,n_t,BLOC):
+        t1=min(t0+BLOC,n_t); sl={dim_t:slice(t0,t1)}
+        u = load_ordered(ds_u['ua'].isel(sl), dim_t, dim_z, dim_y, dim_x).reshape(t1-t0, n_z, -1)
+        w = load_ordered(ds_w['wa'].isel(sl), dim_t, dim_z, dim_y, dim_x).reshape(t1-t0, n_z, -1)
+        clw = load_ordered(ds_clw['clw'].isel(sl), dim_t, dim_z, dim_y, dim_x).reshape(t1-t0, n_z, -1)
+        ice = load_ordered(ds_ice['ice'].isel(sl), dim_t, dim_z, dim_y, dim_x).reshape(t1-t0, n_z, -1)
+        cloud = (w > sw) & ((clw+ice) > SEUIL_COND)
+        for dt in range(t1-t0):
+            it = t0+dt
+            for iz in range(n_z):
+                m = cloud[dt,iz,:]; f_cloud_test[iz,it] = m.mean()
+                if m.sum() >= N_MIN_POINTS:
+                    w_m = w[dt,iz,m]; u_m = u[dt,iz,m]
+                    M_zt_test[iz,it] = rho0[iz]*f_cloud_test[iz,it]*w_m.mean()
+                    uc_zt_test[iz,it] = np.sum(w_m*u_m)/np.sum(w_m)
+        del u,w,clw,ice,cloud; gc.collect()
+    ds_u.close(); ds_w.close(); ds_clw.close(); ds_ice.close(); gc.collect()
+
+    M_test_lisse = combler_et_lisser(M_zt_test, np.zeros_like(M_zt_test))
+    uc_test_lisse = combler_et_lisser(uc_zt_test, ubar_zt)
+    dudt_test = smooth_t((1/rho0[:,None]) * np.gradient(M_test_lisse*(ubar_zt - uc_test_lisse), alt, axis=0))
+
+    r2 = np.full(n_z, np.nan)
+    for iz in range(n_z):
+        if not m28[iz]: continue
+        a,b = dudt_reel[iz,:], dudt_test[iz,:]
+        ok = np.isfinite(a)&np.isfinite(b)
+        if ok.sum()<20 or np.std(a[ok])<1e-15: continue
+        ss_res=np.sum((a[ok]-b[ok])**2); ss_tot=np.sum((a[ok]-a[ok].mean())**2)
+        r2[iz]=1-ss_res/ss_tot if ss_tot>0 else np.nan
+
+    print(f"seuil_w={sw:.2f} | fraction nuageuse (2-8km)={np.nanmean(f_cloud_test[m28])*100:.2f}% | "
+          f"R2 brut median 2-8km={np.nanmedian(r2[m28]):.2f}")
