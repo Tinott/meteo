@@ -1,6 +1,6 @@
 # ============================================================
-#  Sensibilite au seuil w : la fraction nuageuse et le R2 bulk-plume,
-#  pour plusieurs seuils, MesoNH vs UCLA-CRM
+#  Sensibilite au seuil w : fraction nuageuse et CORRELATION bulk-plume,
+#  sur 2-12km, pour plusieurs seuils
 # ============================================================
 seuils_test = [0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
 
@@ -33,14 +33,13 @@ for sw in seuils_test:
     uc_test_lisse = combler_et_lisser(uc_zt_test, ubar_zt)
     dudt_test = smooth_t((1/rho0[:,None]) * np.gradient(M_test_lisse*(ubar_zt - uc_test_lisse), alt, axis=0))
 
-    r2 = np.full(n_z, np.nan)
+    corr = np.full(n_z, np.nan)
     for iz in range(n_z):
-        if not m28[iz]: continue
+        if not m212[iz]: continue
         a,b = dudt_reel[iz,:], dudt_test[iz,:]
         ok = np.isfinite(a)&np.isfinite(b)
-        if ok.sum()<20 or np.std(a[ok])<1e-15: continue
-        ss_res=np.sum((a[ok]-b[ok])**2); ss_tot=np.sum((a[ok]-a[ok].mean())**2)
-        r2[iz]=1-ss_res/ss_tot if ss_tot>0 else np.nan
+        if ok.sum()<20 or np.std(a[ok])<1e-15 or np.std(b[ok])<1e-15: continue
+        corr[iz] = np.corrcoef(a[ok], b[ok])[0,1]
 
-    print(f"seuil_w={sw:.2f} | fraction nuageuse (2-8km)={np.nanmean(f_cloud_test[m28])*100:.2f}% | "
-          f"R2 brut median 2-8km={np.nanmedian(r2[m28]):.2f}")
+    print(f"seuil_w={sw:.2f} | fraction nuageuse (2-12km)={np.nanmean(f_cloud_test[m212])*100:.2f}% | "
+          f"correlation mediane 2-12km={np.nanmedian(corr[m212]):+.2f}")
