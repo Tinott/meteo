@@ -30,3 +30,11 @@ print(f"T1 Romps + T2(3cat)    2-8km : {np.nanmedian(corr_T1_T2_3cat[m28]):+.2f}
 print("\n=== R2 recalibre median ===")
 print(f"T1 Romps seul          2-8km : {np.nanmedian(R2cal_T1[m28]):+.2f}   | 8-12km : {np.nanmedian(R2cal_T1[(alt>=8000)&(alt<=12000)]):+.2f}")
 print(f"T1 Romps + T2(3cat)    2-8km : {np.nanmedian(R2cal_T1_T2_3cat[m28]):+.2f}   | 8-12km : {np.nanmedian(R2cal_T1_T2_3cat[(alt>=8000)&(alt<=12000)]):+.2f}")
+
+
+
+
+dims detectees : t=time, z=zt, y=yt, x=xt
+altitude : min=-37.0 max=33000.0 (doit ressembler a 0-30000 m, croissant)
+101t x 75z x 128y x 1984x
+
