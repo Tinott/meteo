@@ -1,12 +1,16 @@
- ============================================================
+# ============================================================
 #  rho0(z), theta(z,t), T(z,t)  — domaine total
+#  correction : .transpose() force l'ordre (t,z,y,x), independamment
+#  de l'ordre interne propre a chaque fichier
 # ============================================================
 rho0_sum=np.zeros(n_z); n_rho=0
 theta_zt=np.zeros((n_z,n_stat)); T_zt=np.zeros((n_z,n_stat))
 ds_ta=xr.open_dataset(path3d('ta')); ds_pa=xr.open_dataset(path3d('pa')); ds_hus=xr.open_dataset(path3d('hus'))
 for t0 in range(t_stat,n_t,BLOC):
     t1=min(t0+BLOC,n_t); sl={dim_t:slice(t0,t1)}
-    T=ds_ta['ta'].isel(sl).values; p=ds_pa['pa'].isel(sl).values; qv=ds_hus['hus'].isel(sl).values
+    T=ds_ta['ta'].isel(sl).transpose(dim_t,dim_z,dim_y,dim_x).values
+    p=ds_pa['pa'].isel(sl).transpose(dim_t,dim_z,dim_y,dim_x).values
+    qv=ds_hus['hus'].isel(sl).transpose(dim_t,dim_z,dim_y,dim_x).values
     Tv=T*(1+qv/EPSILON)/(1+qv); rho=p/(Rd*Tv)
     rho0_sum+=rho.mean(axis=(0,2,3))*(t1-t0); n_rho+=(t1-t0)
     del T,p,qv,Tv,rho; gc.collect()
@@ -14,25 +18,11 @@ ds_ta.close(); ds_pa.close(); ds_hus.close(); rho0=rho0_sum/n_rho
 
 ds_ta=xr.open_dataset(path3d('ta')); ds_pa=xr.open_dataset(path3d('pa'))
 for iz in range(n_z):
-    T=ds_ta['ta'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
-    p=ds_pa['pa'].isel({dim_t:idx_stat,dim_z:iz}).values.reshape(n_stat,-1)
+    T=ds_ta['ta'].isel({dim_t:idx_stat,dim_z:iz}).transpose(dim_t,dim_y,dim_x).values.reshape(n_stat,-1)
+    p=ds_pa['pa'].isel({dim_t:idx_stat,dim_z:iz}).transpose(dim_t,dim_y,dim_x).values.reshape(n_stat,-1)
     theta=T*(p_ref/p)**(Rd/cp)
     theta_zt[iz]=theta.mean(axis=1); T_zt[iz]=T.mean(axis=1)
     del T,p,theta
 ds_ta.close(); ds_pa.close(); gc.collect()
 dthetadz_zt=np.gradient(theta_zt, alt, axis=0)
 print('rho0, theta_zt, T_zt, dthetadz_zt : ok')
-
-
-
-
---------------------------------------------------------------------------
-ValueError                                Traceback (most recent call last)
-Cell In[10], line 11
-      9     T=ds_ta['ta'].isel(sl).values; p=ds_pa['pa'].isel(sl).values; qv=ds_hus['hus'].isel(sl).values
-     10     Tv=T*(1+qv/EPSILON)/(1+qv); rho=p/(Rd*Tv)
----> 11     rho0_sum+=rho.mean(axis=(0,2,3))*(t1-t0); n_rho+=(t1-t0)
-     12     del T,p,qv,Tv,rho; gc.collect()
-     13 ds_ta.close(); ds_pa.close(); ds_hus.close(); rho0=rho0_sum/n_rho
-
-ValueError: operands could not be broadcast together with shapes (75,) (128,) (75,
