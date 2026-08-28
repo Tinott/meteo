@@ -1,4 +1,4 @@
-c# ============================================================
+# ============================================================
 #  Diagramme de Taylor : bulk-plume vs radiatif, cote a cote
 #  (corr, ratio std, RMSE centre) — un point PAR NIVEAU dans la bande 2-12km
 # ============================================================
@@ -60,6 +60,12 @@ cbar = fig.colorbar(sc2, ax=[ax1,ax2], orientation='horizontal', pad=.08, aspect
 cbar.set_label('altitude (km)')
 plt.suptitle("Diagramme de Taylor — chaque point = un niveau (2-12km)", fontweight='bold', y=1.02)
 plt.show()
+
+
+
+
+
+
 
 
 
