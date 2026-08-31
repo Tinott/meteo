@@ -31,9 +31,10 @@ def taylor_axes(fig, subplot, std_max, title):
     ax.axis["left"].label.set_fontsize(10)
     ax.axis["left"].major_ticklabels.set_fontsize(8)
 
-    # axe "right" desactive : redondant avec "left" et cause le chevauchement
-    # sur le panneau de droite (trop proche du bord de figure / colorbar)
-    ax.axis["right"].set_visible(False)
+    ax.axis["right"].set_axis_direction("top")
+    ax.axis["right"].toggle(ticklabels=True)
+    ax.axis["right"].major_ticklabels.set_axis_direction("left")
+    ax.axis["right"].major_ticklabels.set_fontsize(8)
 
     ax.axis["bottom"].set_visible(False)
     ax.grid(True, alpha=.3)
@@ -43,8 +44,8 @@ def taylor_axes(fig, subplot, std_max, title):
     ax.set_title(title, fontsize=11, pad=32)
     return ax, ax_polar
 
-fig = plt.figure(figsize=(14, 7.5))
-fig.subplots_adjust(left=0.07, right=0.90, top=0.82, bottom=0.14, wspace=0.5)
+fig = plt.figure(figsize=(13, 7.5))
+fig.subplots_adjust(left=0.06, right=0.94, top=0.82, bottom=0.14, wspace=0.55)
 
 # --- calcul corr et ratio std, par niveau, dans m212, pour chaque prediction ---
 def points_taylor(pred, mask):
