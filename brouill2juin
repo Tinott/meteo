@@ -16,7 +16,6 @@ def taylor_axes(fig, subplot, std_max, title):
                                         grid_locator1=gl1, tick_formatter1=tf1)
     ax = FA.FloatingSubplot(fig, subplot, grid_helper=ghelper)
     fig.add_subplot(ax)
-
     ax.axis["top"].set_axis_direction("bottom")
     ax.axis["top"].toggle(ticklabels=True, label=True)
     ax.axis["top"].major_ticklabels.set_axis_direction("top")
@@ -25,27 +24,44 @@ def taylor_axes(fig, subplot, std_max, title):
     ax.axis["top"].label.set_text("Correlation")
     ax.axis["top"].label.set_fontsize(10)
     ax.axis["top"].label.set_pad(8)
-
     ax.axis["left"].set_axis_direction("bottom")
     ax.axis["left"].label.set_text("Ecart-type (normalise)")
     ax.axis["left"].label.set_fontsize(10)
     ax.axis["left"].major_ticklabels.set_fontsize(8)
-
     ax.axis["right"].set_axis_direction("top")
     ax.axis["right"].toggle(ticklabels=True)
     ax.axis["right"].major_ticklabels.set_axis_direction("left")
     ax.axis["right"].major_ticklabels.set_fontsize(8)
-
     ax.axis["bottom"].set_visible(False)
     ax.grid(True, alpha=.3)
-
     ax_polar = ax.get_aux_axes(tr)
     ax_polar.plot([0], [1], 'k*', ms=13, zorder=10)
     ax.set_title(title, fontsize=11, pad=32)
     return ax, ax_polar
 
-fig = plt.figure(figsize=(13, 7.5))
-fig.subplots_adjust(left=0.06, right=0.94, top=0.82, bottom=0.14, wspace=0.55)
+# --- fig un peu plus haute pour laisser la place a la colorbar en bas ---
+fig = plt.figure(figsize=(13, 8.2))
+fig.subplots_adjust(left=0.06, right=0.94, top=0.80, bottom=0.20, wspace=0.55)
+
+# ============================================================
+# --- correction bulk-plume : ajout du 1/rho0 * d/dz ---
+# On passe du flux M(u_bar - u_c) [pseudo-tendance brute, déjà utilisé
+# jusqu'ici comme dudt_pred_s] à la vraie tendance de quantité de mouvement :
+#   dudt_bulk = -(1/rho0) * d/dz[ M*(u_bar - u_c) ]
+#
+# ⚠️ Adapte les noms ci-dessous à tes tableaux existants si besoin :
+#   - flux_b   : le flux M*(u_bar - u_c), shape (n_z, n_t)  -> normalement
+#                c'est ce qui alimentait dudt_pred_s jusqu'ici
+#   - rho0     : profil de densité de base, shape (n_z,)
+#   - z_m      : altitudes des niveaux en metres, shape (n_z,)  (= zkm*1000)
+# ============================================================
+z_m = zkm * 1000.0  # si z_m n'existe pas deja en metres
+
+# flux_b = dudt_pred_s si dudt_pred_s contenait deja M*(ubar-uc) brut
+flux_b = dudt_pred_s  # <-- remplace par ton flux M*(ubar-uc) si le nom diffère
+
+dflux_dz = np.gradient(flux_b, z_m, axis=0)          # d/dz [ M(u_bar-u_c) ]
+dudt_pred_s_corr = -dflux_dz / rho0[:, None]          # -(1/rho0) * d/dz [...]
 
 # --- calcul corr et ratio std, par niveau, dans m212, pour chaque prediction ---
 def points_taylor(pred, mask):
@@ -60,21 +76,24 @@ def points_taylor(pred, mask):
         corrs.append(r); ratios.append(ratio); zs.append(zkm[iz])
     return np.array(corrs), np.array(ratios), np.array(zs)
 
-corr_b, ratio_b, z_b = points_taylor(dudt_pred_s, m212)
+corr_b, ratio_b, z_b = points_taylor(dudt_pred_s_corr, m212)   # <-- version corrigee
 corr_r, ratio_r, z_r = points_taylor(dudt_pred_rad, m212)
 
 std_max = max(ratio_b.max() if len(ratio_b) else 1, ratio_r.max() if len(ratio_r) else 1, 1.5)
 
-ax1, axp1 = taylor_axes(fig, 121, std_max, 'Bulk-plume  $M(\\bar u-u_c)$')
+ax1, axp1 = taylor_axes(fig, 121, std_max, r'Bulk-plume  $-\frac{1}{\rho_0}\partial_z[M(\bar u-u_c)]$')
 sc1 = axp1.scatter(np.arccos(corr_b), ratio_b, c=z_b, cmap='viridis', s=40, edgecolor='k', lw=.3)
 
-ax2, axp2 = taylor_axes(fig, 122, std_max, 'Radiatif  $-\\dot Q_{rad}/\\partial_z\\bar\\theta\\,\\partial_z\\bar u$')
+ax2, axp2 = taylor_axes(fig, 122, std_max, r'Radiatif  $-\dot Q_{rad}/\partial_z\bar\theta\,\partial_z\bar u$')
 sc2 = axp2.scatter(np.arccos(corr_r), ratio_r, c=z_r, cmap='viridis', s=40, edgecolor='k', lw=.3)
 
-cbar = fig.colorbar(sc2, ax=[ax1, ax2], orientation='horizontal',
-                     fraction=0.04, pad=0.10, aspect=45, shrink=0.55)
+# ============================================================
+# --- colorbar : axes explicites places en bas, plus de superposition ---
+# ============================================================
+cax = fig.add_axes([0.27, 0.06, 0.46, 0.025])  # [left, bottom, width, height] en coords figure
+cbar = fig.colorbar(sc2, cax=cax, orientation='horizontal')
 cbar.set_label('altitude (km)', fontsize=10)
 cbar.ax.tick_params(labelsize=8)
 
-fig.suptitle("Diagramme de Taylor — chaque point = un niveau (2-12km)", fontweight='bold', fontsize=12, y=0.97)
+fig.suptitle("Diagramme de Taylor — chaque point = un niveau (2-12km)", fontweight='bold', fontsize=12, y=0.95)
 plt.show()
