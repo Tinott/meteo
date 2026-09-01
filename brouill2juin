@@ -1,74 +1,76 @@
 # ============================================================
-#  Test direct du WTG : M/rho0  vs  w_sec,rad = Qrad/dtheta_dz
-#  (a executer separement dans chaque notebook/simu — Meso-NH, UCLA, SCALE)
-#  Compare la "vitesse verticale effective" du flux de masse convectif
-#  a la subsidence radiative diagnostique, niveau par niveau, sans passer par dudt.
+#  Decomposition du produit dans (1/rho0)*d/dz[M(ubar-uc)]
+#  = (1/rho0)*(ubar-uc)*dM/dz  +  (M/rho0)*d(ubar)/dz  -  (M/rho0)*d(uc)/dz
+#  Affichage des 3 termes separes + le terme global, en profils composites
+#  A executer tel quel dans chaque notebook (Meso-NH, UCLA, SCALE...)
 # ============================================================
 
-# --- vitesse effective issue du flux de masse convectif ---
-w_M_zt = M_zt_lisse / rho0[:, None]              # (n_z, n_stat), m/s
+# --- derivees verticales necessaires ---
+dM_dz_zt   = np.gradient(M_zt_lisse, alt, axis=0)
+dubar_dz_zt = np.gradient(ubar_zt, alt, axis=0)
+duc_dz_zt  = np.gradient(uc_zt_lisse, alt, axis=0)   # deja calcule plus haut dans tes notebooks (duc_dz_zt), garde si deja present
 
-# --- vitesse de subsidence radiative diagnostique (deja utilisee pour dudt_pred_rad) ---
-w_sec_rad_zt = (theta_zt / T_zt) * tntr_zt / dthetadz_zt   # (n_z, n_stat), m/s
+# --- les 3 termes de la decomposition, chacun (n_z, n_stat) ---
+terme_dMdz = (1/rho0[:, None]) * (ubar_zt - uc_zt_lisse) * dM_dz_zt   # (1/rho0)*(ubar-uc)*dM/dz
+terme_dubar = (M_zt_lisse/rho0[:, None]) * dubar_dz_zt                # (M/rho0)*d(ubar)/dz
+terme_duc   = (M_zt_lisse/rho0[:, None]) * duc_dz_zt                  # (M/rho0)*d(uc)/dz
 
-# --- profils composites (median temporel), avec IQR pour voir la dispersion ---
+# --- terme global (deja calcule normalement = dudt_pred, avant lissage temporel) ---
+dudt_pred_check = terme_dMdz + terme_dubar - terme_duc   # doit etre ~= dudt_pred calcule via np.gradient direct
+
+# sanity check : les deux methodes de calcul du terme global doivent coincider
+ecart_max = np.nanmax(np.abs(dudt_pred_check[m212] - dudt_pred[m212]))
+print(f"ecart max entre calcul direct et decomposition (doit etre ~0) : {ecart_max:.3e}")
+
+# --- lissage temporel de chaque terme, comme pour dudt_pred_s ---
+terme_dMdz_s  = smooth_t(terme_dMdz)
+terme_dubar_s = smooth_t(terme_dubar)
+terme_duc_s   = smooth_t(terme_duc)
+
+# ============================================================
+#  Profils composites (median + IQR) des 4 quantites, cote a cote
+# ============================================================
 def profil_composite(champ_zt, mask):
     med = np.nanmedian(champ_zt[mask], axis=1)
     q25 = np.nanpercentile(champ_zt[mask], 25, axis=1)
     q75 = np.nanpercentile(champ_zt[mask], 75, axis=1)
     return med, q25, q75
 
-med_M, q25_M, q75_M = profil_composite(w_M_zt, m212)
-med_R, q25_R, q75_R = profil_composite(w_sec_rad_zt, m212)
+termes = {
+    r'Global $\frac{1}{\rho_0}\partial_z[M(\bar u-u_c)]$'      : dudt_pred_s,
+    r'$\frac{1}{\rho_0}(\bar u-u_c)\,\partial_z M$'              : terme_dMdz_s,
+    r'$\frac{M}{\rho_0}\partial_z\bar u$'                        : terme_dubar_s,
+    r'$-\frac{M}{\rho_0}\partial_z u_c$'                         : -terme_duc_s,
+}
 
-fig, axes = plt.subplots(1, 2, figsize=(11, 7), sharey=True)
-
-# --- panneau gauche : profils superposes ---
-ax = axes[0]
-ax.plot(med_M*100, zkm[m212], 'o-', ms=3, color='tab:blue', label=r'$M/\rho_0$ (bulk-plume)')
-ax.fill_betweenx(zkm[m212], q25_M*100, q75_M*100, color='tab:blue', alpha=.15)
-ax.plot(med_R*100, zkm[m212], 'o-', ms=3, color='tab:red', label=r'$w_{sec,rad}=\dot Q_{rad}/\partial_z\bar\theta$')
-ax.fill_betweenx(zkm[m212], q25_R*100, q75_R*100, color='tab:red', alpha=.15)
-ax.axvline(0, color='k', lw=.5)
-ax.axhspan(8, 12, color='grey', alpha=.08)  # bande 8-12km surlignee
-ax.set_xlabel('vitesse verticale effective (cm/s)')
-ax.set_ylabel('z (km)')
-ax.legend(fontsize=9)
-ax.set_title('Profils composites (mediane + IQR)')
-
-# --- panneau droit : ecart relatif, pour reperer ou le WTG casse ---
-ax = axes[1]
-ecart = med_M - med_R
-ax.plot(ecart*100, zkm[m212], 'o-', ms=3, color='k')
+fig, ax = plt.subplots(figsize=(7, 8))
+for (label, champ), color in zip(termes.items(), ['k', 'tab:orange', 'tab:blue', 'tab:green']):
+    med, q25, q75 = profil_composite(champ*3600, m212)   # m/s/h
+    ax.plot(med, zkm[m212], 'o-', ms=3, color=color, label=label)
+    ax.fill_betweenx(zkm[m212], q25, q75, color=color, alpha=.12)
 ax.axvline(0, color='k', lw=.5)
 ax.axhspan(8, 12, color='grey', alpha=.08)
-ax.set_xlabel(r'$M/\rho_0 - w_{sec,rad}$ (cm/s)')
-ax.set_title('Ecart bulk-plume vs radiatif\n(= trace attendue du detrainement)')
-
-plt.suptitle('Test du quasi-equilibre WTG : M/rho0 vs w_sec,rad, niveau par niveau', fontweight='bold')
+ax.set_xlabel('tendance (m/s/h)')
+ax.set_ylabel('z (km)')
+ax.legend(fontsize=9, loc='best')
+ax.set_title('Decomposition du terme bulk-plume — profils composites (2-12km)')
 plt.tight_layout()
 plt.show()
 
 # ============================================================
-#  Complement : correlation instantanee (z,t) entre les deux vitesses,
-#  niveau par niveau — si le WTG tient, la correlation doit rester
-#  proche de 1 partout, et chuter specifiquement en 8-12km si le
-#  detrainement y introduit un vrai decouplage local (cas Meso-NH attendu)
+#  Version pcolormesh (z,t) pour les 4 termes, comme tes autres figures
 # ============================================================
-corr_wtg = np.full(n_z, np.nan)
-for iz in range(n_z):
-    if not m212[iz]: continue
-    a, b = w_M_zt[iz, :], w_sec_rad_zt[iz, :]
-    ok = np.isfinite(a) & np.isfinite(b)
-    if ok.sum() < 20 or np.std(a[ok]) < 1e-15 or np.std(b[ok]) < 1e-15: continue
-    corr_wtg[iz] = np.corrcoef(a[ok], b[ok])[0, 1]
-
-fig, ax = plt.subplots(figsize=(5, 7))
-ax.plot(corr_wtg[m212], zkm[m212], 'o-', ms=3)
-ax.axvline(0, color='k', lw=.5)
-ax.axhspan(8, 12, color='grey', alpha=.08)
-ax.set_xlabel(r'corr($M/\rho_0$, $w_{sec,rad}$)')
-ax.set_ylabel('z (km)')
-ax.set_title('Coherence temporelle WTG, niveau par niveau')
+fig, axes = plt.subplots(1, 4, figsize=(20, 5), sharey=True)
+v = max(np.nanpercentile(np.abs(dudt_pred_s[m212]), 95),
+        np.nanpercentile(np.abs(terme_dMdz_s[m212]), 95),
+        np.nanpercentile(np.abs(terme_dubar_s[m212]), 95),
+        np.nanpercentile(np.abs(terme_duc_s[m212]), 95)) * 3600 + 1e-12
+for ax, (label, champ) in zip(axes, termes.items()):
+    im = ax.pcolormesh(tt+t_stat, zkm[m212], champ[m212]*3600, cmap='RdBu_r',
+                        norm=TwoSlopeNorm(0, -v, v), shading='auto')
+    ax.set_xlabel('t'); ax.set_title(label, fontsize=10)
+    fig.colorbar(im, ax=ax, pad=.02)
+axes[0].set_ylabel('z (km)')
+plt.suptitle("Decomposition bulk-plume (2-12km)", fontweight='bold')
 plt.tight_layout()
 plt.show()
