@@ -1,122 +1,139 @@
 # ============================================================
-#  T1 / T2 / Reynolds — version Hovmoller (z,t), SANS moyenne temporelle
-#  (meme decomposition qu'a la cellule 23, mais on garde chaque instant)
-#
-#  Etape 1 : rey(z,t), T1(z,t), T2(z,t)  — diagrammes de Hovmoller cote a cote
-#  Etape 2 : tendances  -(1/rho0)*d/dz[...]  appliquees niveau par niveau ET
-#            instant par instant, comparees au dudt reel = d(ubar)/dt
+#  T1 / T2 / Reynolds — Hovmoller (z,t), coherent avec le notebook 3
+#  dudt_reel n'est PAS recalcule : on reutilise exactement celui deja
+#  defini a la cellule 19 de ce fichier :
+#     dudt_reel = smooth_t(np.gradient(ubar_zt, dt_phys, axis=1))
+#  (necessite d'avoir deja execute les cellules 2, 4, 5, 15, 19 de ce notebook)
 # ============================================================
 reg = mh; W0_MIN = 0.001; C = 0.5
-DT_PHYS = 900.0   # ⚠️ A VERIFIER : pas de temps (s) entre sorties 3D Meso-NH large300
 
-n_stat = n_t - t_stat
-rey_zt  = np.full((n_z, n_stat), np.nan)
-T1_zt   = np.full((n_z, n_stat), np.nan)
-T2_zt   = np.full((n_z, n_stat), np.nan)
-ubar_zt = np.full((n_z, n_stat), np.nan)
+rey_zt = np.full((n_z, n_stat), np.nan)
+T1_zt  = np.full((n_z, n_stat), np.nan)
+T2_zt  = np.full((n_z, n_stat), np.nan)
 
-ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+ds_u = xr.open_dataset(path3d('ua'))
+ds_w = xr.open_dataset(path3d('wa'))
+
 for iz in range(n_z):
     for j, it in enumerate(range(t_stat, n_t)):
         u = ds_u['ua'].isel({dim_t: it, dim_z: iz}).values[reg]
         w = ds_w['wa'].isel({dim_t: it, dim_z: iz}).values[reg]
-        ub = u.mean(); wb = w.mean(); N = u.size
-        rey_zt[iz, j]  = rho0[iz] * ((u-ub)*(w-wb)).mean()
-        ubar_zt[iz, j] = ub
+        ub = u.mean()
+        wb = w.mean()
+        N = u.size
 
-        ws = max(W0_MIN, C*w.std())
+        rey_zt[iz, j] = rho0[iz] * ((u - ub) * (w - wb)).mean()
+
+        ws = max(W0_MIN, C * w.std())
         cats = {'up': w > ws, 'dn': w < -ws, 'env': np.abs(w) <= ws}
-        t1_acc = t2_acc = 0.0
+        t1_acc = 0.0
+        t2_acc = 0.0
         for name, msk in cats.items():
-            if not msk.any(): continue
-            sig = msk.sum()/N
-            uu, ww = u[msk], w[msk]; uc, wc = uu.mean(), ww.mean()
-            t1_acc += sig*(uc-ub)*(wc-wb)                     # transport organise
-            t2_acc += sig*((uu-uc)*(ww-wc)).mean()            # covariance sous-maille
-        T1_zt[iz, j] = rho0[iz]*t1_acc
-        T2_zt[iz, j] = rho0[iz]*t2_acc
-        del u, w
-    if iz % 10 == 0: print(f'  iz={iz}/{n_z-1}')
-    gc.collect()
-ds_u.close(); ds_w.close(); del ds_u, ds_w; gc.collect()
+            if not msk.any():
+                continue
+            sig = msk.sum() / N
+            uu, ww = u[msk], w[msk]
+            uc, wc = uu.mean(), ww.mean()
+            t1_acc += sig * (uc - ub) * (wc - wb)
+            t2_acc += sig * ((uu - uc) * (ww - wc)).mean()
+        T1_zt[iz, j] = rho0[iz] * t1_acc
+        T2_zt[iz, j] = rho0[iz] * t2_acc
 
-resid = rey_zt - (T1_zt+T2_zt)
+        del u, w
+    if iz % 10 == 0:
+        print(f'  iz={iz}/{n_z-1}')
+    gc.collect()
+
+ds_u.close()
+ds_w.close()
+del ds_u, ds_w
+gc.collect()
+
+resid = rey_zt - (T1_zt + T2_zt)
 print(f'controle |rey-(T1+T2)| max (z,t) = {np.nanmax(np.abs(resid)):.2e} (doit etre ~0)')
+
+# --- lissage temporel, meme convention que le reste du notebook ---
+rey_zt_s = smooth_t(rey_zt)
+T1_zt_s  = smooth_t(T1_zt)
+T2_zt_s  = smooth_t(T2_zt)
 
 # ============================================================
 #  ETAPE 1 — Hovmoller des flux bruts : Reynolds, T1, T2
 # ============================================================
-s = slice(np.searchsorted(alt, 2000), np.searchsorted(alt, 18000))
-zf = alt[s]; tt = np.arange(n_stat)
-v1 = np.nanpercentile(np.abs(rey_zt[s]), 95) * 1e3 + 1e-12
+v1 = np.nanpercentile(np.abs(rey_zt_s[m212]), 95) * 1e3 + 1e-12
 
 fig, axes = plt.subplots(1, 3, figsize=(16, 5), sharey=True)
 for ax, (fld, lab) in zip(axes, [
-        (rey_zt, r'$\Phi_{rey}=\rho_0\overline{u\'w\'}$'),
-        (T1_zt,  r'$T1$ : transport organise'),
-        (T2_zt,  r'$T2$ : covariance sous-maille')]):
-    im = ax.pcolormesh(tt, zf, fld[s]*1e3, cmap='RdBu_r',
+        (rey_zt_s, r'$\Phi_{rey}=\rho_0\overline{u\'w\'}$'),
+        (T1_zt_s,  r'$T1$ : transport organise'),
+        (T2_zt_s,  r'$T2$ : covariance sous-maille')]):
+    im = ax.pcolormesh(tt + t_stat, zkm[m212], fld[m212] * 1e3, cmap='RdBu_r',
                         norm=TwoSlopeNorm(0, -v1, v1), shading='auto')
-    ax.set_xlabel('t'); ax.set_title(lab, fontsize=10)
+    ax.set_xlabel('t')
+    ax.set_title(lab, fontsize=10)
     fig.colorbar(im, ax=ax, pad=.02, label=r'flux ($\times10^{-3}$)')
-axes[0].set_ylabel('Altitude (m)')
-plt.suptitle('Hovmoller — Reynolds, T1 (organise), T2 (sous-maille)', fontweight='bold')
-plt.tight_layout(); plt.show()
+axes[0].set_ylabel('z (km)')
+plt.suptitle('Hovmoller (lisse) — Reynolds, T1 (organise), T2 (sous-maille)', fontweight='bold')
+plt.tight_layout()
+plt.show()
 
 # ============================================================
-#  ETAPE 2 — tendances -(1/rho0)*d/dz appliquees niveau par niveau ET
-#  instant par instant, comparees a dudt reel = d(ubar)/dt
+#  ETAPE 2 — tendances -(1/rho0)*d/dz, lissees, comparees a dudt_reel
+#  (dudt_reel n'est PAS touche : c'est exactement celui de la cellule 19)
 # ============================================================
 def tend_zt(champ_zt):
     return -np.gradient(champ_zt, alt, axis=0) / rho0[:, None]
 
-drey_zt = tend_zt(rey_zt)
-dT1_zt  = tend_zt(T1_zt)
-dT2_zt  = tend_zt(T2_zt)
-dudt_zt = np.gradient(ubar_zt, DT_PHYS, axis=1)
+drey_zt = smooth_t(tend_zt(rey_zt))
+dT1_zt  = smooth_t(tend_zt(T1_zt))
+dT2_zt  = smooth_t(tend_zt(T2_zt))
 
-v2 = max(np.nanpercentile(np.abs(dudt_zt[s]), 95),
-         np.nanpercentile(np.abs(drey_zt[s]), 95)) * 3600 + 1e-12
+v2 = max(np.nanpercentile(np.abs(dudt_reel[m212]), 95),
+         np.nanpercentile(np.abs(drey_zt[m212]), 95)) * 3600 + 1e-12
 
 fig, axes = plt.subplots(1, 4, figsize=(20, 5), sharey=True)
 for ax, (fld, lab) in zip(axes, [
-        (dudt_zt, r"$\partial_t\bar u$ reel"),
-        (drey_zt, r"tend($\Phi_{rey}$) $=-\frac{1}{\rho_0}\partial_z\Phi_{rey}$"),
-        (dT1_zt,  r"tend($T1$)"),
-        (dT2_zt,  r"tend($T2$)")]):
-    im = ax.pcolormesh(tt, zf, fld[s]*3600, cmap='RdBu_r',
+        (dudt_reel, r"$\partial_t\bar u$ reel"),
+        (drey_zt,   r"tend($\Phi_{rey}$) $=-\frac{1}{\rho_0}\partial_z\Phi_{rey}$"),
+        (dT1_zt,    r"tend($T1$)"),
+        (dT2_zt,    r"tend($T2$)")]):
+    im = ax.pcolormesh(tt + t_stat, zkm[m212], fld[m212] * 3600, cmap='RdBu_r',
                         norm=TwoSlopeNorm(0, -v2, v2), shading='auto')
-    ax.set_xlabel('t'); ax.set_title(lab, fontsize=10)
+    ax.set_xlabel('t')
+    ax.set_title(lab, fontsize=10)
     fig.colorbar(im, ax=ax, pad=.02, label='m/s/h')
-axes[0].set_ylabel('Altitude (m)')
-plt.suptitle('Hovmoller des tendances — dudt reel vs Reynolds, T1, T2', fontweight='bold')
-plt.tight_layout(); plt.show()
+axes[0].set_ylabel('z (km)')
+plt.suptitle('Hovmoller des tendances (lisse) — dudt reel (inchange) vs Reynolds, T1, T2', fontweight='bold')
+plt.tight_layout()
+plt.show()
 
 # ============================================================
-#  Correlation brute a dudt reel, niveau par niveau, pour chaque tendance
+#  Correlation brute a dudt_reel, niveau par niveau
 # ============================================================
 def correlation_par_niveau(pred, mask):
     r = np.full(n_z, np.nan)
     for iz in range(n_z):
-        if not mask[iz]: continue
-        a, b = dudt_zt[iz, :], pred[iz, :]
+        if not mask[iz]:
+            continue
+        a, b = dudt_reel[iz, :], pred[iz, :]
         ok = np.isfinite(a) & np.isfinite(b)
-        if ok.sum() < 20 or np.std(a[ok]) < 1e-15 or np.std(b[ok]) < 1e-15: continue
+        if ok.sum() < 20 or np.std(a[ok]) < 1e-15 or np.std(b[ok]) < 1e-15:
+            continue
         r[iz] = np.corrcoef(a[ok], b[ok])[0, 1]
     return r
 
-mask212 = (alt >= 2000) & (alt <= 18000)
-corr_rey = correlation_par_niveau(drey_zt, mask212)
-corr_T1  = correlation_par_niveau(dT1_zt,  mask212)
-corr_T2  = correlation_par_niveau(dT2_zt,  mask212)
+corr_rey = correlation_par_niveau(drey_zt, m212)
+corr_T1  = correlation_par_niveau(dT1_zt,  m212)
+corr_T2  = correlation_par_niveau(dT2_zt,  m212)
 
 fig, ax = plt.subplots(figsize=(6, 8))
-ax.plot(corr_rey[mask212], alt[mask212]/1000, 'o-', ms=3, color='k',        label='tend(Reynolds)')
-ax.plot(corr_T1[mask212],  alt[mask212]/1000, 'o-', ms=3, color='tab:red',  label='tend(T1)')
-ax.plot(corr_T2[mask212],  alt[mask212]/1000, 'o-', ms=3, color='tab:blue', label='tend(T2)')
+ax.plot(corr_rey[m212], zkm[m212], 'o-', ms=3, color='k',        label='tend(Reynolds)')
+ax.plot(corr_T1[m212],  zkm[m212], 'o-', ms=3, color='tab:red',  label='tend(T1)')
+ax.plot(corr_T2[m212],  zkm[m212], 'o-', ms=3, color='tab:blue', label='tend(T2)')
 ax.axvline(0, color='grey', lw=.5)
 ax.set_xlabel(r'corr($\partial_t\bar u$ reel, tendance)')
 ax.set_ylabel('z (km)')
 ax.legend(fontsize=9)
 ax.set_title('Correlation a dudt reel — Reynolds vs T1 vs T2')
-plt.tight_layout(); plt.show()
+plt.tight_layout()
+plt.show()
