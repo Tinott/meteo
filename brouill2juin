@@ -1,127 +1,111 @@
- ============================================================
-#  Decomposition du produit dans (1/rho0)*d/dz[M(ubar-uc)]
-#  = (1/rho0)*(ubar-uc)*dM/dz  +  (M/rho0)*d(ubar)/dz  -  (M/rho0)*d(uc)/dz
-#  Affichage des 3 termes separes + le terme global, en profils composites
-#  A executer tel quel dans chaque notebook (Meso-NH, UCLA, SCALE...)
 # ============================================================
-
-# --- derivees verticales necessaires ---
-dM_dz_zt   = np.gradient(M_zt_lisse, alt, axis=0)
-dubar_dz_zt = np.gradient(ubar_zt, alt, axis=0)
-duc_dz_zt  = np.gradient(uc_zt_lisse, alt, axis=0)   # deja calcule plus haut dans tes notebooks (duc_dz_zt), garde si deja present
-
-# --- les 3 termes de la decomposition, chacun (n_z, n_stat) ---
-terme_dMdz = (1/rho0[:, None]) * (ubar_zt - uc_zt_lisse) * dM_dz_zt   # (1/rho0)*(ubar-uc)*dM/dz
-terme_dubar = (M_zt_lisse/rho0[:, None]) * dubar_dz_zt                # (M/rho0)*d(ubar)/dz
-terme_duc   = (M_zt_lisse/rho0[:, None]) * duc_dz_zt                  # (M/rho0)*d(uc)/dz
-
-# --- terme global (deja calcule normalement = dudt_pred, avant lissage temporel) ---
-dudt_pred_check = terme_dMdz + terme_dubar - terme_duc   # doit etre ~= dudt_pred calcule via np.gradient direct
-
-# sanity check : les deux methodes de calcul du terme global doivent coincider
-ecart_max = np.nanmax(np.abs(dudt_pred_check[m212] - dudt_pred[m212]))
-print(f"ecart max entre calcul direct et decomposition (doit etre ~0) : {ecart_max:.3e}")
-
-# --- lissage temporel de chaque terme, comme pour dudt_pred_s ---
-terme_dMdz_s  = smooth_t(terme_dMdz)
-terme_dubar_s = smooth_t(terme_dubar)
-terme_duc_s   = smooth_t(terme_duc)
-
+#  T1 (transport organise, moyennes conditionnelles) + T2 (covariance
+#  sous-maille interne) — MEME MATHEMATIQUE que la cellule 23 du fichier 3 :
+#     Phi_rey = SUM_cat sigma_cat*(u_cat-ubar)(w_cat-wbar)      [T1]
+#             + SUM_cat sigma_cat*<(u-u_cat)(w-w_cat)>_cat       [T2]
+#  Seule la definition des categories change : on reprend le masque
+#  nuage exact du fichier 12 (SEUIL_W, SEUIL_COND) au lieu du seuil sur w,
+#  pour rester coherent avec M et u_c deja calcules (cellule 19).
+#  dudt_reel n'est pas touche (cellule 19).
 # ============================================================
-#  Profils composites (median + IQR) des 4 quantites, cote a cote
-# ============================================================
-def profil_composite(champ_zt, mask):
-    med = np.nanmedian(champ_zt[mask], axis=1)
-    q25 = np.nanpercentile(champ_zt[mask], 25, axis=1)
-    q75 = np.nanpercentile(champ_zt[mask], 75, axis=1)
-    return med, q25, q75
+SEUIL_W = 1e-5; SEUIL_COND = 1e-5
 
-termes = {
-    r'Global $\frac{1}{\rho_0}\partial_z[M(\bar u-u_c)]$'      : dudt_pred_s,
-    r'$\frac{1}{\rho_0}(\bar u-u_c)\,\partial_z M$'              : terme_dMdz_s,
-    r'$\frac{M}{\rho_0}\partial_z\bar u$'                        : terme_dubar_s,
-    r'$-\frac{M}{\rho_0}\partial_z u_c$'                         : -terme_duc_s,
-}
+rey_zt = np.full((n_z, n_stat), np.nan)
+T1_zt  = np.full((n_z, n_stat), np.nan)
+T2_zt  = np.full((n_z, n_stat), np.nan)
 
-fig, ax = plt.subplots(figsize=(7, 8))
-for (label, champ), color in zip(termes.items(), ['k', 'tab:orange', 'tab:blue', 'tab:green']):
-    med, q25, q75 = profil_composite(champ*3600, m212)   # m/s/h
-    ax.plot(med, zkm[m212], 'o-', ms=3, color=color, label=label)
-    ax.fill_betweenx(zkm[m212], q25, q75, color=color, alpha=.12)
-ax.axvline(0, color='k', lw=.5)
-ax.axhspan(8, 12, color='grey', alpha=.08)
-ax.set_xlabel('tendance (m/s/h)')
-ax.set_ylabel('z (km)')
-ax.legend(fontsize=9, loc='best')
-ax.set_title('Decomposition du terme bulk-plume — profils composites (2-12km)')
-plt.tight_layout()
-plt.show()
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+ds_clw = xr.open_dataset(path3d('clw')); ds_cli = xr.open_dataset(path3d('cli'))
+for iz in range(n_z):
+    u = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
+    w = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
+    clw = ds_clw['clw'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
+    cli = ds_cli['cli'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
+    cloud = (w > SEUIL_W) & ((clw + cli) > SEUIL_COND)
+
+    for it in range(n_stat):
+        uu, ww = u[it, :], w[it, :]
+        ub, wb = uu.mean(), ww.mean()
+        N = uu.size
+
+        rey_zt[iz, it] = rho0[iz] * ((uu - ub) * (ww - wb)).mean()
+
+        cats = {'cloud': cloud[it, :], 'env': ~cloud[it, :]}
+        t1_acc = 0.0; t2_acc = 0.0
+        for name, msk in cats.items():
+            if not msk.any(): continue
+            sig = msk.sum() / N
+            uc, wc = uu[msk].mean(), ww[msk].mean()
+            t1_acc += sig * (uc - ub) * (wc - wb)
+            t2_acc += sig * ((uu[msk] - uc) * (ww[msk] - wc)).mean()
+        T1_zt[iz, it] = rho0[iz] * t1_acc
+        T2_zt[iz, it] = rho0[iz] * t2_acc
+
+    del u, w, clw, cli, cloud
+    if iz % 10 == 0: print(f'  iz={iz}/{n_z-1}')
+    gc.collect()
+ds_u.close(); ds_w.close(); ds_clw.close(); ds_cli.close(); gc.collect()
+
+resid = rey_zt - (T1_zt + T2_zt)
+print(f'controle |rey-(T1+T2)| max (z,t) = {np.nanmax(np.abs(resid)):.2e} (doit etre ~0, identite exacte)')
+
+# --- lissage temporel, meme convention que le reste du fichier ---
+rey_zt_s = smooth_t(rey_zt)
+T1_zt_s  = smooth_t(T1_zt)
+T2_zt_s  = smooth_t(T2_zt)
 
 # ============================================================
-#  Version pcolormesh (z,t) pour les 4 termes, comme tes autres figures
+#  ETAPE 1 — Hovmoller : Reynolds, T1 (organise), T2 (covariance sous-maille)
 # ============================================================
-fig, axes = plt.subplots(1, 4, figsize=(20, 5), sharey=True)
-v = max(np.nanpercentile(np.abs(dudt_pred_s[m212]), 95),
-        np.nanpercentile(np.abs(terme_dMdz_s[m212]), 95),
-        np.nanpercentile(np.abs(terme_dubar_s[m212]), 95),
-        np.nanpercentile(np.abs(terme_duc_s[m212]), 95)) * 3600 + 1e-12
-for ax, (label, champ) in zip(axes, termes.items()):
-    im = ax.pcolormesh(tt+t_stat, zkm[m212], champ[m212]*3600, cmap='RdBu_r',
-                        norm=TwoSlopeNorm(0, -v, v), shading='auto')
-    ax.set_xlabel('t'); ax.set_title(label, fontsize=10)
-    fig.colorbar(im, ax=ax, pad=.02)
-axes[0].set_ylabel('z (km)')
-plt.suptitle("Decomposition bulk-plume (2-12km)", fontweight='bold')
-plt.tight_layout()
-plt.show()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# ============================================================
-#  Comparaison a dudt_reel : uniquement la somme de
-#     (1/rho0)*(ubar-uc)*dM/dz   +   (M/rho0)*d(ubar)/dz
-#  c'est-a-dire le terme global SANS le morceau -(M/rho0)*d(uc)/dz
-#  (test : est-ce que ce terme uc est vraiment necessaire ?)
-#  A executer apres le bloc de decomposition precedent (termes deja calcules)
-# ============================================================
-
-somme_partielle_s = terme_dMdz_s + terme_dubar_s   # = dudt_pred_s + terme_duc_s
-
-# ============================================================
-#  1) Cartes (z,t) : reel | terme global complet | somme partielle (sans duc)
-# ============================================================
+v1 = np.nanpercentile(np.abs(rey_zt_s[m212]), 95) * 1e3 + 1e-12
 fig, axes = plt.subplots(1, 3, figsize=(16, 5), sharey=True)
-v = max(np.nanpercentile(np.abs(dudt_reel[m212]), 95),
-        np.nanpercentile(np.abs(dudt_pred_s[m212]), 95),
-        np.nanpercentile(np.abs(somme_partielle_s[m212]), 95)) * 3600 + 1e-12
 for ax, (fld, lab) in zip(axes, [
-        (dudt_reel*3600, r"$\partial_t\bar u$ reel (m/s/h)"),
-        (dudt_pred_s*3600, r"Global $\frac{1}{\rho_0}\partial_z[M(\bar u-u_c)]$ (m/s/h)"),
-        (somme_partielle_s*3600, r"Sans $-\frac{M}{\rho_0}\partial_z u_c$ (m/s/h)")]):
-    im = ax.pcolormesh(tt+t_stat, zkm[m212], fld[m212], cmap='RdBu_r',
-                        norm=TwoSlopeNorm(0, -v, v), shading='auto')
+        (rey_zt_s, r''),
+        (T1_zt_s,  r'$T1$ : transport organise (nuage/env)'),
+        (T2_zt_s,  r'$T2$ : covariance sous-maille')]):
+    im = ax.pcolormesh(tt + t_stat, zkm[m212], fld[m212] * 1e3, cmap='RdBu_r',
+                        norm=TwoSlopeNorm(0, -v1, v1), shading='auto')
     ax.set_xlabel('t'); ax.set_title(lab, fontsize=10)
-    fig.colorbar(im, ax=ax, pad=.02)
+    fig.colorbar(im, ax=ax, pad=.02, label=r'flux ($\times10^{-3}$)')
 axes[0].set_ylabel('z (km)')
-plt.suptitle("dudt reel vs terme global vs somme partielle (sans duc/dz)", fontweight='bold')
-plt.tight_layout()
-plt.show()
+plt.suptitle('Hovmoller (lisse) — Reynolds, T1 (organise), T2 (sous-maille), categories = nuage/env', fontweight='bold')
+plt.tight_layout(); plt.show()
 
 # ============================================================
-#  2) Correlation brute a dudt_reel, niveau par niveau, pour les deux versions
+#  ETAPE 2 — tendances -(1/rho0)*d/dz, comparees a dudt_reel (INCHANGE)
+#  ET a dudt_pred_s (bulk-plume Romps, deja calcule cellule 19)
+# ============================================================
+def tend_zt(champ_zt):
+    return -np.gradient(champ_zt, alt, axis=0) / rho0[:, None]
+
+drey_zt = smooth_t(tend_zt(rey_zt))
+dT1_zt  = smooth_t(tend_zt(T1_zt))
+dT2_zt  = smooth_t(tend_zt(T2_zt))
+somme = dT1_zt + dT2_zt
+
+
+v2 = max(np.nanpercentile(np.abs(dudt_reel[m212]), 95),
+         np.nanpercentile(np.abs(drey_zt[m212]), 95),
+         np.nanpercentile(np.abs(dudt_pred_s[m212]), 95)) * 3600 + 1e-12
+
+fig, axes = plt.subplots(1, 6, figsize=(24, 5), sharey=True)
+for ax, (fld, lab) in zip(axes, [
+        (dudt_reel,    r""),
+        (dudt_pred_s,  r"bulk-plume Romps "),
+        (drey_zt,      r"tend($\Phi_{rey}$)"),
+        (somme,      r"somme"),
+        (dT1_zt,       r"tend($T1$)"),
+        (dT2_zt,       r"tend($T2$)")]):
+    im = ax.pcolormesh(tt + t_stat, zkm[m212], fld[m212] * 3600, cmap='RdBu_r',
+                        norm=TwoSlopeNorm(0, -v2, v2), shading='auto')
+    ax.set_xlabel('t'); ax.set_title(lab, fontsize=10)
+    fig.colorbar(im, ax=ax, pad=.02, label='m/s/h')
+axes[0].set_ylabel('z (km)')
+plt.suptitle('dudt reel vs bulk-plume Romps vs decomposition T1+T2 (2-12km)', fontweight='bold')
+plt.tight_layout(); plt.show()
+
+# ============================================================
+#  Correlation brute a dudt_reel, niveau par niveau — 4 candidats
 # ============================================================
 def correlation_par_niveau(pred, mask):
     r = np.full(n_z, np.nan)
@@ -133,59 +117,21 @@ def correlation_par_niveau(pred, mask):
         r[iz] = np.corrcoef(a[ok], b[ok])[0, 1]
     return r
 
-corr_global = correlation_par_niveau(dudt_pred_s, m212)
-corr_partiel = correlation_par_niveau(somme_partielle_s, m212)
+corr_bulk = correlation_par_niveau(dudt_pred_s, m212)
+corr_rey  = correlation_par_niveau(drey_zt, m212)
+corr_T1   = correlation_par_niveau(dT1_zt, m212)
+corr_T2   = correlation_par_niveau(dT2_zt, m212)
+corr_somme = correlation_par_niveau(somme, m212)
 
-fig, ax = plt.subplots(figsize=(6, 7))
-ax.plot(corr_global[m212], zkm[m212], 'o-', ms=3, color='k', label='global (complet)')
-ax.plot(corr_partiel[m212], zkm[m212], 'o-', ms=3, color='tab:red', label=r'sans $-\frac{M}{\rho_0}\partial_z u_c$')
-ax.axvline(0, color='k', lw=.5)
-ax.axhspan(8, 12, color='grey', alpha=.08)
-ax.set_xlabel(r'corr($\partial_t\bar u$ reel, prediction)')
+fig, ax = plt.subplots(figsize=(6, 8))
+ax.plot(corr_bulk[m212], zkm[m212], 'o-', ms=3, color='tab:purple', label='bulk-plume Romps')
+ax.plot(corr_rey[m212],  zkm[m212], 'o-', ms=3, color='k',          label='tend(Reynolds) = T1+T2')
+ax.plot(corr_T1[m212],   zkm[m212], 'o-', ms=3, color='tab:blue',   label='tend(T1) seul')
+ax.plot(corr_T2[m212],   zkm[m212], 'o-', ms=3, color='tab:orange', label='tend(T2) seul')
+ax.plot(corr_somme[m212],   zkm[m212], 'o-', ms=3, color='tab:orange', label='somme')
+ax.axvline(0, color='grey', lw=.5)
+ax.set_xlabel(r'corr($\partial_t\bar u$ reel, terme)')
 ax.set_ylabel('z (km)')
 ax.legend(fontsize=9)
-ax.set_title('Correlation brute a dudt reel — avec vs sans le terme duc/dz')
-plt.tight_layout()
-plt.show()
-
-# ============================================================
-#  3) R2 recalibre (pente+biais), pour comparer proprement l'apport du terme duc/dz
-# ============================================================
-def r2_recalibre(pred, mask):
-    pente = np.full(n_z, np.nan); biais = np.full(n_z, np.nan)
-    for iz in range(n_z):
-        if not mask[iz]: continue
-        a, b = dudt_reel[iz, :], pred[iz, :]
-        ok = np.isfinite(a) & np.isfinite(b)
-        if ok.sum() < 20 or np.std(b[ok]) < 1e-15: continue
-        A = np.vstack([b[ok], np.ones(ok.sum())]).T
-        coefs, *_ = np.linalg.lstsq(A, a[ok], rcond=None)
-        pente[iz], biais[iz] = coefs
-    pred_cal = pente[:, None]*pred + biais[:, None]
-    r2 = np.full(n_z, np.nan)
-    for iz in range(n_z):
-        if not mask[iz]: continue
-        a, b = dudt_reel[iz, :], pred_cal[iz, :]
-        ok = np.isfinite(a) & np.isfinite(b)
-        if ok.sum() < 20 or np.std(a[ok]) < 1e-15: continue
-        ss_res = np.sum((a[ok]-b[ok])**2); ss_tot = np.sum((a[ok]-a[ok].mean())**2)
-        r2[iz] = 1-ss_res/ss_tot if ss_tot > 0 else np.nan
-    return r2
-
-R2_global = r2_recalibre(dudt_pred_s, m212)
-R2_partiel = r2_recalibre(somme_partielle_s, m212)
-
-fig, ax = plt.subplots(figsize=(6, 7))
-ax.plot(R2_global[m212], zkm[m212], 'o-', ms=3, color='k', label='global (complet)')
-ax.plot(R2_partiel[m212], zkm[m212], 'o-', ms=3, color='tab:red', label=r'sans $-\frac{M}{\rho_0}\partial_z u_c$')
-ax.axvline(0, color='k', lw=.5)
-ax.axhspan(8, 12, color='grey', alpha=.08)
-ax.set_xlabel('R2 (recalibre pente+biais)')
-ax.set_ylabel('z (km)')
-ax.legend(fontsize=9)
-ax.set_title('R2 recalibre — avec vs sans le terme duc/dz')
-plt.tight_layout()
-plt.show()
-
-print(f"R2 median 2-8km  | global: {np.nanmedian(R2_global[m28]):.2f} | sans duc/dz: {np.nanmedian(R2_partiel[m28]):.2f}")
-print(f"R2 median 8-12km | global: {np.nanmedian(R2_global[m812]):.2f} | sans duc/dz: {np.nanmedian(R2_partiel[m812]):.2f}")
+ax.set_title('Correlation a dudt reel — bulk-plume vs T1 vs T2 vs T1+T2')
+plt.tight_layout(); plt.show()
