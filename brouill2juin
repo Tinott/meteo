@@ -1,87 +1,30 @@
 # ============================================================
-#  T1 (transport organise) et T2 (covariance sous-maille)
-#  decomposes en up / down / env, sur les regions humide et seche
-#  — equation (25) du rapport, applique region par region
+#  12 diagrammes de Hovmoller : T1 et T2, x {humide, sec}, x {up, down, env}
 # ============================================================
-SEUIL_W_UD = 0.5   # m/s : seuil up (w>0.5) / down (w<-0.5) / env (entre les deux)
+fig, axes = plt.subplots(4, 3, figsize=(15, 16), sharex=True, sharey=True)
 
-regions = {'humide': mh_flat, 'sec': ms_flat}
-cats_names = ['up', 'down', 'env']
+rows = [
+    ('T1', 'humide', T1_cat['humide']),
+    ('T1', 'sec',    T1_cat['sec']),
+    ('T2', 'humide', T2_cat['humide']),
+    ('T2', 'sec',    T2_cat['sec']),
+]
 
-T1_cat = {r: {c: np.full((n_z, n_stat), np.nan) for c in cats_names} for r in regions}
-T2_cat = {r: {c: np.full((n_z, n_stat), np.nan) for c in cats_names} for r in regions}
+for i, (label, rname, cat_dict) in enumerate(rows):
+    # echelle commune a la ligne (memes 3 panneaux), en 1e-3 pour lisibilite
+    vmax = max(np.nanpercentile(np.abs(cat_dict[c][mask_show])*1e3, 98) for c in cats_names) + 1e-12
+    for j, cname in enumerate(cats_names):
+        ax = axes[i, j]
+        fld = cat_dict[cname][mask_show] * 1e3   # x1e-3 kg m^-1 s^-2
+        im = ax.pcolormesh(tt+t_stat, zkm[mask_show], fld, cmap='RdBu_r',
+                            norm=TwoSlopeNorm(0, -vmax, vmax), shading='auto')
+        ax.set_title(f"{label} — {rname} — {cname}", fontsize=10)
+        if i == 3:
+            ax.set_xlabel('t')
+        if j == 0:
+            ax.set_ylabel('z (km)')
+        fig.colorbar(im, ax=ax, pad=.02, label='x$10^{-3}$ kg m$^{-1}$ s$^{-2}$')
 
-ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
-for iz in range(n_z):
-    u_full = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
-    w_full = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
-
-    for rname, rmask in regions.items():
-        u = u_full[:, rmask]
-        w = w_full[:, rmask]
-        N = u.shape[1]
-
-        for it in range(n_stat):
-            uu, ww = u[it, :], w[it, :]
-            ub, wb = uu.mean(), ww.mean()
-
-            mask_up  = ww >  SEUIL_W_UD
-            mask_dn  = ww < -SEUIL_W_UD
-            mask_env = ~mask_up & ~mask_dn
-            cats = {'up': mask_up, 'down': mask_dn, 'env': mask_env}
-
-            for cname, cmask in cats.items():
-                if not cmask.any():
-                    continue
-                sig = cmask.sum() / N
-                uc, wc = uu[cmask].mean(), ww[cmask].mean()
-                T1_cat[rname][cname][iz, it] = rho0[iz] * sig * (uc - ub) * (wc - wb)
-                T2_cat[rname][cname][iz, it] = rho0[iz] * sig * ((uu[cmask]-uc)*(ww[cmask]-wc)).mean()
-
-    del u_full, w_full; gc.collect()
-ds_u.close(); ds_w.close(); gc.collect()
-print("T1_cat / T2_cat (humide, sec) x (up, down, env) : ok")
-
-# ============================================================
-#  Totaux T1 et T2 par region (somme sur up+down+env)
-# ============================================================
-T1_region = {r: sum(T1_cat[r][c] for c in cats_names) for r in regions}
-T2_region = {r: sum(T2_cat[r][c] for c in cats_names) for r in regions}
-
-# ============================================================
-#  Verification : T1_region + T2_region doit reconstruire le flux
-#  de Reynolds reel restreint a la region (moyenne sur la region
-#  uniquement, pas sur tout le domaine)
-# ============================================================
-rey_region = {}
-ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
-for rname, rmask in regions.items():
-    rey_zt_r = np.full((n_z, n_stat), np.nan)
-    for iz in range(n_z):
-        u = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)[:, rmask]
-        w = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)[:, rmask]
-        ub = u.mean(axis=1); wb = w.mean(axis=1)
-        rey_zt_r[iz] = rho0[iz] * ((u-ub[:,None])*(w-wb[:,None])).mean(axis=1)
-    rey_region[rname] = rey_zt_r
-ds_u.close(); ds_w.close(); gc.collect()
-
-for rname in regions:
-    ecart = np.nanmax(np.abs((T1_region[rname]+T2_region[rname]) - rey_region[rname]))
-    print(f"{rname}: ecart max T1+T2 vs flux reel = {ecart:.3e}")
-
-# ============================================================
-#  Profils composites (mediane sur t) : total + up/down/env, humide et sec
-# ============================================================
-fig, axes = plt.subplots(1, 2, figsize=(11, 7), sharey=True)
-for ax, rname in zip(axes, regions):
-    ax.plot(np.nanmedian(T1_region[rname]+T2_region[rname], axis=1)[mask_show], zkm[mask_show],
-             'k-', lw=2, label='Total (T1+T2)')
-    for cname, style in zip(cats_names, ['b--','r--','g--']):
-        tot_cat = T1_cat[rname][cname] + T2_cat[rname][cname]
-        ax.plot(np.nanmedian(tot_cat, axis=1)[mask_show], zkm[mask_show], style, label=f'{cname}')
-    ax.axvline(0, color='k', lw=.5)
-    ax.set_title(f"Region {rname}"); ax.set_xlabel("Flux (kg m$^{-1}$ s$^{-2}$)")
-    ax.legend(fontsize=8)
-axes[0].set_ylabel('z (km)')
-plt.suptitle("T1+T2 decompose up/down/env, humide vs sec", fontweight='bold')
-plt.tight_layout(); plt.show()
+plt.suptitle("Hovmoller T1/T2 — humide/sec — up/down/env", fontweight='bold', y=1.01)
+plt.tight_layout()
+plt.show()
