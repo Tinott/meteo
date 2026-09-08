@@ -1,21 +1,31 @@
 # ============================================================
-#  12 diagrammes de Hovmoller : T1 et T2, x {humide, sec}, x {up, down, env}
+#  Tendance associee a chaque terme : -(1/rho0) * d/dz(terme)
+#  applique aux 12 champs T1_cat / T2_cat (humide/sec x up/down/env)
+# ============================================================
+tend_T1_cat = {r: {c: -(1/rho0[:,None]) * np.gradient(T1_cat[r][c], alt, axis=0) for c in cats_names} for r in regions}
+tend_T2_cat = {r: {c: -(1/rho0[:,None]) * np.gradient(T2_cat[r][c], alt, axis=0) for c in cats_names} for r in regions}
+
+# lissage temporel, comme le reste des tendances du rapport (terme_flux, dudt_tot...)
+tend_T1_cat = {r: {c: smooth_t(tend_T1_cat[r][c]) for c in cats_names} for r in regions}
+tend_T2_cat = {r: {c: smooth_t(tend_T2_cat[r][c]) for c in cats_names} for r in regions}
+
+# ============================================================
+#  12 diagrammes de Hovmoller : TENDANCE (T1 et T2), humide/sec x up/down/env
 # ============================================================
 fig, axes = plt.subplots(4, 3, figsize=(15, 16), sharex=True, sharey=True)
 
 rows = [
-    ('T1', 'humide', T1_cat['humide']),
-    ('T1', 'sec',    T1_cat['sec']),
-    ('T2', 'humide', T2_cat['humide']),
-    ('T2', 'sec',    T2_cat['sec']),
+    ('tend(T1)', 'humide', tend_T1_cat['humide']),
+    ('tend(T1)', 'sec',    tend_T1_cat['sec']),
+    ('tend(T2)', 'humide', tend_T2_cat['humide']),
+    ('tend(T2)', 'sec',    tend_T2_cat['sec']),
 ]
 
 for i, (label, rname, cat_dict) in enumerate(rows):
-    # echelle commune a la ligne (memes 3 panneaux), en 1e-3 pour lisibilite
-    vmax = max(np.nanpercentile(np.abs(cat_dict[c][mask_show])*1e3, 98) for c in cats_names) + 1e-12
+    vmax = max(np.nanpercentile(np.abs(cat_dict[c][mask_show])*3600, 98) for c in cats_names) + 1e-12
     for j, cname in enumerate(cats_names):
         ax = axes[i, j]
-        fld = cat_dict[cname][mask_show] * 1e3   # x1e-3 kg m^-1 s^-2
+        fld = cat_dict[cname][mask_show] * 3600   # m/s -> m/s/h, coherent avec le reste du rapport
         im = ax.pcolormesh(tt+t_stat, zkm[mask_show], fld, cmap='RdBu_r',
                             norm=TwoSlopeNorm(0, -vmax, vmax), shading='auto')
         ax.set_title(f"{label} — {rname} — {cname}", fontsize=10)
@@ -23,8 +33,9 @@ for i, (label, rname, cat_dict) in enumerate(rows):
             ax.set_xlabel('t')
         if j == 0:
             ax.set_ylabel('z (km)')
-        fig.colorbar(im, ax=ax, pad=.02, label='x$10^{-3}$ kg m$^{-1}$ s$^{-2}$')
+        fig.colorbar(im, ax=ax, pad=.02, label='m/s/h')
 
-plt.suptitle("Hovmoller T1/T2 — humide/sec — up/down/env", fontweight='bold', y=1.01)
+plt.suptitle("Hovmoller de la tendance : -(1/rho0)*dz(T1) et -(1/rho0)*dz(T2) — humide/sec — up/down/env",
+             fontweight='bold', y=1.01)
 plt.tight_layout()
 plt.show()
