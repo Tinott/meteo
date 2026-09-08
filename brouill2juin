@@ -1,49 +1,87 @@
 # ============================================================
-#  T1 (transport organise) + T2 (covariance sous-maille) — Hovmoller (z,t)
-#  Structure corrigee : boucle EXTERNE sur le temps par blocs (BLOC),
-#  boucle sur z en memoire ensuite — meme convention que le reste du fichier.
+#  T1 (transport organise) et T2 (covariance sous-maille)
+#  decomposes en up / down / env, sur les regions humide et seche
+#  — equation (25) du rapport, applique region par region
 # ============================================================
-SEUIL_W = 1e-5; SEUIL_COND = 1e-5
+SEUIL_W_UD = 0.5   # m/s : seuil up (w>0.5) / down (w<-0.5) / env (entre les deux)
 
-rey_zt = np.full((n_z, n_stat), np.nan)
-T1_zt  = np.full((n_z, n_stat), np.nan)
-T2_zt  = np.full((n_z, n_stat), np.nan)
+regions = {'humide': mh_flat, 'sec': ms_flat}
+cats_names = ['up', 'down', 'env']
+
+T1_cat = {r: {c: np.full((n_z, n_stat), np.nan) for c in cats_names} for r in regions}
+T2_cat = {r: {c: np.full((n_z, n_stat), np.nan) for c in cats_names} for r in regions}
 
 ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
-ds_clw = xr.open_dataset(path3d('clw')); ds_cli = xr.open_dataset(path3d('cli'))  # 'ice' sur UCLA
+for iz in range(n_z):
+    u_full = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
+    w_full = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
 
-for t0 in range(t_stat, n_t, BLOC):
-    t1 = min(t0+BLOC, n_t); sl = {dim_t: slice(t0, t1)}
-    j0, j1 = t0 - t_stat, t1 - t_stat   # indices dans le tableau de sortie (0-based sur idx_stat)
+    for rname, rmask in regions.items():
+        u = u_full[:, rmask]
+        w = w_full[:, rmask]
+        N = u.shape[1]
 
-    U   = load_ordered(ds_u['ua'].isel(sl),   dim_t, dim_z, dim_y, dim_x)   # (t_bloc, n_z, n_y, n_x)
-    W   = load_ordered(ds_w['wa'].isel(sl),   dim_t, dim_z, dim_y, dim_x)
-    CLW = load_ordered(ds_clw['clw'].isel(sl), dim_t, dim_z, dim_y, dim_x)
-    CLI = load_ordered(ds_cli['cli'].isel(sl), dim_t, dim_z, dim_y, dim_x)
-
-    for j in range(t1 - t0):
-        for iz in range(n_z):
-            uu, ww = U[j, iz].ravel(), W[j, iz].ravel()
-            cloud = (ww > SEUIL_W) & ((CLW[j, iz].ravel() + CLI[j, iz].ravel()) > SEUIL_COND)
+        for it in range(n_stat):
+            uu, ww = u[it, :], w[it, :]
             ub, wb = uu.mean(), ww.mean()
-            N = uu.size
 
-            rey_zt[iz, j0+j] = rho0[iz] * ((uu-ub)*(ww-wb)).mean()
+            mask_up  = ww >  SEUIL_W_UD
+            mask_dn  = ww < -SEUIL_W_UD
+            mask_env = ~mask_up & ~mask_dn
+            cats = {'up': mask_up, 'down': mask_dn, 'env': mask_env}
 
-            t1_acc = t2_acc = 0.0
-            for msk in [cloud, ~cloud]:
-                if not msk.any(): continue
-                sig = msk.sum()/N
-                uc, wc = uu[msk].mean(), ww[msk].mean()
-                t1_acc += sig*(uc-ub)*(wc-wb)
-                t2_acc += sig*((uu[msk]-uc)*(ww[msk]-wc)).mean()
-            T1_zt[iz, j0+j] = rho0[iz]*t1_acc
-            T2_zt[iz, j0+j] = rho0[iz]*t2_acc
+            for cname, cmask in cats.items():
+                if not cmask.any():
+                    continue
+                sig = cmask.sum() / N
+                uc, wc = uu[cmask].mean(), ww[cmask].mean()
+                T1_cat[rname][cname][iz, it] = rho0[iz] * sig * (uc - ub) * (wc - wb)
+                T2_cat[rname][cname][iz, it] = rho0[iz] * sig * ((uu[cmask]-uc)*(ww[cmask]-wc)).mean()
 
-    del U, W, CLW, CLI; gc.collect()
-    print(f'  t0={t0}/{n_t}')
+    del u_full, w_full; gc.collect()
+ds_u.close(); ds_w.close(); gc.collect()
+print("T1_cat / T2_cat (humide, sec) x (up, down, env) : ok")
 
-ds_u.close(); ds_w.close(); ds_clw.close(); ds_cli.close(); gc.collect()
+# ============================================================
+#  Totaux T1 et T2 par region (somme sur up+down+env)
+# ============================================================
+T1_region = {r: sum(T1_cat[r][c] for c in cats_names) for r in regions}
+T2_region = {r: sum(T2_cat[r][c] for c in cats_names) for r in regions}
 
-resid = rey_zt - (T1_zt + T2_zt)
-print(f'controle |rey-(T1+T2)| max = {np.nanmax(np.abs(resid)):.2e} (doit etre ~0)')
+# ============================================================
+#  Verification : T1_region + T2_region doit reconstruire le flux
+#  de Reynolds reel restreint a la region (moyenne sur la region
+#  uniquement, pas sur tout le domaine)
+# ============================================================
+rey_region = {}
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for rname, rmask in regions.items():
+    rey_zt_r = np.full((n_z, n_stat), np.nan)
+    for iz in range(n_z):
+        u = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)[:, rmask]
+        w = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)[:, rmask]
+        ub = u.mean(axis=1); wb = w.mean(axis=1)
+        rey_zt_r[iz] = rho0[iz] * ((u-ub[:,None])*(w-wb[:,None])).mean(axis=1)
+    rey_region[rname] = rey_zt_r
+ds_u.close(); ds_w.close(); gc.collect()
+
+for rname in regions:
+    ecart = np.nanmax(np.abs((T1_region[rname]+T2_region[rname]) - rey_region[rname]))
+    print(f"{rname}: ecart max T1+T2 vs flux reel = {ecart:.3e}")
+
+# ============================================================
+#  Profils composites (mediane sur t) : total + up/down/env, humide et sec
+# ============================================================
+fig, axes = plt.subplots(1, 2, figsize=(11, 7), sharey=True)
+for ax, rname in zip(axes, regions):
+    ax.plot(np.nanmedian(T1_region[rname]+T2_region[rname], axis=1)[mask_show], zkm[mask_show],
+             'k-', lw=2, label='Total (T1+T2)')
+    for cname, style in zip(cats_names, ['b--','r--','g--']):
+        tot_cat = T1_cat[rname][cname] + T2_cat[rname][cname]
+        ax.plot(np.nanmedian(tot_cat, axis=1)[mask_show], zkm[mask_show], style, label=f'{cname}')
+    ax.axvline(0, color='k', lw=.5)
+    ax.set_title(f"Region {rname}"); ax.set_xlabel("Flux (kg m$^{-1}$ s$^{-2}$)")
+    ax.legend(fontsize=8)
+axes[0].set_ylabel('z (km)')
+plt.suptitle("T1+T2 decompose up/down/env, humide vs sec", fontweight='bold')
+plt.tight_layout(); plt.show()
