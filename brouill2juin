@@ -1,40 +1,6 @@
-# ============================================================
-#  12 diagrammes de Hovmoller : TENDANCE (T1 et T2), humide/sec x up/down/env
-#  -- vmax UNIQUE, linéaire, resserré pour un contraste plus marqué
-#     (les valeurs extremes saturent -> colorbar 'extend=both')
-# ============================================================
-rows = [
-    ('tend(T1)', 'humide', tend_T1_cat['humide']),
-    ('tend(T1)', 'sec',    tend_T1_cat['sec']),
-    ('tend(T2)', 'humide', tend_T2_cat['humide']),
-    ('tend(T2)', 'sec',    tend_T2_cat['sec']),
-]
-
-all_vals = np.concatenate([
-    np.abs(cat_dict[c][mask_show]).ravel() * 3600
-    for _, _, cat_dict in rows for c in cats_names
-])
-# percentile plus bas = echelle plus resserree = contraste plus fort (plus de saturation)
-vmax = np.nanpercentile(all_vals, 90) + 1e-12
-
-fig, axes = plt.subplots(4, 3, figsize=(15, 16), sharex=True, sharey=True)
-
-for i, (label, rname, cat_dict) in enumerate(rows):
-    for j, cname in enumerate(cats_names):
-        ax = axes[i, j]
-        fld = cat_dict[cname][mask_show] * 3600
-        im = ax.pcolormesh(tt+t_stat, zkm[mask_show], fld, cmap='RdBu_r',
-                            norm=TwoSlopeNorm(0, -vmax, vmax), shading='auto')
-        ax.set_title(f"{label} — {rname} — {cname}", fontsize=10)
-        if i == 3:
-            ax.set_xlabel('t')
-        if j == 0:
-            ax.set_ylabel('z (km)')
-
-fig.subplots_adjust(right=0.9)
-cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
-fig.colorbar(im, cax=cbar_ax, label='m/s/h', extend='both')
-
-plt.suptitle("Hovmoller de la tendance — echelle commune, contraste accentue (percentile 90)",
-             fontweight='bold', y=1.01)
-plt.show()
+Pour concevoir intuitivement cette séparation d'échelles, on peut faire l'analogie avec un véhicule en mouvement dans lequel se déplacent des passagers :
+\begin{itemize}
+    \item \textbf{Le terme $T_1$ (transport organisé)} correspond au déplacement global du véhicule à la vitesse moyenne de la structure ($u_c, w_c$). C'est le flux de masse macroscopique.
+    \item \textbf{Le terme $T_2$ (covariance sous-maille)} représente le mouvement propre des passagers à l'intérieur du véhicule ($\Delta u, \Delta w$). Il traduit l'agitation turbulente et le mélange interne qui s'ajoutent au déplacement d'ensemble.
+\end{itemize}
+Tandis que les modèles de type \emph{bulk-plume} classiques \cite{Romps:2014jas} négligent le mouvement interne des passagers ($T_2 \approx 0$) pour ne conserver que la trajectoire du véhicule ($T_1$), nos résultats montrent que cette dynamique interne possède une structuration spatio-temporelle propre.
