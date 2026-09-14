@@ -1,6 +1,3 @@
-print("idx_stat =", idx_stat)
-print("start:", idx_stat.start, " stop:", idx_stat.stop, " step:", idx_stat.step)
-
-# equivalent utilisable comme un tableau si besoin ailleurs :
-idx_stat_arr = np.arange(*idx_stat.indices(n_stat))  # ou une longueur totale connue a la place de n_stat
-print("min:", idx_stat_arr.min(), " max:", idx_stat_arr.max(), " longueur:", len(idx_stat_arr))
+idx_stat = slice(0, None, None)
+start: 0  stop: None  step: None
+min: 0  max: 99  longueur: 100
