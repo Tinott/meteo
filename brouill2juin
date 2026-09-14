@@ -1,11 +1,8 @@
-w_all = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz_test}).values.reshape(n_stat, -1)  # SANS masque region
-
-for it in [20, 25, 30, 50, 80]:
-    ww = w_all[it, :]
-    print(f"t={it:3d}  wmax={ww.max():.2f}  wmin={ww.min():.2f}  std={ww.std():.3f}")
-
-
-files = path3d('wa')  # ou la fonction qui liste les fichiers
-print(len(files) if hasattr(files, '__len__') else "verifier ce que path3d retourne")
-print(ds_w[dim_t].values[20:35])   # les vraies valeurs de temps (pas les indices), autour de la coupure
-print(ds_w[dim_t].values[-5:])     # la fin du fichier
+t= 20  wmax=16.54  wmin=-4.17  std=0.240
+t= 25  wmax=14.77  wmin=-3.51  std=0.166
+t= 30  wmax=18.46  wmin=-4.69  std=0.285
+t= 50  wmax=14.69  wmin=-4.24  std=0.224
+t= 80  wmax=15.24  wmin=-3.18  std=0.177
+31
+[20 21 22 23 24 25 26 27 28 29 30 31 32 33 34]
+[95 96 97 98 99]
