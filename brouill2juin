@@ -1,3 +1,6 @@
-# A quel indice temporel debute vraiment l'etat stationnaire utilise pour calculer mh_flat/ms_flat ?
-print("idx_stat va de", idx_stat.min(), "a", idx_stat.max(), "- longueur:", len(idx_stat))
-# cherche la definition du "dernier tiers" utilisee pour calculer le seuil PRW / mh_flat / ms_flat
+print("idx_stat =", idx_stat)
+print("start:", idx_stat.start, " stop:", idx_stat.stop, " step:", idx_stat.step)
+
+# equivalent utilisable comme un tableau si besoin ailleurs :
+idx_stat_arr = np.arange(*idx_stat.indices(n_stat))  # ou une longueur totale connue a la place de n_stat
+print("min:", idx_stat_arr.min(), " max:", idx_stat_arr.max(), " longueur:", len(idx_stat_arr))
