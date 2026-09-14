@@ -222,3 +222,17 @@ print("valides par t (lisse, sec-up):", valid_sm.sum(axis=0))   # si ca chute a 
 # 3) affiche le code de smooth_t
 import inspect
 print(inspect.getsource(smooth_t))
+
+
+# Diagnostic direct, sur les donnees w brutes, sans passer par T1_cat/tend/smooth
+iz_test = 20   # un niveau bien dans la troposphere
+w_test = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz_test}).values.reshape(n_stat, -1)[:, ms_flat]
+
+for it in range(0, n_stat, 5):
+    ww = w_test[it, :]
+    n_up = (ww > 0.5).sum()
+    n_dn = (ww < -0.5).sum()
+    print(f"t={it:3d}  n_up={n_up:5d}  n_dn={n_dn:5d}  wmax={ww.max():.2f}  wmin={ww.min():.2f}")
+
+# Et separement : verifie l'ordre des fichiers/temps charges par idx_stat
+print(ds_w[dim_t].isel({dim_t: idx_stat}).values[:30])   # les 30 premiers "temps" reellement charges
