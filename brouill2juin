@@ -1,3 +1,4 @@
-idx_stat = slice(0, None, None)
-start: 0  stop: None  step: None
-min: 0  max: 99  longueur: 100
+# test rapide : est-ce que le "trou" disparait si on se restreint a la fin de la simulation ?
+for it in range(40, 100, 5):
+    ww = w_test[it, :]  # rappel : w_test = deja calcule sur ms_flat, au niveau iz_test
+    print(f"t={it:3d}  n_up={(ww>0.5).sum():5d}  n_dn={(ww<-0.5).sum():5d}  wmax={ww.max():.2f}")
