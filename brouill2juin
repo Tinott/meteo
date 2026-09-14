@@ -188,3 +188,37 @@ for i, (label, rname, cat_dict) in enumerate(rows):
         ax = axes[i, j]
         fld = cat_dict[cname][mask_show] * 3600
         im = ax.pcolormesh(tt+t_stat, 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# 1) Le trou existe-t-il deja dans les donnees BRUTES (avant smooth_t) ?
+raw = T1_cat['sec']['up']
+valid_raw = ~np.isnan(raw)
+print("valides par t (brut, sec-up):", valid_raw.sum(axis=0))   # doit varier progressivement, pas chuter a 0 et y rester
+
+# 2) Le trou existe-t-il dans les donnees LISSEES ?
+sm = tend_T1_cat['sec']['up']
+valid_sm = ~np.isnan(sm)
+print("valides par t (lisse, sec-up):", valid_sm.sum(axis=0))   # si ca chute a 0 et reste a 0 -> confirme la contamination
+
+# 3) affiche le code de smooth_t
+import inspect
+print(inspect.getsource(smooth_t))
