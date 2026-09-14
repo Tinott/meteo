@@ -1,8 +1,3 @@
-t= 20  wmax=16.54  wmin=-4.17  std=0.240
-t= 25  wmax=14.77  wmin=-3.51  std=0.166
-t= 30  wmax=18.46  wmin=-4.69  std=0.285
-t= 50  wmax=14.69  wmin=-4.24  std=0.224
-t= 80  wmax=15.24  wmin=-3.18  std=0.177
-31
-[20 21 22 23 24 25 26 27 28 29 30 31 32 33 34]
-[95 96 97 98 99]
+# A quel indice temporel debute vraiment l'etat stationnaire utilise pour calculer mh_flat/ms_flat ?
+print("idx_stat va de", idx_stat.min(), "a", idx_stat.max(), "- longueur:", len(idx_stat))
+# cherche la definition du "dernier tiers" utilisee pour calculer le seuil PRW / mh_flat / ms_flat
