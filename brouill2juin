@@ -1,4 +1,41 @@
-# test rapide : est-ce que le "trou" disparait si on se restreint a la fin de la simulation ?
-for it in range(40, 100, 5):
-    ww = w_test[it, :]  # rappel : w_test = deja calcule sur ms_flat, au niveau iz_test
-    print(f"t={it:3d}  n_up={(ww>0.5).sum():5d}  n_dn={(ww<-0.5).sum():5d}  wmax={ww.max():.2f}")
+# ============================================================
+#  tend(flux de Reynolds) — regions humide et seche separement
+#  meme mathematique que rey_zt ci-dessus, mais restreint a mh_flat / ms_flat
+# ============================================================
+regions = {'humide': mh_flat, 'sec': ms_flat}
+
+rey_zt_region = {r: np.full((n_z, n_stat), np.nan) for r in regions}
+
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    u_full = ds_u['ua'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
+    w_full = ds_w['wa'].isel({dim_t: idx_stat, dim_z: iz}).values.reshape(n_stat, -1)
+
+    for rname, rmask in regions.items():
+        u = u_full[:, rmask]
+        w = w_full[:, rmask]
+        ub = u.mean(axis=1); wb = w.mean(axis=1)
+        rey_zt_region[rname][iz, :] = rho0[iz] * ((u - ub[:, None]) * (w - wb[:, None])).mean(axis=1)
+
+    del u_full, w_full
+    if iz % 10 == 0: print(f'  iz={iz}/{n_z-1}')
+    gc.collect()
+ds_u.close(); ds_w.close(); gc.collect()
+
+# --- tendance -(1/rho0)*d/dz, puis lissage temporel (meme convention que le reste) ---
+tend_rey_region = {r: smooth_t(tend_zt(rey_zt_region[r])) for r in regions}
+
+# ============================================================
+#  Hovmoller — tend(Reynolds), humide vs sec, echelle commune
+# ============================================================
+vmax = max(np.nanpercentile(np.abs(tend_rey_region[r][m212]), 95) for r in regions) * 3600 + 1e-12
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 6), sharey=True)
+for ax, rname in zip(axes, ['humide', 'sec']):
+    im = ax.pcolormesh(tt + t_stat, zkm[m212], tend_rey_region[rname][m212] * 3600,
+                        cmap='RdBu_r', norm=TwoSlopeNorm(0, -vmax, vmax), shading='auto')
+    ax.set_xlabel('t'); ax.set_title(f'tend(Reynolds) — {rname}', fontsize=11)
+    fig.colorbar(im, ax=ax, pad=.02, label='m/s/h')
+axes[0].set_ylabel('z (km)')
+plt.suptitle('Tendance du flux de Reynolds — humide vs sec (echelle commune)', fontweight='bold')
+plt.tight_layout(); plt.show()
