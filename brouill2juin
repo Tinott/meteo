@@ -1,5 +1,5 @@
 # ============================================================
-#  Verification finale : fh*dudt_h + fs*dudt_s doit reconstruire dudt_reel
+#  Verification finale : fh*dudt_h + fs*dudt_s doit reconstruire dudt_tot
 #  (identite exacte de l'equation (8), derivee par rapport au temps)
 # ============================================================
 ubar_h_zt = np.full((n_z, n_stat), np.nan)
@@ -12,42 +12,40 @@ for iz in range(n_z):
     ubar_s_zt[iz, :] = u_full[:, ms_flat].mean(axis=1)
 ds_u.close()
 
-fh = mh_flat.sum() / mh_flat.size
-fs = ms_flat.sum() / ms_flat.size
-print(f"fh = {fh:.3f}, fs = {fs:.3f}, fh+fs = {fh+fs:.3f}")
+print(f"f_h = {f_h:.3f}, f_s = {f_s:.3f}, f_h+f_s = {f_h+f_s:.3f}")
 
-# derivee temporelle brute (meme convention que dudt_reel : verifie l'unite/dt utilisee ailleurs)
-dudt_h = np.gradient(ubar_h_zt, axis=1) / dt_heures
-dudt_s = np.gradient(ubar_s_zt, axis=1) / dt_heures
+# derivee temporelle, MEME convention que dudt_tot_raw (cellule 15) : np.gradient(..., dt_phys, axis=1)
+dudt_h_raw = np.gradient(ubar_h_zt, dt_phys, axis=1)
+dudt_s_raw = np.gradient(ubar_s_zt, dt_phys, axis=1)
 
-contrib_h = fh * dudt_h
-contrib_s = fs * dudt_s
-somme_ponderee = contrib_h + contrib_s
+contrib_h_raw = f_h * dudt_h_raw
+contrib_s_raw = f_s * dudt_s_raw
+somme_raw     = contrib_h_raw + contrib_s_raw
 
-# lissage temporel, meme convention que le reste
-contrib_h_s = smooth_t(contrib_h)
-contrib_s_s = smooth_t(contrib_s)
-somme_s     = smooth_t(somme_ponderee)
+# controle numerique AVANT lissage : la somme ponderee doit egaler dudt_tot_raw, au bruit pres
+ecart = np.nanmax(np.abs(somme_raw - dudt_tot_raw))
+print(f"ecart max |f_h*dudt_h + f_s*dudt_s - dudt_tot_raw| = {ecart:.3e}  (doit etre ~0, identite exacte)")
 
-# controle numerique : la somme ponderee doit egaler dudt_reel (avant lissage), au bruit pres
-ecart = np.nanmax(np.abs(somme_ponderee - dudt_reel))
-print(f"ecart max |fh*dudt_h + fs*dudt_s - dudt_reel| = {ecart:.3e}  (doit etre ~0, identite exacte)")
+# lissage temporel, meme convention que le reste (smooth_t deja definie en §0)
+contrib_h_s = smooth_t(contrib_h_raw)
+contrib_s_s = smooth_t(contrib_s_raw)
+somme_s     = smooth_t(somme_raw)
 
 # ============================================================
-#  Hovmoller : dudt_reel, contrib_h (ponderee), contrib_s (ponderee), somme
+#  Hovmoller : dudt_tot (reel), contrib_h (ponderee), contrib_s (ponderee), somme
 # ============================================================
-vmax = np.nanpercentile(np.abs(dudt_reel[m212]), 95) * 3600 + 1e-12
+vmax = np.nanpercentile(np.abs(dudt_tot[mask_show]), 95) * 3600 + 1e-12
 
 fig, axes = plt.subplots(1, 4, figsize=(20, 5), sharey=True)
 for ax, (fld, lab) in zip(axes, [
-        (dudt_reel,   'dudt reel'),
+        (dudt_tot,    'dudt reel'),
         (contrib_h_s, r'$f_h \cdot \partial_t \bar u_h$'),
         (contrib_s_s, r'$f_s \cdot \partial_t \bar u_s$'),
         (somme_s,     'somme (h+s)')]):
-    im = ax.pcolormesh(tt+t_stat, zkm[m212], fld[m212]*3600, cmap='RdBu_r',
+    im = ax.pcolormesh(tt+t_stat, zkm[mask_show], fld[mask_show]*3600, cmap='RdBu_r',
                         norm=TwoSlopeNorm(0, -vmax, vmax), shading='auto')
     ax.set_xlabel('t'); ax.set_title(lab, fontsize=10)
     fig.colorbar(im, ax=ax, pad=.02, label='m/s/h')
 axes[0].set_ylabel('z (km)')
-plt.suptitle('dudt reel vs contribution humide/seche ponderee (fh, fs) — verification eq.(8)', fontweight='bold')
+plt.suptitle('dudt reel vs contribution humide/seche ponderee (f_h, f_s) — verification eq.(8)', fontweight='bold')
 plt.tight_layout(); plt.show()
