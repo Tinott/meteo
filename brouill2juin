@@ -1,3 +1,25 @@
+t_stat=0; idx_stat=slice(t_stat,None); n_stat=n_t-t_stat
+dt_phys=6*3600.0
+tt=np.arange(n_stat)
+
+# ---- NOUVEAU : fenetre stationnaire (dernier tiers), pour les diagnostics humide/sec ----
+t_stat_agg = (2*n_t)//3
+idx_stat_agg = slice(t_stat_agg, None)
+n_stat_agg = n_t - t_stat_agg
+tt_agg = np.arange(n_stat_agg)
+
+ds_prw=xr.open_dataset(path2d('prw')); prw_all=ds_prw['prw'].load(); ds_prw.close()
+# CORRIGE : moyenne sur l'etat stationnaire seul, pas sur toute la simulation
+prw_mean=prw_all.isel({dim_t:idx_stat_agg}).mean(dim=dim_t)
+PRW_SEUIL=float(np.median(prw_all.isel({dim_t:idx_stat_agg}).values.ravel()))
+mh=(prw_mean.values>PRW_SEUIL); ms=~mh; mh_flat=mh.ravel(); ms_flat=ms.ravel()
+f_h=float(mh.mean()); f_s=float(ms.mean())
+del prw_all; gc.collect()
+
+
+
+
+
 regions = {'humide': mh_flat, 'sec': ms_flat}
 rey_zt_region = {r: np.full((n_z, n_stat_agg), np.nan) for r in regions}
 
