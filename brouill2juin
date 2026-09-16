@@ -1,59 +1,86 @@
-# ============================================================
-#  1) T1-down : somme humide+sec
-#  2) T1 total : somme sur toutes categories/regions
-#  3) T2 total et T2-env (somme humide+sec) — cote a cote
-# ============================================================
+regions = {'humide': mh_flat, 'sec': ms_flat}
+rey_zt_region = {r: np.full((n_z, n_stat_agg), np.nan) for r in regions}
 
-# --- 1) T1-down, somme humide+sec ---
-T1_down_total = tend_T1_cat['humide']['down'] + tend_T1_cat['sec']['down']
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    u_full = ds_u['ua'].isel({dim_t: idx_stat_agg, dim_z: iz}).values.reshape(n_stat_agg, -1)
+    w_full = ds_w['wa'].isel({dim_t: idx_stat_agg, dim_z: iz}).values.reshape(n_stat_agg, -1)
+    for rname, rmask in regions.items():
+        u = u_full[:, rmask]; w = w_full[:, rmask]
+        ub = u.mean(axis=1); wb = w.mean(axis=1)
+        rey_zt_region[rname][iz, :] = rho0[iz] * ((u - ub[:, None]) * (w - wb[:, None])).mean(axis=1)
+    del u_full, w_full; gc.collect()
+ds_u.close(); ds_w.close(); gc.collect()
 
-vmax1 = np.nanpercentile(np.abs(T1_down_total[mask_show]) * 3600, 90) + 1e-12
-fig, ax = plt.subplots(figsize=(7, 6))
-im = ax.pcolormesh(tt+t_stat, zkm[mask_show], T1_down_total[mask_show]*3600, cmap='RdBu_r',
-                    norm=TwoSlopeNorm(0, -vmax1, vmax1), shading='auto')
-ax.set_xlabel('t'); ax.set_ylabel('z (km)')
-ax.set_title('tend(T1) — down, somme humide+sec')
-fig.colorbar(im, ax=ax, pad=.02, label='m/s/h', extend='both')
-plt.tight_layout(); plt.show()
+tend_rey_region = {r: smooth_t(tend_zt(rey_zt_region[r])) for r in regions}
 
-
-
-
-
-
-
-# --- 2) T1 total (toutes regions, toutes categories) ---
-T1_total = sum(tend_T1_cat[r][c] for r in tend_T1_cat for c in tend_T1_cat[r])
-
-vmax2 = np.nanpercentile(np.abs(T1_total[mask_show]) * 3600, 90) + 1e-12
-fig, ax = plt.subplots(figsize=(7, 6))
-im = ax.pcolormesh(tt+t_stat, zkm[mask_show], T1_total[mask_show]*3600, cmap='RdBu_r',
-                    norm=TwoSlopeNorm(0, -vmax2, vmax2), shading='auto')
-ax.set_xlabel('t'); ax.set_ylabel('z (km)')
-ax.set_title('tend(T1) total — somme humide/sec x up/down/env')
-fig.colorbar(im, ax=ax, pad=.02, label='m/s/h', extend='both')
-plt.tight_layout(); plt.show()
-
-
-
-
-
-
-
-# --- 3) T2 total et T2-env (somme humide+sec), cote a cote, meme echelle ---
-T2_total     = sum(tend_T2_cat[r][c] for r in tend_T2_cat for c in tend_T2_cat[r])
-T2_env_total = tend_T2_cat['humide']['env'] + tend_T2_cat['sec']['env']
-
-vmax3 = max(np.nanpercentile(np.abs(T2_total[mask_show]) * 3600, 90),
-            np.nanpercentile(np.abs(T2_env_total[mask_show]) * 3600, 90)) + 1e-12
-
-fig, axes = plt.subplots(1, 2, figsize=(13, 6), sharey=True)
-for ax, (fld, lab) in zip(axes, [
-        (T2_total,     'tend(T2) total — somme humide/sec x up/down/env'),
-        (T2_env_total, 'tend(T2) — env, somme humide+sec')]):
-    im = ax.pcolormesh(tt+t_stat, zkm[mask_show], fld[mask_show]*3600, cmap='RdBu_r',
-                        norm=TwoSlopeNorm(0, -vmax3, vmax3), shading='auto')
-    ax.set_xlabel('t'); ax.set_title(lab, fontsize=10)
-    fig.colorbar(im, ax=ax, pad=.02, label='m/s/h', extend='both')
+vmax = max(np.nanpercentile(np.abs(tend_rey_region[r][m212]), 95) for r in regions) * 3600 + 1e-12
+fig, axes = plt.subplots(1, 2, figsize=(12, 6), sharey=True)
+for ax, rname in zip(axes, ['humide', 'sec']):
+    im = ax.pcolormesh(tt_agg + t_stat_agg, zkm[m212], tend_rey_region[rname][m212] * 3600,
+                        cmap='RdBu_r', norm=TwoSlopeNorm(0, -vmax, vmax), shading='auto')
+    ax.set_xlabel('t'); ax.set_title(f'tend(Reynolds) — {rname}', fontsize=11)
+    fig.colorbar(im, ax=ax, pad=.02, label='m/s/h')
 axes[0].set_ylabel('z (km)')
 plt.tight_layout(); plt.show()
+
+
+
+
+
+
+ubar_h_zt = np.full((n_z, n_stat_agg), np.nan)
+ubar_s_zt = np.full((n_z, n_stat_agg), np.nan)
+ds_u = xr.open_dataset(path3d('ua'))
+for iz in range(n_z):
+    u_full = ds_u['ua'].isel({dim_t: idx_stat_agg, dim_z: iz}).values.reshape(n_stat_agg, -1)
+    ubar_h_zt[iz, :] = u_full[:, mh_flat].mean(axis=1)
+    ubar_s_zt[iz, :] = u_full[:, ms_flat].mean(axis=1)
+ds_u.close()
+
+dudt_h_raw = np.gradient(ubar_h_zt, dt_phys, axis=1)
+dudt_s_raw = np.gradient(ubar_s_zt, dt_phys, axis=1)
+contrib_h_raw = f_h * dudt_h_raw; contrib_s_raw = f_s * dudt_s_raw
+somme_raw = contrib_h_raw + contrib_s_raw
+
+# comparaison a dudt_tot_raw RESTREINT a la fenetre stationnaire
+dudt_tot_raw_agg = dudt_tot_raw[:, t_stat_agg:]
+ecart = np.nanmax(np.abs(somme_raw - dudt_tot_raw_agg))
+print(f"ecart max = {ecart:.3e}")
+
+contrib_h_s = smooth_t(contrib_h_raw); contrib_s_s = smooth_t(contrib_s_raw); somme_s = smooth_t(somme_raw)
+
+
+
+
+
+
+
+
+
+SEUIL_W_UD = 0.5
+regions = {'humide': mh_flat, 'sec': ms_flat}
+cats_names = ['up', 'down', 'env']
+
+T1_cat = {r: {c: np.full((n_z, n_stat_agg), np.nan) for c in cats_names} for r in regions}
+T2_cat = {r: {c: np.full((n_z, n_stat_agg), np.nan) for c in cats_names} for r in regions}
+
+ds_u = xr.open_dataset(path3d('ua')); ds_w = xr.open_dataset(path3d('wa'))
+for iz in range(n_z):
+    u_full = ds_u['ua'].isel({dim_t: idx_stat_agg, dim_z: iz}).values.reshape(n_stat_agg, -1)
+    w_full = ds_w['wa'].isel({dim_t: idx_stat_agg, dim_z: iz}).values.reshape(n_stat_agg, -1)
+    for rname, rmask in regions.items():
+        u = u_full[:, rmask]; w = w_full[:, rmask]; N = u.shape[1]
+        for it in range(n_stat_agg):
+            uu, ww = u[it, :], w[it, :]
+            ub, wb = uu.mean(), ww.mean()
+            mask_up = ww > SEUIL_W_UD; mask_dn = ww < -SEUIL_W_UD; mask_env = ~mask_up & ~mask_dn
+            cats = {'up': mask_up, 'down': mask_dn, 'env': mask_env}
+            for cname, cmask in cats.items():
+                if not cmask.any(): continue
+                sig = cmask.sum() / N
+                uc, wc = uu[cmask].mean(), ww[cmask].mean()
+                T1_cat[rname][cname][iz, it] = rho0[iz] * sig * (uc - ub) * (wc - wb)
+                T2_cat[rname][cname][iz, it] = rho0[iz] * sig * ((uu[cmask]-uc)*(ww[cmask]-wc)).mean()
+    del u_full, w_full; gc.collect()
+ds_u.close(); ds_w.close(); gc.collect()
