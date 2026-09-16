@@ -1,25 +1,19 @@
 # ============================================================
-#  1) Trois cartes cote a cote : dudt reel | prediction RADIATIVE | prediction BULK-PLUME
-#     (ordre intervertit par rapport a la version precedente)
+#  1) T1-down : somme humide+sec
+#  2) T1 total : somme sur toutes categories/regions
+#  3) T2 total et T2-env (somme humide+sec) — cote a cote
 # ============================================================
-m112 = (alt>=1000)&(alt<=12000)
 
-w_sec_rad = (theta_zt/T_zt) * tntr_zt / dthetadz_zt
-dudt_pred_rad = smooth_t(-w_sec_rad * dudz_tot)
+# --- 1) T1-down, somme humide+sec ---
+T1_down_total = tend_T1_cat['humide']['down'] + tend_T1_cat['sec']['down']
 
-fig, axes = plt.subplots(1,3,figsize=(16,5),sharey=True)
-v = max(np.nanpercentile(np.abs(dudt_reel[m112]),95),
-        np.nanpercentile(np.abs(dudt_pred_s[m112]),95),
-        np.nanpercentile(np.abs(dudt_pred_rad[m112]),95))*3600+1e-12
-for ax,(fld,lab) in zip(axes,[(dudt_reel*3600, r"$\partial_t\bar u$ reel (m/s/h)"),
-                                (dudt_pred_rad*3600, r"$-\frac{\dot Q_{rad}}{\partial_z\bar\theta}\partial_z\bar u$ (m/s/h)"),
-                                (dudt_pred_s*3600, r"$\frac{1}{\rho_0}\partial_z[M(\bar u-u_c)]$ (m/s/h)")]):
-    im=ax.pcolormesh(tt+t_stat, zkm[m112], fld[m112], cmap='RdBu_r',
-                      norm=TwoSlopeNorm(0,-v,v), shading='auto')
-    ax.set_xlabel('t'); ax.set_title(lab,fontsize=10)
-    fig.colorbar(im,ax=ax,pad=.02)
-axes[0].set_ylabel('z (km)')
-plt.suptitle("dudt reel vs deux predictions (1-12km)", fontweight='bold')
+vmax1 = np.nanpercentile(np.abs(T1_down_total[mask_show]) * 3600, 90) + 1e-12
+fig, ax = plt.subplots(figsize=(7, 6))
+im = ax.pcolormesh(tt+t_stat, zkm[mask_show], T1_down_total[mask_show]*3600, cmap='RdBu_r',
+                    norm=TwoSlopeNorm(0, -vmax1, vmax1), shading='auto')
+ax.set_xlabel('t'); ax.set_ylabel('z (km)')
+ax.set_title('tend(T1) — down, somme humide+sec')
+fig.colorbar(im, ax=ax, pad=.02, label='m/s/h', extend='both')
 plt.tight_layout(); plt.show()
 
 
@@ -27,25 +21,39 @@ plt.tight_layout(); plt.show()
 
 
 
-# ============================================================
-#  2) Correlation a dudt_reel — les DEUX courbes juxtaposees, couleurs differentes
-# ============================================================
-corr_bulk = np.full(n_z, np.nan); corr_rad = np.full(n_z, np.nan)
-for iz in range(n_z):
-    if not m112[iz]: continue
-    a = dudt_reel[iz,:]
-    for pred, store in [(dudt_pred_s[iz,:], 'bulk'), (dudt_pred_rad[iz,:], 'rad')]:
-        ok = np.isfinite(a) & np.isfinite(pred)
-        if ok.sum() < 20 or np.std(a[ok]) < 1e-15 or np.std(pred[ok]) < 1e-15: continue
-        r = np.corrcoef(a[ok], pred[ok])[0,1]
-        if store == 'bulk': corr_bulk[iz] = r
-        else: corr_rad[iz] = r
 
-fig, ax = plt.subplots(figsize=(6, 8))
-ax.plot(corr_rad[m112],  zkm[m112], 'o-', ms=4, color='tab:orange', label='radiative')
-ax.plot(corr_bulk[m112], zkm[m112], 'o-', ms=4, color='tab:blue',   label='bulk-plume')
-ax.axvline(0, color='k', lw=.5)
-ax.set_xlabel('r'); ax.set_ylabel('z (km)')
-ax.legend(fontsize=10)
-ax.set_title('Correlation a dudt_reel')
+# --- 2) T1 total (toutes regions, toutes categories) ---
+T1_total = sum(tend_T1_cat[r][c] for r in tend_T1_cat for c in tend_T1_cat[r])
+
+vmax2 = np.nanpercentile(np.abs(T1_total[mask_show]) * 3600, 90) + 1e-12
+fig, ax = plt.subplots(figsize=(7, 6))
+im = ax.pcolormesh(tt+t_stat, zkm[mask_show], T1_total[mask_show]*3600, cmap='RdBu_r',
+                    norm=TwoSlopeNorm(0, -vmax2, vmax2), shading='auto')
+ax.set_xlabel('t'); ax.set_ylabel('z (km)')
+ax.set_title('tend(T1) total — somme humide/sec x up/down/env')
+fig.colorbar(im, ax=ax, pad=.02, label='m/s/h', extend='both')
+plt.tight_layout(); plt.show()
+
+
+
+
+
+
+
+# --- 3) T2 total et T2-env (somme humide+sec), cote a cote, meme echelle ---
+T2_total     = sum(tend_T2_cat[r][c] for r in tend_T2_cat for c in tend_T2_cat[r])
+T2_env_total = tend_T2_cat['humide']['env'] + tend_T2_cat['sec']['env']
+
+vmax3 = max(np.nanpercentile(np.abs(T2_total[mask_show]) * 3600, 90),
+            np.nanpercentile(np.abs(T2_env_total[mask_show]) * 3600, 90)) + 1e-12
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 6), sharey=True)
+for ax, (fld, lab) in zip(axes, [
+        (T2_total,     'tend(T2) total — somme humide/sec x up/down/env'),
+        (T2_env_total, 'tend(T2) — env, somme humide+sec')]):
+    im = ax.pcolormesh(tt+t_stat, zkm[mask_show], fld[mask_show]*3600, cmap='RdBu_r',
+                        norm=TwoSlopeNorm(0, -vmax3, vmax3), shading='auto')
+    ax.set_xlabel('t'); ax.set_title(lab, fontsize=10)
+    fig.colorbar(im, ax=ax, pad=.02, label='m/s/h', extend='both')
+axes[0].set_ylabel('z (km)')
 plt.tight_layout(); plt.show()
