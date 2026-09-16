@@ -1,11 +1,14 @@
 # ============================================================
-#  1) T1-down : somme humide+sec
-#  2) T1 total : somme sur toutes categories/regions
-#  3) T2 total et T2-env (somme humide+sec) — cote a cote
+#  1) T1-down : somme humide+sec, en traitant NaN comme "zero contribution"
+#     (justifie car un NaN dans T1_cat signifie litteralement "aucun point
+#     dans cette categorie a ce (z,t)", donc une contribution reellement nulle)
 # ============================================================
+h = tend_T1_cat['humide']['down']
+s = tend_T1_cat['sec']['down']
 
-# --- 1) T1-down, somme humide+sec ---
-T1_down_total = tend_T1_cat['humide']['down'] + tend_T1_cat['sec']['down']
+# np.nansum pointwise : NaN traite comme 0, sauf si les DEUX sont NaN (reste NaN)
+T1_down_total = np.where(np.isnan(h) & np.isnan(s), np.nan,
+                          np.nan_to_num(h) + np.nan_to_num(s))
 
 vmax1 = np.nanpercentile(np.abs(T1_down_total[mask_show]) * 3600, 90) + 1e-12
 fig, ax = plt.subplots(figsize=(7, 6))
@@ -14,4 +17,54 @@ im = ax.pcolormesh(tt+t_stat, zkm[mask_show], T1_down_total[mask_show]*3600, cma
 ax.set_xlabel('t'); ax.set_ylabel('z (km)')
 ax.set_title('tend(T1) — down, somme humide+sec')
 fig.colorbar(im, ax=ax, pad=.02, label='m/s/h', extend='both')
+plt.tight_layout(); plt.show()
+
+
+
+
+
+
+# --- 2) T1 total (toutes regions, toutes categories), NaN traite comme 0 ---
+tous_T1 = [tend_T1_cat[r][c] for r in tend_T1_cat for c in tend_T1_cat[r]]
+
+# NaN partout -> NaN ; sinon somme en traitant chaque NaN individuel comme 0
+tous_nan = np.all([np.isnan(champ) for champ in tous_T1], axis=0)
+T1_total = np.where(tous_nan, np.nan, sum(np.nan_to_num(champ) for champ in tous_T1))
+
+vmax2 = np.nanpercentile(np.abs(T1_total[mask_show]) * 3600, 90) + 1e-12
+fig, ax = plt.subplots(figsize=(7, 6))
+im = ax.pcolormesh(tt+t_stat, zkm[mask_show], T1_total[mask_show]*3600, cmap='RdBu_r',
+                    norm=TwoSlopeNorm(0, -vmax2, vmax2), shading='auto')
+ax.set_xlabel('t'); ax.set_ylabel('z (km)')
+ax.set_title('tend(T1) total — somme humide/sec x up/down/env')
+fig.colorbar(im, ax=ax, pad=.02, label='m/s/h', extend='both')
+plt.tight_layout(); plt.show()
+
+
+
+
+
+
+
+# --- 3) T2 total et T2-env (somme humide+sec), NaN traite comme 0, cote a cote ---
+tous_T2 = [tend_T2_cat[r][c] for r in tend_T2_cat for c in tend_T2_cat[r]]
+tous_nan_T2 = np.all([np.isnan(champ) for champ in tous_T2], axis=0)
+T2_total = np.where(tous_nan_T2, np.nan, sum(np.nan_to_num(champ) for champ in tous_T2))
+
+h_env = tend_T2_cat['humide']['env']; s_env = tend_T2_cat['sec']['env']
+T2_env_total = np.where(np.isnan(h_env) & np.isnan(s_env), np.nan,
+                         np.nan_to_num(h_env) + np.nan_to_num(s_env))
+
+vmax3 = max(np.nanpercentile(np.abs(T2_total[mask_show]) * 3600, 90),
+            np.nanpercentile(np.abs(T2_env_total[mask_show]) * 3600, 90)) + 1e-12
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 6), sharey=True)
+for ax, (fld, lab) in zip(axes, [
+        (T2_total,     'tend(T2) total — somme humide/sec x up/down/env'),
+        (T2_env_total, 'tend(T2) — env, somme humide+sec')]):
+    im = ax.pcolormesh(tt+t_stat, zkm[mask_show], fld[mask_show]*3600, cmap='RdBu_r',
+                        norm=TwoSlopeNorm(0, -vmax3, vmax3), shading='auto')
+    ax.set_xlabel('t'); ax.set_title(lab, fontsize=10)
+    fig.colorbar(im, ax=ax, pad=.02, label='m/s/h', extend='both')
+axes[0].set_ylabel('z (km)')
 plt.tight_layout(); plt.show()
